@@ -16,6 +16,8 @@ import { setWorkspaceProviderForTests } from '../../src/workspace/runtime.js';
 import { sanitizeProviderError, translateCommandExitError } from '../../src/workspace/diagnostics.js';
 import {
   GUEST_TRANSPORT_CAP_BYTES,
+  LAUNCHER_STAGE_CGROUP_ENTER,
+  LAUNCHER_STAGE_CGROUP_MISSING,
   WORKLOAD_CGROUP,
   WORKLOAD_PROJECT,
   splitFencedCommand,
@@ -36,12 +38,14 @@ import { WRITE_PATH_ENV, parseWriteTargetFromPayload } from '../../src/workspace
  * The fixed elevated script, written out here independently of the source.
  * The elevated prefix must stay exactly this text: no customer-controlled
  * bytes may enter it (the payload reaches it only as the $1 argument).
+ * Each launcher check/setup stage fails with its own fixed marker so a
+ * silent non-zero exit can no longer hide which stage broke.
  */
 const EXPECTED_TRUSTED_LAUNCHER = [
   'set -eu',
   'export PATH="/usr/sbin:/usr/bin:/sbin:/bin"',
-  `test -f ${WORKLOAD_CGROUP}/cgroup.procs`,
-  `echo $$ > ${WORKLOAD_CGROUP}/cgroup.procs`,
+  `test -f ${WORKLOAD_CGROUP}/cgroup.procs || { echo '${LAUNCHER_STAGE_CGROUP_MISSING}' >&2; exit 10; }`,
+  `echo $$ > ${WORKLOAD_CGROUP}/cgroup.procs || { echo '${LAUNCHER_STAGE_CGROUP_ENTER}' >&2; exit 11; }`,
   `exec setpriv --reuid 1100 --regid 1100 --init-groups --no-new-privs --inh-caps -all --ambient-caps -all --bounding-set -all -- /usr/bin/env -i HOME=/data/ranger USER=ranger LOGNAME=ranger /bin/bash -lc "$1"`,
 ].join('\n');
 
@@ -215,6 +219,29 @@ describe('workload cwd and privilege ordering (deterministic, not live)', () => 
     expect(EXPECTED_TRUSTED_LAUNCHER.trimEnd().endsWith('/bin/bash -lc "$1"')).toBe(true);
   });
 
+  it('reports each failing launcher check/setup stage with a fixed marker, not silence', () => {
+    // Window1 failed with a non-zero exit and BOTH streams empty: with
+    // set -eu a bare test/redirect failure is silent. Each launcher setup
+    // stage must now emit its own fixed, secret-free marker and stop with a
+    // distinct fixed exit code. The full script above is pinned verbatim,
+    // which is what makes these markers deterministic (no dynamic bytes).
+    expect(EXPECTED_TRUSTED_LAUNCHER).toContain(`|| { echo '${LAUNCHER_STAGE_CGROUP_MISSING}' >&2; exit 10; }`);
+    expect(EXPECTED_TRUSTED_LAUNCHER).toContain(`|| { echo '${LAUNCHER_STAGE_CGROUP_ENTER}' >&2; exit 11; }`);
+    // The markers ride stderr only, stay bounded static text, and name no
+    // payload, path argument or environment content.
+    expect(LAUNCHER_STAGE_CGROUP_MISSING).toMatch(/^ranger-launcher-failed stage=cgroup_missing$/);
+    expect(LAUNCHER_STAGE_CGROUP_ENTER).toMatch(/^ranger-launcher-failed stage=cgroup_enter$/);
+    // Fail-closed is unchanged: the marker block exits, it never falls back
+    // to the sudo-enabled template identity.
+    expect(EXPECTED_TRUSTED_LAUNCHER).not.toContain('|| true');
+    // Both stage guards precede the privilege drop; nothing runs after a
+    // failed setup.
+    const cgroupGuardAt = EXPECTED_TRUSTED_LAUNCHER.indexOf('|| { echo ');
+    const dropAt = EXPECTED_TRUSTED_LAUNCHER.indexOf('exec setpriv --reuid 1100');
+    expect(cgroupGuardAt).toBeGreaterThan(-1);
+    expect(dropAt).toBeGreaterThan(cgroupGuardAt);
+  });
+
   it('runs the guest write through the trusted launcher with the drop before the payload', async () => {
     const h = await harness();
     await createWorkspace(h);
@@ -352,7 +379,115 @@ describe('write-failure persistence (deterministic, not live)', () => {
     });
     await ws.create({ projectId: 'prj_1', operationKey: 'op-1' });
     provider.failNextWrite('guest-write-refused errno=28');
-    await expect(ws.writeFile('prj_1', 'src/app.ts', 'export const answer = 1;\n')).rejects.toThrow(/guest write failed/i);
+    const failure = await ws.writeFile('prj_1', 'src/app.ts', 'export const answer = 1;\n').then(
+      () => null,
+      (cause: unknown) => cause,
+    );
+    expect(failure).toMatchObject({
+      code: 'conflict',
+      message: 'Workspace file was not written in the guest',
+      details: { reason: 'guest_write_failed', exitCode: 4, timedOut: false, truncated: false },
+    });
+    const saved = await ws.persistSource('prj_1');
+    expect(saved.files).toEqual([]);
+  });
+});
+
+describe('guest_write_failed preserves the SDK failure fields (deterministic, not live)', () => {
+  it('keeps exitCode, timedOut and truncated when the write is killed at the command timeout', async () => {
+    // A write killed by the guest agent at its command deadline arrives as a
+    // non-zero exit with empty streams and timedOut=true. The public error
+    // must carry those fields so a timeout can be recognized, never
+    // collapsed into a bare reason string.
+    const h = await harness();
+    await createWorkspace(h);
+    h.provider.failNextWriteTimedOut();
+    const written = await h.app.inject({
+      method: 'PUT',
+      url: `/v1/projects/${h.projectId}/workspace/file`,
+      headers: h.ownerAuth,
+      payload: { path: 'src/app.ts', contentBase64: Buffer.from('export const n = 1;\n').toString('base64') },
+    });
+    expect(written.statusCode).toBe(409);
+    expect(written.json()).toMatchObject({
+      error: {
+        code: 'conflict',
+        message: 'Workspace file was not written in the guest',
+        details: { reason: 'guest_write_failed', exitCode: 124, timedOut: true, truncated: false },
+      },
+    });
+    await h.app.close();
+  });
+
+  it('preserves the window1 evidence shape: non-zero exit with both streams empty', async () => {
+    // Window1 observed exactly this shape (sanitized detail was empty). The
+    // fields must survive so the shape itself is recorded, not lost.
+    const h = await harness();
+    await createWorkspace(h);
+    h.provider.failNextWriteSilentExit(1);
+    const written = await h.app.inject({
+      method: 'PUT',
+      url: `/v1/projects/${h.projectId}/workspace/file`,
+      headers: h.ownerAuth,
+      payload: { path: 'src/app.ts', contentBase64: Buffer.from('export const n = 1;\n').toString('base64') },
+    });
+    expect(written.statusCode).toBe(409);
+    expect(written.json()).toMatchObject({
+      error: {
+        code: 'conflict',
+        details: { reason: 'guest_write_failed', exitCode: 1, timedOut: false, truncated: false },
+      },
+    });
+    await h.app.close();
+  });
+
+  it('surfaces a failing launcher setup stage through the sanitized detail', async () => {
+    // With fixed stage markers, a launcher check failure reaches the public
+    // detail as the fixed marker text plus the preserved stage exit code.
+    const h = await harness();
+    await createWorkspace(h);
+    h.provider.failNextWriteLauncherStage('cgroup_missing');
+    const written = await h.app.inject({
+      method: 'PUT',
+      url: `/v1/projects/${h.projectId}/workspace/file`,
+      headers: h.ownerAuth,
+      payload: { path: 'src/app.ts', contentBase64: Buffer.from('export const n = 1;\n').toString('base64') },
+    });
+    expect(written.statusCode).toBe(409);
+    const envelope = written.json() as { error: { details?: { detail?: string; exitCode?: number } } };
+    expect(envelope.error.details?.detail).toContain('ranger-launcher-failed stage=cgroup_missing');
+    expect(envelope.error.details?.exitCode).toBe(10);
+    await h.app.close();
+  });
+
+  it('preserves the fields on the workspace-level write path too', async () => {
+    const provider = new FakeInstabox();
+    const dir = mkdtempSync(path.join(tmpdir(), 'ranger-ws-fields-'));
+    tempDirs.push(dir);
+    const ledgerPath = path.join(dir, 'ledger.json');
+    writeFileSync(ledgerPath, JSON.stringify({
+      version: 1,
+      xai: { limitUsd: 5, softAdmissionUsd: 4, observedUsd: 0, reservedUsd: 0, operations: [] },
+      instabox: { maxAdditionalCreations: 6, maxConcurrent: 1, maxLifetimeSeconds: 600, additionalCreations: 0, machines: [] },
+    }));
+    const { InstaboxWorkspace } = await import('../../src/workspace/instabox.js');
+    const ws = new InstaboxWorkspace({
+      provider,
+      ledgerFile: ledgerPath,
+      feature: 'lean-instabox-workspace-viewing',
+      sourceRoot: dir,
+      now: () => 1_700_000_000_000,
+    });
+    await ws.create({ projectId: 'prj_1', operationKey: 'op-1' });
+    provider.failNextWriteTimedOut();
+    const failure = await ws.writeFile('prj_1', 'src/app.ts', 'export const answer = 1;\n').then(
+      () => null,
+      (cause: unknown) => cause,
+    );
+    expect(failure).toMatchObject({
+      code: 'conflict',
+      details: { reason: 'guest_write_failed', exitCode: 124, timedOut: true, truncated: false },
+    });
     const saved = await ws.persistSource('prj_1');
     expect(saved.files).toEqual([]);
   });

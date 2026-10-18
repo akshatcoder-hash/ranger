@@ -10,7 +10,7 @@ import type {
 } from './provider.js';
 import { MAX_STDIN_BYTES } from '@insforge/instabox-sdk';
 import { parseWriteTargetFromPayload } from './guest-write.js';
-import { splitFencedCommand } from './limits.js';
+import { LAUNCHER_STAGE_CGROUP_ENTER, LAUNCHER_STAGE_CGROUP_MISSING, splitFencedCommand } from './limits.js';
 import { sanitizeProviderError } from './diagnostics.js';
 
 interface FakeProcess {
@@ -49,7 +49,7 @@ export class FakeInstabox implements InstaboxProvider {
   private symlinks = new Map<string, Map<string, string>>();
   private failAmbiguous: string | null = null;
   private failDefinite = false;
-  private failWrite: string | null = null;
+  private writeFailure: ProviderCommandResult | null = null;
   private operationToMachine = new Map<string, string>();
 
   failNextCreateAmbiguous(machineId: string): void {
@@ -62,7 +62,34 @@ export class FakeInstabox implements InstaboxProvider {
 
   /** Make the next guest write fail with this bounded, secret-safe reason. */
   failNextWrite(reason: string): void {
-    this.failWrite = reason;
+    this.writeFailure = { stdout: '', stderr: `${reason}\n`, exitCode: 4, timedOut: false, truncated: false };
+  }
+
+  /**
+   * Model a write killed by the guest agent at the command deadline: a
+   * non-zero exit with empty streams and timedOut=true. The kill exit-code
+   * convention belongs to the real server (124 is the modeled stand-in);
+   * what the write path must preserve is the timedOut flag itself.
+   */
+  failNextWriteTimedOut(): void {
+    this.writeFailure = { stdout: '', stderr: '', exitCode: 124, timedOut: true, truncated: false };
+  }
+
+  /**
+   * Model the window1 evidence shape: a silent non-zero exit from the
+   * trusted launcher with both streams empty and timedOut=false.
+   */
+  failNextWriteSilentExit(exitCode: number): void {
+    this.writeFailure = { stdout: '', stderr: '', exitCode, timedOut: false, truncated: false };
+  }
+
+  /** Model a trusted-launcher check/setup stage failure: the fixed stage
+   * marker on stderr and the stage's fixed exit code. */
+  failNextWriteLauncherStage(stage: 'cgroup_missing' | 'cgroup_enter'): void {
+    this.writeFailure =
+      stage === 'cgroup_missing'
+        ? { stdout: '', stderr: `${LAUNCHER_STAGE_CGROUP_MISSING}\n`, exitCode: 10, timedOut: false, truncated: false }
+        : { stdout: '', stderr: `${LAUNCHER_STAGE_CGROUP_ENTER}\n`, exitCode: 11, timedOut: false, truncated: false };
   }
 
   /** Plant a workload-planted symlink at a project-relative path. */
@@ -261,10 +288,10 @@ export class FakeInstabox implements InstaboxProvider {
       timedOut: false,
       truncated: false,
     });
-    if (this.failWrite !== null) {
-      const reason = this.failWrite;
-      this.failWrite = null;
-      return { stdout: '', stderr: `${reason}\n`, exitCode: 4, timedOut: false, truncated: false };
+    if (this.writeFailure !== null) {
+      const failure = this.writeFailure;
+      this.writeFailure = null;
+      return failure;
     }
     const parts = relativePath.split('/').filter((part) => part !== '' && part !== '.');
     if (relativePath.startsWith('/') || parts.length === 0 || parts.includes('..')) return refused(0);

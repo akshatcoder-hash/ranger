@@ -16,6 +16,7 @@ import {
   fencedWorkloadCommand,
 } from './limits.js';
 import { guestWriteCommand } from './guest-write.js';
+import { guestWriteDetail } from './diagnostics.js';
 import { FakeInstabox } from './fake-provider.js';
 import type { InstaboxProvider, ProviderCreateRequest } from './provider.js';
 
@@ -267,8 +268,17 @@ export class InstaboxWorkspace {
       timeoutMs: 30_000,
     });
     if (result.exitCode !== 0) {
-      const detail = `${result.stderr}\n${result.stdout}`.replace(/[A-Za-z0-9_\-]{24,}/g, '[redacted]').slice(0, 300);
-      throw new Error(`guest write failed: ${detail}`);
+      // Same failure shape as the public API write path: the SDK's exitCode
+      // and timedOut/truncated flags ride the structured details, so a
+      // timeout kill is never collapsed into a bare message. Detail text
+      // stays redacted and bounded.
+      throw Errors.conflict('Workspace file was not written in the guest', {
+        reason: 'guest_write_failed',
+        detail: guestWriteDetail(result.stderr, result.stdout),
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+        truncated: result.truncated,
+      });
     }
     current.files.set(relativePath, content);
   }

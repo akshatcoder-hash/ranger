@@ -62,6 +62,16 @@ export function isFixedPreviewPort(port: number): port is FixedPreviewPort {
 }
 
 /**
+ * Fixed failure-stage markers for the trusted launcher's own checks/setup.
+ * They are static text: no payload, path argument, environment or secret
+ * bytes can ever enter them. A launcher stage failure reaches the sanitized
+ * write/command detail through stderr, so a silent non-zero exit no longer
+ * hides which stage broke.
+ */
+export const LAUNCHER_STAGE_CGROUP_MISSING = 'ranger-launcher-failed stage=cgroup_missing';
+export const LAUNCHER_STAGE_CGROUP_ENTER = 'ranger-launcher-failed stage=cgroup_enter';
+
+/**
  * The fixed server-generated script that `sudo -n` runs for every workload
  * command. It contains no customer-controlled bytes: the untrusted payload
  * reaches it only as the $1 argument, executed after the drop.
@@ -71,13 +81,15 @@ export function isFixedPreviewPort(port: number): port is FixedPreviewPort {
  * cgroup.procs), then irrevocably drops uid, gid, supplementary groups and
  * all capabilities with no-new-privileges in a single setpriv exec. Doing
  * the whole drop as root is required: an unprivileged runuser-then-setpriv
- * chain could not change the caps it had already lost.
+ * chain could not change the caps it had already lost. Each guarded stage
+ * emits a fixed marker on stderr before its distinct fixed exit code, so a
+ * failed check is diagnosable instead of a silent non-zero exit.
  */
 export const TRUSTED_LAUNCHER = [
   'set -eu',
   PINNED_ROOT_PATH,
-  `test -f ${WORKLOAD_CGROUP}/cgroup.procs`,
-  `echo $$ > ${WORKLOAD_CGROUP}/cgroup.procs`,
+  `test -f ${WORKLOAD_CGROUP}/cgroup.procs || { echo '${LAUNCHER_STAGE_CGROUP_MISSING}' >&2; exit 10; }`,
+  `echo $$ > ${WORKLOAD_CGROUP}/cgroup.procs || { echo '${LAUNCHER_STAGE_CGROUP_ENTER}' >&2; exit 11; }`,
   `exec setpriv --reuid ${WORKLOAD_UID} --regid ${WORKLOAD_UID} --init-groups --no-new-privs --inh-caps -all --ambient-caps -all --bounding-set -all -- /usr/bin/env -i HOME=${WORKLOAD_HOME} USER=${WORKLOAD_USER} LOGNAME=${WORKLOAD_USER} /bin/bash -lc "$1"`,
 ].join('\n');
 

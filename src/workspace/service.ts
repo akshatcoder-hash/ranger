@@ -20,6 +20,7 @@ import {
   isFixedPreviewPort,
 } from './limits.js';
 import { guestWriteCommand } from './guest-write.js';
+import { guestWriteDetail } from './diagnostics.js';
 import { bootstrapWorkload } from './bootstrap.js';
 import { armWorkspaceWatchdog, destroyFailedBootstrap, destroyRecordedWorkspace } from './cleanup.js';
 import { SdkInstaboxProvider } from './sdk-provider.js';
@@ -225,8 +226,18 @@ export class WorkspaceService {
       timeoutMs: 30_000,
     });
     if (written.exitCode !== 0) {
-      const detail = `${written.stderr}\n${written.stdout}`.replace(/[A-Za-z0-9_\-]{24,}/g, '[redacted]').slice(0, 300);
-      throw Errors.conflict('Workspace file was not written in the guest', { reason: 'guest_write_failed', detail });
+      // Preserve the SDK failure fields through guest_write_failed: the
+      // numeric exitCode and the timedOut/truncated flags distinguish a
+      // kill-at-deadline from an instant silent exit (the window1 evidence
+      // shape). The detail text stays redacted and bounded; the fields
+      // are structured values, so no payload or secret can ride them.
+      throw Errors.conflict('Workspace file was not written in the guest', {
+        reason: 'guest_write_failed',
+        detail: guestWriteDetail(written.stderr, written.stdout),
+        exitCode: written.exitCode,
+        timedOut: written.timedOut,
+        truncated: written.truncated,
+      });
     }
     saveSourceFile(this.options.db, projectId, relativePath, content);
     return { path: relativePath, sizeBytes: content.byteLength };

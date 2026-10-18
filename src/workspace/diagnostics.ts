@@ -10,6 +10,16 @@ import type { ProviderCommandResult } from './provider.js';
 
 const MAX_DETAIL_CHARS = 300;
 
+/**
+ * Bounded, secret-safe detail for a failed guest write: the redacted streams
+ * only. Never includes the payload bytes, environment, keys or the command
+ * text. Exit codes and the timedOut/truncated flags ride separately as
+ * structured fields, not inside this text.
+ */
+export function guestWriteDetail(stderr: string, stdout: string): string {
+  return `${stderr}\n${stdout}`.replace(/[A-Za-z0-9_\-]{24,}/g, '[redacted]').slice(0, MAX_DETAIL_CHARS);
+}
+
 export function sanitizeProviderError(raw: string, command: string): string {
   let text = raw;
   if (command.length > 0) text = text.split(command).join('[command]');
