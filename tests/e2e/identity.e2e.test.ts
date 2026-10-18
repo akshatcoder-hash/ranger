@@ -47,6 +47,9 @@ function startApi(): ChildProcess {
       RANGER_DATA_DIR: apiDataDir,
       RANGER_HOST: '127.0.0.1',
       RANGER_PORT: String(PORT),
+      // The e2e operator approves the e2e fixture area for local snapshot
+      // inspection; everything outside stays uninspected.
+      RANGER_APPROVED_SNAPSHOT_ROOTS: baseTmp,
     },
     stdio: ['ignore', 'ignore', 'inherit'],
   });
@@ -150,6 +153,22 @@ describe('identity e2e over the public API', () => {
     const readBack = await operator.getRepository({ path: { projectId } });
     expect(readBack.repository.commit).toBe(head);
     expect(readBack.repository.checkoutPath).toBe('workspace');
+
+    // Credential-bearing URLs (including the username-only token form) are
+    // rejected through the public contract with a safe stable error.
+    let rejected: unknown;
+    try {
+      await operator.connectRepository({
+        path: { projectId },
+        body: { url: 'https://token@git.example/org/app.git', ref: 'main' },
+      });
+    } catch (cause) {
+      rejected = cause;
+    }
+    expect(rejected).toBeInstanceOf(RangerApiError);
+    expect((rejected as RangerApiError).status).toBe(400);
+    expect((rejected as RangerApiError).code).toBe('validation_failed');
+    expect(JSON.stringify((rejected as RangerApiError).details ?? {})).toContain('credentials_in_url');
 
     store.projectId = projectId;
     store.head = head;

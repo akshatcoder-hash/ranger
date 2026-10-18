@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 
 /**
  * Central configuration for all Ranger processes (API, worker, preview).
@@ -73,6 +74,12 @@ export interface RangerConfig {
   liveBudgetFile: string | null;
   /** Optional JSON config file with limit/provider overrides. */
   configFile: string | null;
+  /**
+   * Operator-approved synthetic roots (absolute paths) whose local git
+   * worktrees may be inspected for repository snapshots. Empty means local
+   * inspection is denied; remote references never need host inspection.
+   */
+  approvedSnapshotRoots: string[];
   logLevel: 'fatal' | 'error' | 'warn' | 'info' | 'debug';
   limits: LimitsConfig;
   providers: ProviderConfig;
@@ -184,6 +191,38 @@ function resolveProviders(overrides: unknown): ProviderConfig {
 }
 
 /**
+ * Local snapshot inspection is denied unless the operator explicitly
+ * approved synthetic roots. Roots come from RANGER_APPROVED_SNAPSHOT_ROOTS
+ * (path-delimiter-separated) and the optional config-file key
+ * `approvedSnapshotRoots` (string array); entries must be absolute paths.
+ */
+function resolveApprovedSnapshotRoots(
+  env: NodeJS.ProcessEnv,
+  fileConfig: Partial<RangerConfig>,
+): string[] {
+  const rawEnv = readString(env, 'RANGER_APPROVED_SNAPSHOT_ROOTS');
+  const fromEnv =
+    rawEnv === undefined
+      ? []
+      : rawEnv
+          .split(path.delimiter)
+          .map((entry) => entry.trim())
+          .filter((entry) => entry !== '');
+  const fromFile = fileConfig.approvedSnapshotRoots;
+  const declared = Array.isArray(fromFile) ? fromFile : [];
+  const roots = [...fromEnv, ...declared];
+  for (const root of roots) {
+    if (typeof root !== 'string' || root === '') {
+      throw new ConfigError('Approved snapshot roots must be non-empty path strings');
+    }
+    if (!path.isAbsolute(root)) {
+      throw new ConfigError(`Approved snapshot roots must be absolute paths, got ${root}`);
+    }
+  }
+  return roots;
+}
+
+/**
  * Load and validate configuration. `dataDir` is required for processes that
  * touch durable state; pass `requireDataDir: false` for pure helpers.
  */
@@ -213,6 +252,7 @@ export async function loadConfig(
     secretFile: readString(env, 'RANGER_SECRET_FILE') ?? null,
     liveBudgetFile: readString(env, 'RANGER_LIVE_BUDGET_FILE') ?? null,
     configFile: configFile ?? null,
+    approvedSnapshotRoots: resolveApprovedSnapshotRoots(env, fileConfig),
     logLevel: logLevelRaw as RangerConfig['logLevel'],
     limits: clampLimits(fileConfig.limits),
     providers: resolveProviders(fileConfig.providers),

@@ -1,5 +1,6 @@
 {
-  "$comment": "Optional Ranger config file passed via RANGER_CONFIG_FILE. Limits may be lowered but never exceed the documented ceilings.",
+  "$comment": "Optional Ranger config file passed via RANGER_CONFIG_FILE. Limits may be lowered but never exceed the documented ceilings. approvedSnapshotRoots lists the operator-approved synthetic roots whose local git worktrees may be inspected for repository snapshots (empty/absent denies local inspection).",
+  "approvedSnapshotRoots": [],
   "limits": {
     "maxConcurrentRuns": 1,
     "maxWorkerJobs": 2,

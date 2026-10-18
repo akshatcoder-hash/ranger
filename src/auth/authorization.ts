@@ -63,7 +63,16 @@ export function getProjectRow(db: DatabaseSync, projectId: string): ProjectRow |
   return row === undefined ? null : mapProjectRow(row);
 }
 
-/** Resolve the project row or fail with not_found (no cross-principal existence signal). */
+/**
+ * Resolve the project row or fail with not_found.
+ *
+ * Existence is intentionally distinguishable at this boundary: a MISSING
+ * project answers 404 not_found, while an EXISTING project the caller
+ * cannot access answers 403 forbidden from requireMembership /
+ * requireProjectOwner. That is the approved policy (project ids are random
+ * UUIDs), so nothing here may be documented as
+ * existence-indistinguishable.
+ */
 export function requireProjectRow(db: DatabaseSync, projectId: string): ProjectRow {
   const row = getProjectRow(db, projectId);
   if (row === null) throw Errors.notFound(`Project ${projectId} does not exist`);

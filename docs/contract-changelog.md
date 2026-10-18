@@ -5,6 +5,44 @@ served in `/v1/capabilities` (`contractVersion`) must always appear here.
 
 ## v1 — 2026-10-18
 
+### v1 amendment — identity and repository boundary fixes (2026-10-18)
+
+Security-boundary corrections from foundation scrutiny; the contract version
+stays v1. Public behavior changes:
+
+- **Repository URLs reject ALL credential material**: any userinfo on an
+  `https` URL — including the username-only (`https://<token>@host/...`) and
+  percent-encoded token forms — and any password on `ssh`/`git` URLs are
+  rejected with `validation_failed` (details reason `credentials_in_url`)
+  BEFORE persistence, events or error responses; rejected URLs are never
+  echoed. Ordinary plain SSH usernames (`ssh://git@host/...`) remain usable.
+- **Local snapshot inspection is operator-approval-gated**: `file://` and
+  absolute-path repository URLs are inspected (read-only git) only under
+  `RANGER_APPROVED_SNAPSHOT_ROOTS` (or the config-file
+  `approvedSnapshotRoots`); unapproved paths answer `validation_failed`
+  with details reason `local_path_not_approved` before any filesystem
+  probing. Checks are realpath/symlink-safe (symlinked worktrees and
+  symlinked `.git` may not escape an approved root), and inspection never
+  executes repository-configured fsmonitor helpers or hooks and never takes
+  repository locks or honors global/system git config. Remote references
+  persist without host inspection as before.
+- **Idempotency is principal-scoped**: the `Idempotency-Key` scope now binds
+  the authenticated principal in addition to operation and project, so
+  identical createProject requests (same key, same body) from two principals
+  are independent authorized executions instead of replaying one principal's
+  stored payload to the other. Same-principal retries replay exactly as
+  before; conflicting reuse within one principal still returns `conflict`.
+- **Bootstrap failure semantics**: the credential file is written before any
+  database row, so a file collision or write failure leaves retryable state
+  with no orphaned credential row and never overwrites an existing
+  credential file.
+- Project-existence responses are intentionally distinguishable (missing
+  project → `404 not_found`; existing project without membership → `403
+  forbidden`); misleading comments claiming existence indistinguishability
+  were corrected without changing that policy.
+
+## v1 — 2026-10-18 (initial publication)
+
 Initial publication of the Ranger v1 contract.
 
 - **OpenAPI 3.1** document generated from the single route registry

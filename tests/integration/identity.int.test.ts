@@ -23,6 +23,13 @@ import { createFixtureRepo } from '../helpers/fixture-repo.js';
 
 const HOST = 'ranger.test';
 
+/**
+ * Deployment env for every app instance in this file (a restart keeps the
+ * same env): the tmp fixture area is the operator-approved synthetic root
+ * for local snapshot inspection.
+ */
+const APP_ENV = { RANGER_APPROVED_SNAPSHOT_ROOTS: tmpdir() };
+
 function makeApp(env: Record<string, string>, existingDataDir?: string): Promise<{ app: FastifyInstance; config: RangerConfig; dataDir: string }> {
   const dataDir = existingDataDir ?? mkdtempSync(path.join(tmpdir(), 'ranger-identity-int-'));
   return (async () => {
@@ -58,7 +65,7 @@ describe('identity, projects and repositories', () => {
   let projectId: string;
 
   beforeAll(async () => {
-    const made = await makeApp({});
+    const made = await makeApp(APP_ENV);
     app = made.app;
     dataDir = made.dataDir;
     db = new DatabaseSync(path.join(dataDir, 'ranger.db'));
@@ -216,10 +223,11 @@ describe('identity, projects and repositories', () => {
     });
     expect(withToken.statusCode).toBe(200);
 
-    // Restart: same data directory, new app — the session still works.
+    // Restart: same data directory and deployment env, new app — the session
+    // still works.
     await app.close();
     db.close();
-    const restarted = await makeApp({}, dataDir);
+    const restarted = await makeApp(APP_ENV, dataDir);
     app = restarted.app;
     db = new DatabaseSync(path.join(dataDir, 'ranger.db'));
     const meAfterRestart = await app.inject({ method: 'GET', url: '/v1/auth/me', headers: { cookie: `ranger_session=${cookieValue}` } });
@@ -466,10 +474,10 @@ describe('identity, projects and repositories', () => {
     });
     expect(scheme.statusCode).toBe(400);
 
-    // Restart: same data dir — repository references survive.
+    // Restart: same data dir and deployment env — repository references survive.
     await app.close();
     db.close();
-    const restarted = await makeApp({}, dataDir);
+    const restarted = await makeApp(APP_ENV, dataDir);
     app = restarted.app;
     db = new DatabaseSync(path.join(dataDir, 'ranger.db'));
     const afterRestart = await app.inject({ method: 'GET', url: `/v1/projects/${projectId}/repository`, headers });
@@ -485,6 +493,105 @@ describe('identity, projects and repositories', () => {
     expect(disconnect.statusCode).toBe(200);
     const gone = await app.inject({ method: 'GET', url: `/v1/projects/${projectId}/repository`, headers });
     expect(gone.statusCode).toBe(404);
+  });
+
+  it('createProject idempotency is principal-scoped: identical key and body from two principals never replays a foreign payload', async () => {
+    const second = createPrincipal(db, 'Idem Second');
+    const secondCred = createCredential(db, second.id, 'api_token', 'idem');
+    const headersA = { authorization: `Bearer ${bootstrapToken}`, 'idempotency-key': 'shared-create-key' };
+    const headersB = { authorization: `Bearer ${secondCred.secret}`, 'idempotency-key': 'shared-create-key' };
+    const body = { name: 'Idem Project', engineerDisplayName: 'Ranger' };
+
+    const first = await app.inject({ method: 'POST', url: '/v1/projects', headers: headersA, payload: body });
+    expect(first.statusCode).toBe(200);
+    const secondMade = await app.inject({ method: 'POST', url: '/v1/projects', headers: headersB, payload: body });
+    expect(secondMade.statusCode).toBe(200);
+    const idA = (first.json() as { project: { projectId: string } }).project.projectId;
+    const idB = (secondMade.json() as { project: { projectId: string } }).project.projectId;
+    expect(idB).not.toBe(idA);
+
+    // Same-principal retries replay their own stored result, not the other's.
+    const retryA = await app.inject({ method: 'POST', url: '/v1/projects', headers: headersA, payload: body });
+    expect((retryA.json() as { project: { projectId: string } }).project.projectId).toBe(idA);
+    const retryB = await app.inject({ method: 'POST', url: '/v1/projects', headers: headersB, payload: body });
+    expect((retryB.json() as { project: { projectId: string } }).project.projectId).toBe(idB);
+
+    // Conflicting reuse within one principal is still a conflict.
+    const conflict = await app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers: headersA,
+      payload: { name: 'Different', engineerDisplayName: 'Ranger' },
+    });
+    expect(conflict.statusCode).toBe(409);
+    expect((conflict.json() as { error: { code: string } }).error.code).toBe('conflict');
+
+    // Each principal's project list shows only their own.
+    const listB = await app.inject({ method: 'GET', url: '/v1/projects', headers: { authorization: `Bearer ${secondCred.secret}` } });
+    const ids = (listB.json() as { projects: Array<{ projectId: string }> }).projects.map((p) => p.projectId);
+    expect(ids).toContain(idB);
+    expect(ids).not.toContain(idA);
+  });
+
+  it('rejects https token-in-userinfo repository URLs before persistence and events', async () => {
+    const headers = { authorization: `Bearer ${bootstrapToken}` };
+    const made = await app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers,
+      payload: { name: 'Repo Guard', engineerDisplayName: 'Ranger' },
+    });
+    const guardId = (made.json() as { project: { projectId: string } }).project.projectId;
+
+    for (const url of [
+      'https://token@git.example/org/app.git',
+      'https://user:token@git.example/org/app.git',
+      'https://%74%6Fken@git.example/org/app.git',
+    ]) {
+      const attempt = await app.inject({
+        method: 'PUT',
+        url: `/v1/projects/${guardId}/repository`,
+        headers,
+        payload: { url, ref: 'main' },
+      });
+      expect(attempt.statusCode, url).toBe(400);
+      expect((attempt.json() as { error: { details?: { reason?: string } } }).error.details?.reason).toBe(
+        'credentials_in_url',
+      );
+      // Safe error: the rejected URL never echoes back to the client.
+      expect(attempt.body.includes('git.example')).toBe(false);
+    }
+
+    // Nothing was persisted and no repository event was emitted.
+    const read = await app.inject({ method: 'GET', url: `/v1/projects/${guardId}/repository`, headers });
+    expect(read.statusCode).toBe(404);
+    const replay = await app.inject({ method: 'GET', url: `/v1/projects/${guardId}/events`, headers });
+    expect(replay.statusCode).toBe(200);
+    const body = replay.json() as { events: Array<{ type: string; data: Record<string, unknown> }> };
+    expect(body.events.some((e) => e.type === 'repository.connected')).toBe(false);
+    expect(JSON.stringify(body.events).includes('git.example')).toBe(false);
+  });
+
+  it('local snapshot inspection requires operator-approved roots through the public API', async () => {
+    const baseTmp = mkdtempSync(path.join(tmpdir(), 'ranger-int-unapproved-'));
+    const fixture = createFixtureRepo(baseTmp, 'unapproved-app');
+    // A fresh app on the same data dir WITHOUT approved snapshot roots.
+    const { app: unapprovedApp } = await makeApp({}, dataDir);
+    try {
+      const headers = { authorization: `Bearer ${bootstrapToken}` };
+      const attempt = await unapprovedApp.inject({
+        method: 'PUT',
+        url: `/v1/projects/${projectId}/repository`,
+        headers,
+        payload: { url: fixture.fileUrl, ref: 'main' },
+      });
+      expect(attempt.statusCode).toBe(400);
+      expect((attempt.json() as { error: { details?: { reason?: string } } }).error.details?.reason).toBe(
+        'local_path_not_approved',
+      );
+    } finally {
+      await unapprovedApp.close();
+    }
   });
 });
 

@@ -7,11 +7,13 @@ import { resolveLocalSnapshot } from './snapshot.js';
  * Project repository connection records.
  *
  * A connection records the approved URL, ref, checkout path and checkout
- * policy — never any credential material (credential-bearing URLs are
- * rejected outright). When the URL resolves to a local git worktree the
- * record also carries the resolved commit, dirty snapshot flag and content
- * hash; remote URLs persist the approved reference and resolve these fields
- * when the workspace checkout exists. One repository per project.
+ * policy — never any credential material (any https/file userinfo, and any
+ * ssh/git password, is rejected outright). When the URL resolves to a local
+ * git worktree under an OPERATOR-APPROVED snapshot root, the record also
+ * carries the resolved commit, dirty snapshot flag and content hash; remote
+ * URLs (and unapproved local paths, which are refused) persist the approved
+ * reference and resolve these fields when the workspace checkout exists.
+ * One repository per project.
  */
 
 export interface CheckoutPolicy {
@@ -89,12 +91,20 @@ function validateUrl(raw: string): string {
   } catch {
     validationError('Repository URL is not a valid absolute URL', 'invalid_url');
   }
-  if (!ALLOWED_URL_SCHEMES.has(parsed.protocol.replace(/:$/, ''))) {
+  const scheme = parsed.protocol.replace(/:$/, '');
+  if (!ALLOWED_URL_SCHEMES.has(scheme)) {
     validationError('Repository URL scheme is not approved (allowed: file, https, ssh, git)', 'scheme_not_approved');
   }
-  // Credential material in the URL is never accepted, stored or proxied.
-  if (parsed.password !== '' || parsed.username.includes(':')) {
-    validationError('Repository URL must not contain embedded credentials', 'credentials_in_url');
+  // Credential material in the URL is never accepted, stored, returned or
+  // proxied. HTTPS and file URLs must not carry ANY userinfo: the common
+  // token-as-username forms (`https://<token>@host/...`, including
+  // percent-encoded variants) are credentials, not usernames, and the URL
+  // parser decodes nothing here — any non-empty userinfo is refused. SSH/git
+  // keep an ordinary plain username (git@host) but never a password.
+  if (parsed.username !== '' || parsed.password !== '') {
+    if (scheme === 'https' || scheme === 'file' || parsed.password !== '') {
+      validationError('Repository URL must not contain embedded credentials', 'credentials_in_url');
+    }
   }
   return raw;
 }
@@ -157,22 +167,30 @@ export async function connectRepository(
   projectId: string,
   principalId: string,
   input: RepositoryInput,
+  approvedSnapshotRoots: string[],
 ): Promise<RepositoryRecord> {
-  const prepared = await prepareRepositoryConnection(input);
+  const prepared = await prepareRepositoryConnection(input, approvedSnapshotRoots);
   return withTransaction(db, () => writeRepositoryRecord(db, projectId, principalId, prepared));
 }
 
 /**
- * Validate the input and resolve the local snapshot (read-only git access).
- * Runs OUTSIDE any transaction so handlers can wrap the write with events
- * and idempotency records afterwards.
+ * Validate the input and resolve the local snapshot (read-only git access
+ * under an operator-approved snapshot root). Runs OUTSIDE any transaction so
+ * handlers can wrap the write with events and idempotency records
+ * afterwards.
  */
-export async function prepareRepositoryConnection(input: RepositoryInput): Promise<{
+export async function prepareRepositoryConnection(
+  input: RepositoryInput,
+  approvedSnapshotRoots: string[],
+): Promise<{
   validated: { url: string; ref: string; checkoutPath: string; checkoutPolicy: CheckoutPolicy };
   snapshot: LocalSnapshot | null;
 }> {
+  // Validation (including credential rejection) runs before anything else,
+  // so rejected URLs never reach snapshot resolution, persistence, events
+  // or error envelopes.
   const validated = validateRepositoryInput(input);
-  const snapshot = await resolveLocalSnapshot(validated.url, validated.ref);
+  const snapshot = await resolveLocalSnapshot(validated.url, validated.ref, approvedSnapshotRoots);
   return { validated, snapshot };
 }
 

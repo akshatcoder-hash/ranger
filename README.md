@@ -81,6 +81,7 @@ Environment variables (all optional except `RANGER_DATA_DIR`):
 | `RANGER_PREVIEW_PORT` | Preview gateway port | `3101` |
 | `RANGER_SECRET_FILE` | Protected file (mode 0600) with provider keys | unset |
 | `RANGER_LIVE_BUDGET_FILE` | Shared live-test budget ledger JSON | unset |
+| `RANGER_APPROVED_SNAPSHOT_ROOTS` | Absolute paths (path-delimiter separated) of operator-approved synthetic roots whose local git worktrees may be inspected for repository snapshots | unset (local inspection denied) |
 | `RANGER_CONFIG_FILE` | Optional limits/provider overrides JSON | unset |
 | `RANGER_LOG_LEVEL` | `fatal..debug` | `info` |
 
@@ -101,8 +102,10 @@ npm run start:preview                    # preview gateway on 127.0.0.1:3101
 `bootstrap --create-principal` creates the initial principal and writes its
 bearer credential to `<RANGER_DATA_DIR>/bootstrap-credential.txt` (mode
 0600, outside the repository). The secret is shown nowhere else — the
-database stores only a lookup key and a scrypt hash. Additional principals
-for multi-user drivers:
+database stores only a lookup key and a scrypt hash. The credential file is
+written before any database row: a collision with an existing file (which is
+never overwritten) or a write failure leaves retryable state with no
+orphaned credential. Additional principals for multi-user drivers:
 
 ```sh
 npm run bootstrap -- --additional-principal "Second Operator" --credential-file /path/outside/repo/second-credential.txt
@@ -122,9 +125,25 @@ commit/dirty/hash for local repositories), conversations with their
 messages/questions/answers and the full event history all persist across API
 restarts.
 
-Mutating routes accept a scoped `Idempotency-Key` header: an identical retry
-returns the stored result with no second side effect or duplicate event;
-reusing a key with different input returns `409 conflict`. Project events
+Repository URLs never carry credential material: any userinfo on an `https`
+URL (including the username-only and percent-encoded token forms) and any
+password on `ssh`/`git` URLs are rejected with `credentials_in_url` before
+anything is stored, emitted or echoed; plain SSH usernames (`git@host`)
+remain usable. Local `file://`/absolute-path repositories are inspected
+(read-only git) ONLY when they live under an operator-approved synthetic
+root (`RANGER_APPROVED_SNAPSHOT_ROOTS`): checks are realpath/symlink-safe,
+unapproved paths are refused with `local_path_not_approved` before any
+filesystem probing, and inspection never executes repository-configured
+fsmonitor helpers or hooks (`--no-optional-locks`, `core.fsmonitor=false`,
+`core.hooksPath=/dev/null`, global/system git config ignored). Remote
+references persist without host inspection and resolve in the workspace
+checkout.
+
+Mutating routes accept a scoped `Idempotency-Key` header (scoped to the
+operation, project AND authenticated principal, so the same key and body
+from two principals are independent authorized executions): an identical
+retry returns the stored result with no second side effect or duplicate
+event; reusing a key with different input returns `409 conflict`. Project events
 are appended in the SAME transaction as the state mutation that caused them
 (schema-validated against the declared per-type data schemas), which is what
 makes replay exact: `GET /v1/projects/{id}/events` replays by opaque cursor

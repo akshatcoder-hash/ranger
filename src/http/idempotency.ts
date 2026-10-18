@@ -7,13 +7,19 @@ import { Errors } from '../errors.js';
 /**
  * Scoped mutation idempotency.
  *
- * Mutating routes accept an `Idempotency-Key` header scoped to the operation
- * and project. The FIRST execution of (scope, key) runs the mutation and
- * stores its successful response body in the SAME transaction as the state
- * mutation and its events. An identical retry (same canonical request hash)
- * returns the stored result with no second side effect and no duplicate
- * event; reuse of the key with different input is a `conflict`. Without a
- * key the mutation executes every time (idempotency is opt-in by callers).
+ * Mutating routes accept an `Idempotency-Key` header scoped to the
+ * operation, project AND authenticated principal. The FIRST execution of
+ * (scope, key) runs the mutation and stores its successful response body in
+ * the SAME transaction as the state mutation and its events. An identical
+ * retry (same canonical request hash) returns the stored result with no
+ * second side effect and no duplicate event; reuse of the key with
+ * different input is a `conflict`. Without a key the mutation executes
+ * every time (idempotency is opt-in by callers).
+ *
+ * The principal is part of the scope: the same key and body presented by
+ * two principals are independent authorized executions and never replay the
+ * other's stored payload (auth middleware guarantees principalId on every
+ * mutating route).
  *
  * The stored response is the handler's domain result; the per-request
  * requestId envelope is injected per response (and therefore differs on a
@@ -62,7 +68,9 @@ interface IdempotencySqlRow {
  * `execute` performs the state mutation AND its event appends and must not
  * open its own transaction. With an Idempotency-Key, first execution
  * commits mutation + events + record in ONE transaction; identical retries
- * replay the stored response; conflicting reuse is a 409. Without a key the
+ * replay the stored response; conflicting reuse is a 409. The scope binds
+ * the operation, project and authenticated principal, so identical requests
+ * from different principals never share stored results. Without a key the
  * mutation still commits atomically.
  */
 export function runScopedMutation<T>(
@@ -73,7 +81,7 @@ export function runScopedMutation<T>(
   execute: () => T,
 ): T {
   return withIdempotentMutation(db, {
-    scope: `${operationId}:${projectId}`,
+    scope: `${operationId}:${projectId}:${req.principalId ?? 'unauthenticated'}`,
     key: idempotencyKeyFrom(req),
     requestHash: requestHash({ params: req.params, query: req.query, body: req.body }),
     execute,

@@ -42,7 +42,7 @@ interface ConnectRepositoryBody {
 }
 
 export function registerRepositoryHandlers(ctx: HandlerContext, handlers: Map<string, OperationHandler>): void {
-  const { db } = ctx;
+  const { db, config } = ctx;
 
   handlers.set('connectRepository', async (req: FastifyRequest) => {
     const principalId = requirePrincipalId(req);
@@ -52,13 +52,18 @@ export function registerRepositoryHandlers(ctx: HandlerContext, handlers: Map<st
     if (typeof body.url !== 'string' || typeof body.ref !== 'string') {
       throw Errors.validation('url and ref are required');
     }
-    // Read-only snapshot resolution happens outside the transaction.
-    const prepared = await prepareRepositoryConnection({
-      url: body.url,
-      ref: body.ref,
-      checkoutPath: body.checkoutPath,
-      checkoutPolicy: body.checkoutPolicy,
-    });
+    // Read-only snapshot resolution happens outside the transaction and only
+    // under operator-approved snapshot roots; unapproved local paths are
+    // refused without any host inspection.
+    const prepared = await prepareRepositoryConnection(
+      {
+        url: body.url,
+        ref: body.ref,
+        checkoutPath: body.checkoutPath,
+        checkoutPolicy: body.checkoutPolicy,
+      },
+      config.approvedSnapshotRoots,
+    );
     const projectId = params.projectId;
     const record = runScopedMutation(db, req, 'connectRepository', projectId, () => {
       const written = writeRepositoryRecord(db, projectId, principalId, prepared);

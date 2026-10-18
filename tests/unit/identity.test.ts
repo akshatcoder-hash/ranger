@@ -1,5 +1,14 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -63,6 +72,12 @@ function expectAppErrorCode(fn: () => unknown, code: string): void {
   }
   expect(isAppError(thrown), `expected AppError, got ${String(thrown)}`).toBe(true);
   expect((thrown as { code?: string }).code, `expected code ${code}`).toBe(code);
+}
+
+/** Row count helper for asserting that failed writes left nothing behind. */
+function countRows(db: DatabaseSync, table: 'principals' | 'credentials'): number {
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
+  return row.n;
 }
 
 beforeEach(() => {
@@ -353,13 +368,53 @@ describe('repository input validation', () => {
       expectAppErrorCode(() => validateRepositoryInput(bad), 'validation_failed');
     }
   });
+
+  it('rejects ANY https userinfo, including username-only and percent-encoded token forms', () => {
+    for (const bad of [
+      'https://token@git.example/org/app.git',
+      'https://ghp_abcd1234EF@git.example/org/app.git',
+      'https://%74%6Fken@git.example/org/app.git',
+      'https://user%3Apass@git.example/org/app.git',
+      'https://tok%65n-more@git.example/org/app.git',
+    ]) {
+      let thrown: unknown;
+      try {
+        validateRepositoryInput({ url: bad, ref: 'main' });
+      } catch (cause) {
+        thrown = cause;
+      }
+      expect(isAppError(thrown), `expected ${bad} to be rejected`).toBe(true);
+      expect((thrown as { code: string }).code, 'stable validation code').toBe('validation_failed');
+      expect((thrown as { details?: { reason?: string } }).details?.reason, 'stable reason class').toBe(
+        'credentials_in_url',
+      );
+      // The error never echoes the rejected URL.
+      expect((thrown as { message: string }).message.includes('git.example')).toBe(false);
+    }
+    // Ordinary SSH/git plain usernames stay usable; passwords never do.
+    expect(validateRepositoryInput({ url: 'ssh://git@host/org/app.git', ref: 'main' }).url).toBe(
+      'ssh://git@host/org/app.git',
+    );
+    expect(validateRepositoryInput({ url: 'git://git@host/org/app.git', ref: 'main' }).url).toBe(
+      'git://git@host/org/app.git',
+    );
+    let sshPassword: unknown;
+    try {
+      validateRepositoryInput({ url: 'ssh://git:pass@host/org/app.git', ref: 'main' });
+    } catch (cause) {
+      sshPassword = cause;
+    }
+    expect((sshPassword as { details?: { reason?: string } })?.details?.reason).toBe('credentials_in_url');
+  });
 });
 
 describe('local repository snapshot', () => {
   let fixture: ReturnType<typeof createFixtureRepo>;
+  let baseDir: string;
 
   beforeEach(() => {
-    fixture = createFixtureRepo(mkdtempSync(path.join(tmpdir(), 'ranger-snapshot-')));
+    baseDir = mkdtempSync(path.join(tmpdir(), 'ranger-snapshot-'));
+    fixture = createFixtureRepo(baseDir);
   });
 
   it('maps file:// URLs and absolute paths to local paths, not remote URLs', () => {
@@ -368,43 +423,91 @@ describe('local repository snapshot', () => {
     expect(localRepositoryPath('https://git.example/org/app')).toBeNull();
   });
 
-  it('resolves the real commit, dirty flag and content hash for the ref', async () => {
-    const snapshot = await resolveLocalSnapshot(fixture.fileUrl, 'main');
+  it('resolves the real commit, dirty flag and content hash for the ref inside an approved root', async () => {
+    const snapshot = await resolveLocalSnapshot(fixture.fileUrl, 'main', [baseDir]);
     expect(snapshot).not.toBeNull();
     const head = execFileSync('git', ['-C', fixture.root, 'rev-parse', 'HEAD']).toString().trim();
     expect(snapshot!.commit).toBe(head);
     expect(snapshot!.dirty).toBe(false);
     expect(snapshot!.contentHash).toMatch(/^[0-9a-f]{64}$/);
 
-    const afterEdit = await resolveLocalSnapshot(fixture.fileUrl, 'main');
+    const afterEdit = await resolveLocalSnapshot(fixture.fileUrl, 'main', [baseDir]);
     expect(afterEdit!.contentHash).toBe(snapshot!.contentHash);
     expect(afterEdit!.dirty).toBe(false);
 
     writeFileSync(fixture.trackedFile, 'export const version = 2;\n');
-    const dirty = await resolveLocalSnapshot(fixture.fileUrl, 'main');
+    const dirty = await resolveLocalSnapshot(fixture.fileUrl, 'main', [baseDir]);
     expect(dirty!.dirty).toBe(true);
     expect(dirty!.commit).toBe(head);
     expect(dirty!.contentHash).not.toBe(snapshot!.contentHash);
   });
 
   it('fails explicitly when the ref does not resolve or the path is not a git worktree', async () => {
-    await expect(resolveLocalSnapshot(fixture.fileUrl, 'no-such-branch')).rejects.toMatchObject({
+    await expect(resolveLocalSnapshot(fixture.fileUrl, 'no-such-branch', [baseDir])).rejects.toMatchObject({
       code: 'validation_failed',
     });
     const plain = mkdtempSync(path.join(tmpdir(), 'ranger-not-git-'));
-    await expect(resolveLocalSnapshot(`file://${plain}`, 'main')).rejects.toMatchObject({
+    await expect(resolveLocalSnapshot(`file://${plain}`, 'main', [tmpdir()])).rejects.toMatchObject({
       code: 'validation_failed',
     });
+  });
+
+  it('denies inspection outside operator-approved roots, including with no roots approved', async () => {
+    const notApproved = { code: 'validation_failed', details: { reason: 'local_path_not_approved' } };
+    // Default-deny: no approved roots means no local inspection at all.
+    await expect(resolveLocalSnapshot(fixture.fileUrl, 'main', [])).rejects.toMatchObject(notApproved);
+    await expect(resolveLocalSnapshot(fixture.root, 'main', [])).rejects.toMatchObject(notApproved);
+    // A root that does not contain the fixture denies inspection too.
+    const elsewhere = mkdtempSync(path.join(tmpdir(), 'ranger-elsewhere-'));
+    await expect(resolveLocalSnapshot(fixture.fileUrl, 'main', [elsewhere])).rejects.toMatchObject(notApproved);
+  });
+
+  it('denies symlink escapes out of an approved root (repo root and .git entry)', async () => {
+    const outside = mkdtempSync(path.join(tmpdir(), 'ranger-outside-'));
+    const outsideRepo = createFixtureRepo(outside, 'outside-app');
+    const link = path.join(baseDir, 'escape');
+    symlinkSync(outsideRepo.root, link);
+    const notApproved = { code: 'validation_failed', details: { reason: 'local_path_not_approved' } };
+    await expect(resolveLocalSnapshot(`file://${link}`, 'main', [baseDir])).rejects.toMatchObject(notApproved);
+
+    // A symlinked .git pointing outside the approved root is denied as well.
+    const inside = createFixtureRepo(baseDir, 'inside-app');
+    const otherOutside = createFixtureRepo(mkdtempSync(path.join(tmpdir(), 'ranger-outside-git-')), 'gitdir-app');
+    rmSync(path.join(inside.root, '.git'), { recursive: true, force: true });
+    symlinkSync(path.join(otherOutside.root, '.git'), path.join(inside.root, '.git'));
+    await expect(resolveLocalSnapshot(`file://${inside.root}`, 'main', [baseDir])).rejects.toMatchObject(notApproved);
+  });
+
+  it('never executes repository-configured fsmonitor helpers while resolving a snapshot', async () => {
+    const marker = path.join(baseDir, 'fsmonitor-marker');
+    const sentinel = path.join(baseDir, 'sentinel-fsmonitor.sh');
+    writeFileSync(sentinel, `#!/bin/sh\ntouch '${marker}'\nprintf ''\nexit 0\n`);
+    chmodSync(sentinel, 0o755);
+    // Plant the helper exactly where an attacker-controlled repository would
+    // put it: the repo's own git config.
+    execFileSync('git', ['-C', fixture.root, 'config', 'core.fsmonitor', sentinel]);
+
+    // Positive control: an unhardened git invocation honors the repo config
+    // and runs the (harmless, local, self-removing) sentinel.
+    execFileSync('git', ['-C', fixture.root, 'status', '--porcelain'], { stdio: 'ignore' });
+    expect(existsSync(marker), 'sentinel must run without hardening (positive control)').toBe(true);
+    rmSync(marker);
+
+    const snapshot = await resolveLocalSnapshot(fixture.fileUrl, 'main', [baseDir]);
+    expect(snapshot).not.toBeNull();
+    expect(existsSync(marker), 'hardened inspection must not execute the repo-configured helper').toBe(false);
   });
 });
 
 describe('repository records', () => {
   let fixture: ReturnType<typeof createFixtureRepo>;
+  let baseDir: string;
   let principalId: string;
   let projectId: string;
 
   beforeEach(() => {
-    fixture = createFixtureRepo(mkdtempSync(path.join(tmpdir(), 'ranger-repo-')));
+    baseDir = mkdtempSync(path.join(tmpdir(), 'ranger-repo-'));
+    fixture = createFixtureRepo(baseDir);
     const principal = createPrincipal(db, 'Repo Owner');
     principalId = principal.id;
     projectId = createProjectRow(db, { name: 'P', engineerDisplayName: 'E', principalId }).id;
@@ -414,7 +517,7 @@ describe('repository records', () => {
     const record = await connectRepository(db, projectId, principalId, {
       url: fixture.fileUrl,
       ref: 'main',
-    });
+    }, [baseDir]);
     const head = execFileSync('git', ['-C', fixture.root, 'rev-parse', 'HEAD']).toString().trim();
     expect(record.commit).toBe(head);
     expect(record.checkoutPolicy).toEqual({ shallow: false, submodules: false });
@@ -428,9 +531,9 @@ describe('repository records', () => {
   });
 
   it('replaces the reference on reconnect and deletes on disconnect', async () => {
-    await connectRepository(db, projectId, principalId, { url: fixture.fileUrl, ref: 'main' });
+    await connectRepository(db, projectId, principalId, { url: fixture.fileUrl, ref: 'main' }, [baseDir]);
     execFileSync('git', ['-C', fixture.root, 'branch', 'other']);
-    await connectRepository(db, projectId, principalId, { url: fixture.fileUrl, ref: 'other' });
+    await connectRepository(db, projectId, principalId, { url: fixture.fileUrl, ref: 'other' }, [baseDir]);
     expect(getRepositoryRecord(db, projectId)?.ref).toBe('other');
     disconnectRepository(db, projectId);
     expect(getRepositoryRecord(db, projectId)).toBeNull();
@@ -508,5 +611,66 @@ describe('bootstrap credential', () => {
         credentialPath: path.join(repoRoot, 'leak.txt'),
       }),
     ).toThrowError(/outside the repository/);
+  });
+
+  it('a credential-file collision preserves the existing file and leaves no orphan credential', () => {
+    const repoRoot = mkdtempSync(path.join(tmpdir(), 'ranger-repo-root-'));
+    const bootstrapDir = mkdtempSync(path.join(tmpdir(), 'ranger-bootstrap-'));
+    const existingPath = path.join(bootstrapDir, 'bootstrap-credential.txt');
+    writeFileSync(existingPath, 'PRESERVE-ME\n', { mode: 0o600 });
+
+    expect(() =>
+      ensureInitialPrincipal(db, { dataDir: bootstrapDir, repoRoot, displayName: 'Operator' }),
+    ).toThrowError(/already exists/);
+    // The pre-existing credential file is untouched.
+    expect(readFileSync(existingPath, 'utf8')).toBe('PRESERVE-ME\n');
+    // No principal or credential rows were created (retryable state, no
+    // orphan credential whose secret was never delivered).
+    expect(countRows(db, 'principals')).toBe(0);
+    expect(countRows(db, 'credentials')).toBe(0);
+
+    // Bootstrap is retryable with a fresh path.
+    const retry = ensureInitialPrincipal(db, {
+      dataDir: bootstrapDir,
+      repoRoot,
+      displayName: 'Operator',
+      credentialPath: path.join(bootstrapDir, 'fresh-credential.txt'),
+    });
+    expect(retry.created).toBe(true);
+    expect(readFileSync(retry.credentialPath, 'utf8').startsWith('RANGER_BOOTSTRAP_TOKEN=')).toBe(true);
+    expect(countRows(db, 'credentials')).toBe(1);
+  });
+
+  it('a credential-file write failure creates no db rows and bootstrap stays retryable', () => {
+    const repoRoot = mkdtempSync(path.join(tmpdir(), 'ranger-repo-root-'));
+    const bootstrapDir = mkdtempSync(path.join(tmpdir(), 'ranger-bootstrap-'));
+    const brokenPath = path.join(bootstrapDir, 'missing-directory', 'credential.txt');
+
+    expect(() =>
+      ensureInitialPrincipal(db, { dataDir: bootstrapDir, repoRoot, displayName: 'Operator', credentialPath: brokenPath }),
+    ).toThrow();
+    expect(countRows(db, 'principals')).toBe(0);
+    expect(countRows(db, 'credentials')).toBe(0);
+
+    const retry = ensureInitialPrincipal(db, { dataDir: bootstrapDir, repoRoot, displayName: 'Operator' });
+    expect(retry.created).toBe(true);
+    expect(statSync(retry.credentialPath).mode & 0o777).toBe(0o600);
+  });
+
+  it('an additional principal colliding with an existing file leaves no orphan rows', () => {
+    const repoRoot = mkdtempSync(path.join(tmpdir(), 'ranger-repo-root-'));
+    const bootstrapDir = mkdtempSync(path.join(tmpdir(), 'ranger-bootstrap-'));
+    ensureInitialPrincipal(db, { dataDir: bootstrapDir, repoRoot, displayName: 'Operator' });
+    const secondPath = path.join(bootstrapDir, 'second-credential.txt');
+    createAdditionalPrincipal(db, { repoRoot, displayName: 'Second', credentialPath: secondPath });
+    const principalsBefore = countRows(db, 'principals');
+
+    expect(() =>
+      createAdditionalPrincipal(db, { repoRoot, displayName: 'Third', credentialPath: secondPath }),
+    ).toThrowError(/already exists/);
+    expect(countRows(db, 'principals')).toBe(principalsBefore);
+    expect(countRows(db, 'credentials')).toBe(2); // bootstrap + second only
+    // The winning credential file is preserved.
+    expect(readFileSync(secondPath, 'utf8').startsWith('RANGER_BOOTSTRAP_TOKEN=')).toBe(true);
   });
 });
