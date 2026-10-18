@@ -1,5 +1,6 @@
 import { Sandbox, type SandboxInfo } from '@insforge/instabox-sdk';
 import { translateCommandExitError } from './diagnostics.js';
+import { elevatedKillCommand, processListCommand } from './signals.js';
 import type {
   InstaboxProvider,
   ProviderCommandRequest,
@@ -112,15 +113,21 @@ export class SdkInstaboxProvider implements InstaboxProvider {
   }
 
   async signal(request: ProviderSignal): Promise<boolean> {
+    // The workload runs under its own UID: the template identity cannot
+    // signal it without elevation. The kill command is fixed over a
+    // validated integer pid (see signals.ts).
+    const command = elevatedKillCommand(request.pid, request.signal === 'KILL' ? 'KILL' : 'TERM');
+    if (command === null) return false;
     const sandbox = await Sandbox.connect(request.machineId, { ...connection(this.apiKey), resume: false });
-    const signal = request.signal === 'KILL' ? 'KILL' : 'TERM';
-    const result = await sandbox.commands.exec(`kill -${signal} -- -${request.pid}`, { timeoutMs: 10_000 });
+    const result = await sandbox.commands.exec(command, { timeoutMs: 10_000 });
     return result.exitCode === 0;
   }
 
   async livePids(machineId: string, leaderPid: number): Promise<number[]> {
+    const command = processListCommand(leaderPid);
+    if (command === null) return [];
     const sandbox = await Sandbox.connect(machineId, { ...connection(this.apiKey), resume: false });
-    const result = await sandbox.commands.exec(`ps -o pid= -g ${leaderPid}`, { timeoutMs: 10_000 });
+    const result = await sandbox.commands.exec(command, { timeoutMs: 10_000 });
     if (result.exitCode !== 0) return [];
     return result.stdout
       .split('\n')

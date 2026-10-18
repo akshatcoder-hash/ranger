@@ -1,4 +1,4 @@
-import { WORKLOAD_PROJECT, fencedWorkloadCommand } from './limits.js';
+import { WORKLOAD_PROJECT, fencedWorkloadCommand, scanQuotedToken } from './limits.js';
 
 /** Environment field carrying the project-relative write target. */
 export const WRITE_PATH_ENV = 'RANGER_WRITE_PATH';
@@ -46,12 +46,29 @@ function shellQuote(value: string): string {
 }
 
 /**
- * The full fenced command for one project write. The caller supplies the
- * target via WRITE_PATH_ENV and the base64 payload on stdin. No cwd is set
- * at the provider level: the fence chdirs after the privilege drop.
+ * The full fenced command for one project write. The target rides the
+ * post-drop payload as a command-prefix assignment, so the post-drop shell
+ * itself parses it and nothing depends on sudo preserving the caller's
+ * environment (sudo env_reset strips ambient variables). The base64 payload
+ * is delivered on stdin. No cwd is set at the provider level: the fence
+ * chdirs after the privilege drop.
  */
-export function guestWriteCommand(): string {
-  return fencedWorkloadCommand(`python3 -c ${shellQuote(GUEST_WRITE_PY)}`);
+export function guestWriteCommand(relativePath: string): string {
+  const assignment = `${WRITE_PATH_ENV}=${shellQuote(relativePath)}`;
+  return fencedWorkloadCommand(`${assignment} python3 -c ${shellQuote(GUEST_WRITE_PY)}`);
+}
+
+/**
+ * Extract the embedded write target from a fenced payload. Used by the fake
+ * provider to model the wire exactly as the post-drop shell would parse it.
+ */
+export function parseWriteTargetFromPayload(payload: string): string | null {
+  const marker = `${WRITE_PATH_ENV}='`;
+  const start = payload.indexOf(marker);
+  if (start === -1) return null;
+  const token = scanQuotedToken(payload, start + WRITE_PATH_ENV.length + 1);
+  if (token === null || payload[token.end] !== ' ') return null;
+  return token.value;
 }
 
 /** Command string written relative to the project root, for diagnostics. */

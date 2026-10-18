@@ -8,7 +8,9 @@ import type {
   ProviderSignal,
   ProviderSshCredentials,
 } from './provider.js';
-import { WRITE_PATH_ENV } from './guest-write.js';
+import { MAX_STDIN_BYTES } from '@insforge/instabox-sdk';
+import { parseWriteTargetFromPayload } from './guest-write.js';
+import { splitFencedCommand } from './limits.js';
 import { sanitizeProviderError } from './diagnostics.js';
 
 interface FakeProcess {
@@ -140,6 +142,11 @@ export class FakeInstabox implements InstaboxProvider {
 
   async exec(request: ProviderCommandRequest): Promise<ProviderCommandResult> {
     this.commands.push(request);
+    // The real SDK rejects stdin above its cap before the HTTP call; model
+    // the same rule using the SDK's own constant so wire tests are faithful.
+    if (request.stdin !== undefined && Buffer.byteLength(request.stdin, 'utf8') > MAX_STDIN_BYTES) {
+      throw new Error(`stdin is longer than ${MAX_STDIN_BYTES} bytes`);
+    }
     if (request.background === true) {
       const pid = this.nextPid;
       this.nextPid += 1;
@@ -148,6 +155,8 @@ export class FakeInstabox implements InstaboxProvider {
     }
     const cwdDenial = this.cwdDenial(request);
     if (cwdDenial !== null) return cwdDenial;
+    const fenced = splitFencedCommand(request.command);
+    if (fenced !== null) return this.interpretWorkload(request, fenced.payload);
     return this.interpret(request);
   }
 
@@ -163,17 +172,54 @@ export class FakeInstabox implements InstaboxProvider {
     return { stdout: '', stderr: detail, exitCode: 126, timedOut: false, truncated: false, error: detail };
   }
 
-  private interpret(request: ProviderCommandRequest): ProviderCommandResult {
+  /**
+   * Interpret the post-drop payload of a fenced workload command. The fake
+   * models the identity boundary: inside the fence the caller is the
+   * restricted user, so payload-side sudo fails even though the trusted
+   * launcher itself used sudo for the setup.
+   */
+  private interpretWorkload(request: ProviderCommandRequest, payload: string): ProviderCommandResult {
     const machineId = request.machineId;
     const files = this.files.get(machineId) ?? new Map<string, string>();
     this.files.set(machineId, files);
     const planted = this.symlinks.get(machineId) ?? new Map<string, string>();
 
-    // Real guest write protocol: no-follow script, target via env, payload
-    // on stdin. Modeled with the same refusals as the guest script.
-    if (request.envs?.[WRITE_PATH_ENV] !== undefined && request.command.includes('python3 -c')) {
-      return this.interpretWrite(request, files, planted);
+    // Real guest write protocol: no-follow script, target as a post-drop
+    // assignment, payload on stdin. Modeled with the same refusals as the
+    // guest script.
+    const writeTarget = parseWriteTargetFromPayload(payload);
+    if (writeTarget !== null && payload.includes('python3 -c')) {
+      return this.interpretWrite(request, files, planted, writeTarget);
     }
+    if (payload.includes('echo')) {
+      const tokens = [...payload.matchAll(/'([^'\\]+)'/g)].map((match) => match[1] ?? '');
+      const text = tokens.filter((token) => token !== 'echo').at(-1) ?? 'hello';
+      return { stdout: `${text}\n`, stderr: '', exitCode: 0, timedOut: false, truncated: false };
+    }
+    if (payload.includes('id -u')) {
+      return { stdout: '1100\n', stderr: '', exitCode: 0, timedOut: false, truncated: false };
+    }
+    if (payload.includes('sudo -n')) {
+      return { stdout: '', stderr: 'sudo: a password is required\n', exitCode: 1, timedOut: false, truncated: false };
+    }
+    if (payload.includes('docker')) {
+      return { stdout: '', stderr: 'permission denied\n', exitCode: 1, timedOut: false, truncated: false };
+    }
+    // Fail closed: an unmodeled command must not look like a quiet success.
+    return {
+      stdout: '',
+      stderr: 'fake-provider-unsupported-command\n',
+      exitCode: 127,
+      timedOut: false,
+      truncated: false,
+      error: 'fake-provider-unsupported-command',
+    };
+  }
+
+  private interpret(request: ProviderCommandRequest): ProviderCommandResult {
+    const machineId = request.machineId;
+    const files = this.files.get(machineId) ?? new Map<string, string>();
+    this.files.set(machineId, files);
     if (request.command.includes('useradd') || request.command.includes('bootstrap-complete')) {
       return { stdout: 'bootstrap-complete\n', stderr: '', exitCode: 0, timedOut: false, truncated: false };
     }
@@ -206,6 +252,7 @@ export class FakeInstabox implements InstaboxProvider {
     request: ProviderCommandRequest,
     files: Map<string, string>,
     planted: Map<string, string>,
+    relativePath: string,
   ): ProviderCommandResult {
     const refused = (errno: number): ProviderCommandResult => ({
       stdout: '',
@@ -219,7 +266,6 @@ export class FakeInstabox implements InstaboxProvider {
       this.failWrite = null;
       return { stdout: '', stderr: `${reason}\n`, exitCode: 4, timedOut: false, truncated: false };
     }
-    const relativePath = request.envs?.[WRITE_PATH_ENV] ?? '';
     const parts = relativePath.split('/').filter((part) => part !== '' && part !== '.');
     if (relativePath.startsWith('/') || parts.length === 0 || parts.includes('..')) return refused(0);
     // O_NOFOLLOW parity: any workload-planted symlink on the path is

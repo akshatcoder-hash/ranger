@@ -13,13 +13,13 @@ import { withTransaction } from '../db/db.js';
 import {
   COMMAND_OUTPUT_CAP_BYTES,
   FIXED_PREVIEW_PORTS,
-  SOURCE_FILE_CAP_BYTES,
+  GUEST_TRANSPORT_CAP_BYTES,
   VM_KILL_TIMEOUT_MS,
   WORKLOAD_USER,
   fencedWorkloadCommand,
   isFixedPreviewPort,
 } from './limits.js';
-import { WRITE_PATH_ENV, guestWriteCommand } from './guest-write.js';
+import { guestWriteCommand } from './guest-write.js';
 import { bootstrapWorkload } from './bootstrap.js';
 import { armWorkspaceWatchdog, destroyFailedBootstrap, destroyRecordedWorkspace } from './cleanup.js';
 import { SdkInstaboxProvider } from './sdk-provider.js';
@@ -201,19 +201,26 @@ export class WorkspaceService {
 
   async writeFile(projectId: string, relativePath: string, content: Buffer): Promise<{ path: string; sizeBytes: number }> {
     assertSafeRelative(relativePath);
-    if (content.byteLength > SOURCE_FILE_CAP_BYTES) {
-      throw Errors.validation('Workspace file exceeds the size cap', { reason: 'file_too_large' });
+    // Derived from the SDK stdin rule: base64 of a raw payload larger than
+    // this would exceed MAX_STDIN_BYTES and fail the SDK call. Refuse before
+    // exec so oversized writes can never surface as a provider 500.
+    if (content.byteLength > GUEST_TRANSPORT_CAP_BYTES) {
+      throw Errors.validation(
+        `Workspace file exceeds the guest transport cap of ${GUEST_TRANSPORT_CAP_BYTES} bytes`,
+        { reason: 'file_too_large' },
+      );
     }
     const workspace = this.requireRunning(projectId);
-    // Real guest write: fenced workload identity, no provider-level cwd, the
-    // no-follow script refuses workload-planted symlinks. The source is
-    // recorded only after the guest write succeeded, so a failed write is
-    // never presented as saved source.
+    // Real guest write: fenced workload identity with a trusted sudo'd
+    // launcher, no provider-level cwd, the no-follow script refuses
+    // workload-planted symlinks. The target rides the fenced payload (not
+    // ambient env) and the payload bytes ride stdin. The source is recorded
+    // only after the guest write succeeded, so a failed write is never
+    // presented as saved source.
     const written = await providerFor(this.options).exec({
       machineId: workspace.machineId!,
-      command: guestWriteCommand(),
+      command: guestWriteCommand(relativePath),
       user: WORKLOAD_USER,
-      envs: { [WRITE_PATH_ENV]: relativePath },
       stdin: content.toString('base64'),
       timeoutMs: 30_000,
     });

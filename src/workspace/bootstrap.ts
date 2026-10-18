@@ -36,7 +36,7 @@ export function bootstrapScript(): string {
     'set -eu',
     ROOT_PATH,
     'command -v useradd >/dev/null',
-    'command -v runuser >/dev/null',
+    'command -v sudo >/dev/null',
     'command -v nft >/dev/null',
     'command -v setpriv >/dev/null',
     'test -f /sys/fs/cgroup/cgroup.controllers',

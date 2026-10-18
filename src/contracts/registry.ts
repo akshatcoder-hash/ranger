@@ -13,6 +13,8 @@ import {
 } from './schema.js';
 import type { JSONSchema } from './schema.js';
 import { EVENT_TYPE_NAMES } from './events.js';
+import { GUEST_TRANSPORT_CAP_BYTES } from '../workspace/limits.js';
+import { MAX_STDIN_BYTES } from '@insforge/instabox-sdk';
 
 /**
  * The single source of truth for the Ranger v1 frontend contract.
@@ -1222,7 +1224,12 @@ function workspaceFamily(): OperationDef[] {
       auth: 'principal',
       mutating: true,
       params: projectParams(),
-      body: obj(['path', 'contentBase64'], { path: str({ minLength: 1 }), contentBase64: str() }),
+      body: obj(['path', 'contentBase64'], {
+        path: str({ minLength: 1 }),
+        contentBase64: str({
+          description: `Base64 content. The decoded raw file size may be at most ${GUEST_TRANSPORT_CAP_BYTES} bytes: the payload is transported base64-encoded on the guest stdin channel, which the SDK caps at ${MAX_STDIN_BYTES} bytes of text. Larger writes are refused (file_too_large); there is no chunking.`,
+        }),
+      }),
       response: okResponse({ path: str(), sizeBytes: int() }, ['path', 'sizeBytes']),
     },
     {

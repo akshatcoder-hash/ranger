@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
+import { MAX_STDIN_BYTES } from '@insforge/instabox-sdk';
 import type { FastifyInstance } from 'fastify';
 import { loadConfig } from '../../src/config.js';
 import { openDatabase } from '../../src/db/db.js';
@@ -13,16 +14,36 @@ import { createProjectRecord } from '../../src/projects/store.js';
 import { FakeInstabox } from '../../src/workspace/instabox.js';
 import { setWorkspaceProviderForTests } from '../../src/workspace/runtime.js';
 import { sanitizeProviderError, translateCommandExitError } from '../../src/workspace/diagnostics.js';
+import {
+  GUEST_TRANSPORT_CAP_BYTES,
+  WORKLOAD_CGROUP,
+  WORKLOAD_PROJECT,
+  splitFencedCommand,
+} from '../../src/workspace/limits.js';
+import { WRITE_PATH_ENV, parseWriteTargetFromPayload } from '../../src/workspace/guest-write.js';
 
 /**
  * Deterministic regressions for the offline workspace repair. No provider
  * calls, no live VM, no guest bootstrap executed anywhere: command shapes
  * are asserted as strings and guest behavior is modeled by the fake.
  *
- * Covered categories (library/workspace-incident.md bounded repair):
- * cwd/privilege ordering, actual payload/command shape, write-failure
- * persistence, symlink boundaries, sanitized diagnostics.
+ * Covered categories: cwd/privilege ordering with the trusted launcher,
+ * actual payload/command shape, the SDK-stdin-derived transport cap,
+ * write-failure persistence, symlink boundaries, sanitized diagnostics.
  */
+
+/**
+ * The fixed elevated script, written out here independently of the source.
+ * The elevated prefix must stay exactly this text: no customer-controlled
+ * bytes may enter it (the payload reaches it only as the $1 argument).
+ */
+const EXPECTED_TRUSTED_LAUNCHER = [
+  'set -eu',
+  'export PATH="/usr/sbin:/usr/bin:/sbin:/bin"',
+  `test -f ${WORKLOAD_CGROUP}/cgroup.procs`,
+  `echo $$ > ${WORKLOAD_CGROUP}/cgroup.procs`,
+  `exec setpriv --reuid 1100 --regid 1100 --init-groups --no-new-privs --inh-caps -all --ambient-caps -all --bounding-set -all -- /usr/bin/env -i HOME=/data/ranger USER=ranger LOGNAME=ranger /bin/bash -lc "$1"`,
+].join('\n');
 
 const tempDirs: string[] = [];
 
@@ -116,7 +137,7 @@ function lastCommand(provider: FakeInstabox) {
 }
 
 describe('workload cwd and privilege ordering (deterministic, not live)', () => {
-  it('sends workload commands without a pre-privilege cwd and chdirs only after the drop', async () => {
+  it('elevates only the fixed trusted launcher, drops privileges, then chdirs and runs the payload', async () => {
     const h = await harness();
     await createWorkspace(h);
     const command = await h.app.inject({
@@ -130,12 +151,20 @@ describe('workload cwd and privilege ordering (deterministic, not live)', () => 
     // The SDK agent chdirs as the template user before the command starts, so
     // an inaccessible cwd fails the launch before the privilege drop runs.
     expect(executed.cwd).toBeUndefined();
-    const script = executed.command;
-    const runuserAt = script.indexOf('runuser --user ranger');
-    const cdAt = script.indexOf('cd -- ');
-    expect(runuserAt).toBeGreaterThanOrEqual(0);
-    expect(cdAt).toBeGreaterThan(runuserAt);
-    expect(script.slice(cdAt)).toContain('/data/ranger/project');
+    const fenced = splitFencedCommand(executed.command);
+    expect(fenced).not.toBeNull();
+    // The elevated prefix is exactly the fixed server-generated script: no
+    // customer text rides inside the sudo'd portion.
+    expect(fenced?.trusted).toBe(EXPECTED_TRUSTED_LAUNCHER);
+    // Privileged cgroup entry happens inside the trusted script, before the
+    // irrevocable drop; with set -e any setup failure exits before the drop.
+    const cgroupAt = fenced?.trusted.indexOf(`echo $$ > ${WORKLOAD_CGROUP}/cgroup.procs`) ?? -1;
+    const dropAt = fenced?.trusted.indexOf('exec setpriv --reuid 1100') ?? -2;
+    expect(cgroupAt).toBeGreaterThanOrEqual(0);
+    expect(dropAt).toBeGreaterThan(cgroupAt);
+    // chdir and the user fragment run only after the drop, as the $1 payload.
+    expect(fenced?.payload.startsWith(`cd -- '${WORKLOAD_PROJECT}' && `)).toBe(true);
+    expect(fenced?.payload).toContain("'echo' 'ready'");
     await h.app.close();
   });
 
@@ -159,15 +188,34 @@ describe('workload cwd and privilege ordering (deterministic, not live)', () => 
     await ws.runCommand({ projectId: 'prj_1', commandId: 'cmd_1', argv: ['echo', 'hello'], timeoutMs: 5_000 });
     const executed = lastCommand(provider);
     expect(executed.cwd).toBeUndefined();
-    const script = executed.command;
-    const runuserAt = script.indexOf('runuser --user ranger');
-    const cdAt = script.indexOf('cd -- ');
-    expect(runuserAt).toBeGreaterThanOrEqual(0);
-    expect(cdAt).toBeGreaterThan(runuserAt);
-    expect(script.slice(cdAt)).toContain('/data/ranger/project');
+    const fenced = splitFencedCommand(executed.command);
+    expect(fenced?.trusted).toBe(EXPECTED_TRUSTED_LAUNCHER);
+    const cgroupAt = fenced?.trusted.indexOf(`echo $$ > ${WORKLOAD_CGROUP}/cgroup.procs`) ?? -1;
+    const dropAt = fenced?.trusted.indexOf('exec setpriv --reuid 1100') ?? -2;
+    expect(cgroupAt).toBeGreaterThanOrEqual(0);
+    expect(dropAt).toBeGreaterThan(cgroupAt);
+    expect(fenced?.payload.startsWith(`cd -- '${WORKLOAD_PROJECT}' && `)).toBe(true);
+    expect(fenced?.payload).toContain("'echo' 'hello'");
   });
 
-  it('runs the guest write as the fenced workload identity, not root via sudo', async () => {
+  it('fails closed: no fallback around a missing cgroup or a failed drop', () => {
+    // The trusted script starts with set -eu, the cgroup is verified before
+    // it is written, nothing swallows setup errors, and the only payload
+    // shell is the setpriv-dropped child. There is no path where a failed
+    // setup falls back to the sudo-enabled template user.
+    expect(EXPECTED_TRUSTED_LAUNCHER.startsWith('set -eu\n')).toBe(true);
+    expect(EXPECTED_TRUSTED_LAUNCHER.indexOf(`test -f ${WORKLOAD_CGROUP}/cgroup.procs`)).toBeGreaterThan(-1);
+    expect(EXPECTED_TRUSTED_LAUNCHER).not.toContain('|| true');
+    expect(EXPECTED_TRUSTED_LAUNCHER.match(/bash -lc/g) ?? []).toHaveLength(1);
+    expect(EXPECTED_TRUSTED_LAUNCHER).toContain(
+      '--reuid 1100 --regid 1100 --init-groups --no-new-privs --inh-caps -all --ambient-caps -all --bounding-set -all',
+    );
+    // The drop itself is what execs the payload shell, so the payload can
+    // never run while capabilities are still held.
+    expect(EXPECTED_TRUSTED_LAUNCHER.trimEnd().endsWith('/bin/bash -lc "$1"')).toBe(true);
+  });
+
+  it('runs the guest write through the trusted launcher with the drop before the payload', async () => {
     const h = await harness();
     await createWorkspace(h);
     const written = await h.app.inject({
@@ -179,19 +227,19 @@ describe('workload cwd and privilege ordering (deterministic, not live)', () => 
     expect(written.statusCode).toBe(200);
     const executed = lastCommand(h.provider);
     expect(executed.cwd).toBeUndefined();
-    expect(executed.command).not.toContain('sudo');
-    expect(executed.command).toContain('runuser --user ranger');
-    expect(executed.command).toContain('--no-new-privs');
-    const runuserAt = executed.command.indexOf('runuser --user ranger');
-    const cdAt = executed.command.indexOf('cd -- ');
-    expect(cdAt).toBeGreaterThan(runuserAt);
-    expect(executed.command.slice(cdAt)).toContain('/data/ranger/project');
+    const fenced = splitFencedCommand(executed.command);
+    // Trusted elevation for the fixed setup, then the irrevocable drop; the
+    // write script appears only as the post-drop payload.
+    expect(fenced?.trusted).toBe(EXPECTED_TRUSTED_LAUNCHER);
+    expect(fenced?.payload.startsWith(`cd -- '${WORKLOAD_PROJECT}' && `)).toBe(true);
+    expect(fenced?.payload).toContain('O_NOFOLLOW');
+    expect(fenced?.payload).not.toContain('sudo');
     await h.app.close();
   });
 });
 
 describe('actual write payload and command shape (deterministic, not live)', () => {
-  it('writes through a no-follow guest script with the payload on stdin', async () => {
+  it('writes through a no-follow guest script with the target in the payload and the bytes on stdin', async () => {
     const h = await harness();
     await createWorkspace(h);
     const content = 'export const n = 1;\n';
@@ -205,7 +253,12 @@ describe('actual write payload and command shape (deterministic, not live)', () 
     const executed = lastCommand(h.provider);
     expect(executed.command).toContain('python3 -c');
     expect(executed.command).toContain('O_NOFOLLOW');
-    expect(executed.envs?.['RANGER_WRITE_PATH']).toBe('src/app.ts');
+    // The target rides the fenced payload as a post-drop assignment: sudo
+    // env_reset would strip ambient env, so nothing may depend on it.
+    expect((executed.envs ?? {})[WRITE_PATH_ENV]).toBeUndefined();
+    const fenced = splitFencedCommand(executed.command);
+    expect(fenced?.payload).toContain(`${WRITE_PATH_ENV}='src/app.ts'`);
+    expect(parseWriteTargetFromPayload(fenced?.payload ?? '')).toBe('src/app.ts');
     expect(executed.stdin).toBeDefined();
     expect(Buffer.from(executed.stdin ?? '', 'base64').toString('utf8')).toBe(content);
     // The payload must not ride in the command string itself.
@@ -402,5 +455,110 @@ describe('sanitized provider diagnostics (deterministic, not live)', () => {
     expect(sanitized).not.toContain('runner --token');
     expect(sanitized).not.toContain('aaaaaaaaaaaaaaaaaaaaaaaa123456');
     expect(sanitized.length).toBeLessThanOrEqual(300);
+  });
+});
+
+describe('guest transport cap derived from the real SDK stdin rule (deterministic, not live)', () => {
+  it('derives the raw cap from the SDK constant and matches the base64 rule exactly', () => {
+    // Ranger transports file payloads base64-encoded on stdin; the SDK
+    // accepts at most MAX_STDIN_BYTES UTF-8 bytes and rejects more before
+    // the HTTP call. The safe raw cap is therefore floor(cap/4)*3.
+    expect(GUEST_TRANSPORT_CAP_BYTES).toBe(Math.floor(MAX_STDIN_BYTES / 4) * 3);
+    const atCap = Buffer.alloc(GUEST_TRANSPORT_CAP_BYTES, 0x61).toString('base64');
+    const over = Buffer.alloc(GUEST_TRANSPORT_CAP_BYTES + 1, 0x61).toString('base64');
+    expect(atCap).toHaveLength(MAX_STDIN_BYTES);
+    expect(over.length).toBeGreaterThan(MAX_STDIN_BYTES);
+  });
+
+  it('accepts exactly cap-sized writes and refuses one byte more before any exec (public API)', async () => {
+    const h = await harness();
+    await createWorkspace(h);
+    const capContent = Buffer.alloc(GUEST_TRANSPORT_CAP_BYTES, 0x61).toString('utf8');
+    const ok = await h.app.inject({
+      method: 'PUT',
+      url: `/v1/projects/${h.projectId}/workspace/file`,
+      headers: h.ownerAuth,
+      payload: { path: 'big.ts', contentBase64: Buffer.from(capContent).toString('base64') },
+    });
+    expect(ok.statusCode).toBe(200);
+    const commandsAfterCap = h.provider.commands.length;
+    const refused = await h.app.inject({
+      method: 'PUT',
+      url: `/v1/projects/${h.projectId}/workspace/file`,
+      headers: h.ownerAuth,
+      payload: { path: 'over.ts', contentBase64: Buffer.from(`${capContent}b`).toString('base64') },
+    });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json()).toMatchObject({
+      error: { code: 'validation_failed', details: { reason: 'file_too_large' } },
+    });
+    // The refusal happens before exec: the SDK never sees oversized stdin,
+    // so no write can surface later as a generic provider 500.
+    expect(h.provider.commands).toHaveLength(commandsAfterCap);
+    await h.app.close();
+  });
+
+  it('accepts exactly cap-sized writes and refuses one byte more before any exec (workspace level)', async () => {
+    const provider = new FakeInstabox();
+    const dir = mkdtempSync(path.join(tmpdir(), 'ranger-ws-cap-'));
+    tempDirs.push(dir);
+    const ledgerPath = path.join(dir, 'ledger.json');
+    writeFileSync(ledgerPath, JSON.stringify({
+      version: 1,
+      xai: { limitUsd: 5, softAdmissionUsd: 4, observedUsd: 0, reservedUsd: 0, operations: [] },
+      instabox: { maxAdditionalCreations: 6, maxConcurrent: 1, maxLifetimeSeconds: 600, additionalCreations: 0, machines: [] },
+    }));
+    const { InstaboxWorkspace } = await import('../../src/workspace/instabox.js');
+    const ws = new InstaboxWorkspace({
+      provider,
+      ledgerFile: ledgerPath,
+      feature: 'lean-instabox-workspace-viewing',
+      sourceRoot: dir,
+      now: () => 1_700_000_000_000,
+    });
+    await ws.create({ projectId: 'prj_1', operationKey: 'op-1' });
+    const commandsAfterCreate = provider.commands.length;
+    const capContent = Buffer.alloc(GUEST_TRANSPORT_CAP_BYTES, 0x61).toString('utf8');
+    await ws.writeFile('prj_1', 'big.ts', capContent);
+    expect(provider.commands).toHaveLength(commandsAfterCreate + 1);
+    await expect(ws.writeFile('prj_1', 'over.ts', `${capContent}b`)).rejects.toMatchObject({
+      code: 'validation_failed',
+      details: { reason: 'file_too_large' },
+    });
+    expect(provider.commands).toHaveLength(commandsAfterCreate + 1);
+  });
+
+  it('models the real SDK stdin rule in the fake at exactly MAX_STDIN_BYTES', async () => {
+    const provider = new FakeInstabox();
+    await expect(
+      provider.exec({ machineId: 'm_x', command: 'echo x', stdin: 'a'.repeat(MAX_STDIN_BYTES) }),
+    ).resolves.toMatchObject({ exitCode: 0 });
+    await expect(
+      provider.exec({ machineId: 'm_x', command: 'echo x', stdin: 'a'.repeat(MAX_STDIN_BYTES + 1) }),
+    ).rejects.toThrow(/stdin is longer/);
+  });
+
+  it('carries a quoted write target through the payload assignment', async () => {
+    const provider = new FakeInstabox();
+    const dir = mkdtempSync(path.join(tmpdir(), 'ranger-ws-quote-'));
+    tempDirs.push(dir);
+    const ledgerPath = path.join(dir, 'ledger.json');
+    writeFileSync(ledgerPath, JSON.stringify({
+      version: 1,
+      xai: { limitUsd: 5, softAdmissionUsd: 4, observedUsd: 0, reservedUsd: 0, operations: [] },
+      instabox: { maxAdditionalCreations: 6, maxConcurrent: 1, maxLifetimeSeconds: 600, additionalCreations: 0, machines: [] },
+    }));
+    const { InstaboxWorkspace } = await import('../../src/workspace/instabox.js');
+    const ws = new InstaboxWorkspace({
+      provider,
+      ledgerFile: ledgerPath,
+      feature: 'lean-instabox-workspace-viewing',
+      sourceRoot: dir,
+      now: () => 1_700_000_000_000,
+    });
+    await ws.create({ projectId: 'prj_1', operationKey: 'op-1' });
+    await ws.writeFile("prj_1", "src/we'ird.ts", 'export const q = 1;\n');
+    const saved = await ws.persistSource('prj_1');
+    expect(saved.files).toEqual(["src/we'ird.ts"]);
   });
 });

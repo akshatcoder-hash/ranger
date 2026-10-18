@@ -11,6 +11,7 @@ import {
   type ProviderCreateRequest,
 } from '../../src/workspace/instabox.js';
 import { opensshEd25519PublicKey } from '../../src/workspace/preview-tunnel.js';
+import { elevatedKillCommand, processListCommand } from '../../src/workspace/signals.js';
 
 /**
  * Deterministic Instabox provider-wire tests.
@@ -122,10 +123,16 @@ describe('instabox workspace provider wire (deterministic, not live)', () => {
     expect(finished.stdout).toContain('hello');
     const executed = provider.commands[0];
     expect(executed?.user).toBe('ranger');
-    expect(executed?.command).toContain('setpriv');
+    // Privileged setup precedes the irrevocable drop, and the payload only
+    // runs after it: the elevated prefix is the fixed sudo'd launcher and
+    // the workload identity never gains sudo itself.
+    expect(executed?.command).toContain('exec sudo -n /bin/bash -c');
+    expect(executed?.command).toContain('setpriv --reuid 1100');
     expect(executed?.command).toContain('--no-new-privs');
-    expect(executed?.command).toContain('runuser --user ranger');
+    expect(executed?.command).toContain('--init-groups');
+    expect(executed?.command).toContain('--bounding-set -all');
     expect(executed?.command).toContain('/sys/fs/cgroup/ranger-workload/cgroup.procs');
+    expect(executed?.command).not.toContain('runuser');
     expect(executed?.command).not.toContain('INSTABOX_API_KEY');
     expect(executed?.envs === undefined || !('INSTABOX_API_KEY' in executed.envs)).toBe(true);
   });
@@ -221,5 +228,40 @@ describe('instabox workspace provider wire (deterministic, not live)', () => {
     await expect(ws.resume('prj_1')).rejects.toMatchObject({ code: 'unsupported_operation' });
     expect(provider.pauses).toEqual([]);
     expect(provider.resumes).toEqual([]);
+  });
+});
+
+describe('elevated guest signalling (deterministic, not live)', () => {
+  it('builds a fixed elevated kill for the workload process group', () => {
+    // The workload runs under its own UID, so the template identity cannot
+    // signal it: cancellation is elevated, fixed, and integer-only.
+    expect(elevatedKillCommand(4123, 'TERM')).toBe('sudo -n /bin/kill -TERM -- -4123');
+    expect(elevatedKillCommand(4123, 'KILL')).toBe('sudo -n /bin/kill -KILL -- -4123');
+  });
+
+  it('refuses to interpolate a non-integer pid into an elevated command', () => {
+    for (const pid of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(elevatedKillCommand(pid, 'TERM')).toBeNull();
+      expect(processListCommand(pid)).toBeNull();
+    }
+    expect(processListCommand(4123)).toBe('ps -o pid= -g 4123');
+  });
+
+  it('cancels a running workload command with TERM then KILL through the provider', async () => {
+    const provider = new FakeInstabox();
+    const ws = workspace(provider);
+    await ws.create({ projectId: 'prj_1', operationKey: 'op-1' });
+    const handle = await ws.startBackground({
+      projectId: 'prj_1',
+      commandId: 'cmd_sig',
+      argv: ['sleep', '30'],
+      timeoutMs: 30_000,
+    });
+    const outcome = await ws.cancelCommand('prj_1', 'cmd_sig');
+    expect(outcome.state).toBe('terminated');
+    // A process that exits on TERM receives only TERM; the KILL escalation
+    // for TERM-ignoring descendants is covered by its own test above.
+    expect(provider.signals.map((signal) => signal.pid)).toEqual([handle.pid]);
+    expect(provider.signals.map((signal) => signal.signal)).toEqual(['TERM']);
   });
 });

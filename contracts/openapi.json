@@ -12258,7 +12258,8 @@
                     "minLength": 1
                   },
                   "contentBase64": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Base64 content. The decoded raw file size may be at most 786432 bytes: the payload is transported base64-encoded on the guest stdin channel, which the SDK caps at 1048576 bytes of text. Larger writes are refused (file_too_large); there is no chunking."
                   }
                 },
                 "additionalProperties": false
