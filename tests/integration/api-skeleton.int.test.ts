@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -10,6 +10,7 @@ import { openDatabase } from '../../src/db/db.js';
 import { runMigrations } from '../../src/db/migrate.js';
 import { buildApiServer } from '../../src/http/app.js';
 import { ROUTE_FAMILIES } from '../../src/contracts/registry.js';
+import { ensureInitialPrincipal } from '../../src/identity/bootstrap.js';
 
 /**
  * Contract skeleton integration tests: the served v1 document, the central
@@ -31,9 +32,6 @@ async function makeApp(env: Record<string, string>, existingDataDir?: string): P
 
 /** One sampled operation per family that must report an explicit capability error. */
 const FAMILY_SAMPLES: Record<string, { method: 'GET' | 'POST'; url: string; body?: Record<string, unknown> }> = {
-  'credentials-sessions': { method: 'POST', url: '/v1/auth/api-tokens', body: { name: 'probe' } },
-  'projects-memberships': { method: 'POST', url: '/v1/projects', body: { name: 'probe' } },
-  repositories: { method: 'GET', url: `/v1/projects/${PRJ}/repository` },
   'conversations-requirements': { method: 'GET', url: `/v1/projects/${PRJ}/conversations` },
   events: { method: 'GET', url: `/v1/projects/${PRJ}/events` },
   voice: { method: 'POST', url: `/v1/projects/${PRJ}/voice/sessions`, body: { conversationId: CNV } },
@@ -45,11 +43,31 @@ const FAMILY_SAMPLES: Record<string, { method: 'GET' | 'POST'; url: string; body
   retrieval: { method: 'GET', url: `/v1/projects/${PRJ}/retrieval/status` },
 };
 
+/** Families with real handlers now: unauthenticated requests get unauthorized, not not_configured. */
+const IMPLEMENTED_FAMILY_SAMPLES: Record<string, { method: 'GET' | 'POST'; url: string; body?: Record<string, unknown> }> = {
+  'credentials-sessions': { method: 'POST', url: '/v1/auth/api-tokens', body: { name: 'probe' } },
+  'projects-memberships': { method: 'POST', url: '/v1/projects', body: { name: 'probe' } },
+  repositories: { method: 'GET', url: `/v1/projects/${PRJ}/repository` },
+};
+
 describe('api skeleton', () => {
   let app: FastifyInstance;
+  /** Valid bearer credential so unfinished routes reach their not_configured handler. */
+  let bearerHeaders: Record<string, string>;
 
   beforeAll(async () => {
-    app = (await makeApp({})).app;
+    const made = await makeApp({});
+    app = made.app;
+    const db = new DatabaseSync(path.join(made.dataDir, 'ranger.db'));
+    const outcome = ensureInitialPrincipal(db, {
+      dataDir: made.dataDir,
+      repoRoot: process.cwd(),
+      displayName: 'Skeleton Driver',
+    });
+    bearerHeaders = {
+      authorization: `Bearer ${readFileSync(outcome.credentialPath, 'utf8').trim().split('=')[1]!}`,
+    };
+    db.close();
   });
 
   afterAll(async () => {
@@ -110,12 +128,15 @@ describe('api skeleton', () => {
     for (const family of ROUTE_FAMILIES) {
       // capabilities routes have real handlers (health/capabilities/doc), so
       // there is no unfinished sample; they are covered by dedicated tests.
-      if (family === 'capabilities') continue;
+      // credentials-sessions, projects-memberships and repositories are
+      // implemented (identity feature) and asserted separately below.
+      if (family === 'capabilities' || IMPLEMENTED_FAMILY_SAMPLES[family] !== undefined) continue;
       const sample = FAMILY_SAMPLES[family];
       if (sample === undefined) throw new Error(`no family sample for ${family}`);
       const res = await app.inject({
         method: sample.method,
         url: sample.url,
+        headers: bearerHeaders,
         ...(sample.body !== undefined ? { payload: sample.body } : {}),
       });
       expect(res.statusCode, `family ${family} should report 501 not_configured`).toBe(501);
@@ -123,6 +144,20 @@ describe('api skeleton', () => {
       expect(body.error.code).toBe('not_configured');
       expect(body.requestId).toBeTruthy();
       expect(body.error.message).not.toMatch(/sk-|xai-|Bearer /i);
+    }
+  });
+
+  it('implemented families authenticate: unauthenticated samples get the standard unauthorized envelope', async () => {
+    for (const [family, sample] of Object.entries(IMPLEMENTED_FAMILY_SAMPLES)) {
+      const res = await app.inject({
+        method: sample.method,
+        url: sample.url,
+        ...(sample.body !== undefined ? { payload: sample.body } : {}),
+      });
+      expect(res.statusCode, `family ${family} should demand authentication`).toBe(401);
+      const body = res.json() as { requestId: string; error: { code: string } };
+      expect(body.error.code).toBe('unauthorized');
+      expect(body.requestId).toBeTruthy();
     }
   });
 

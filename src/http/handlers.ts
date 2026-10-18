@@ -6,15 +6,18 @@ import { buildOpenApiDocument } from '../contracts/openapi.js';
 import { eventSchemaBundle } from '../contracts/events.js';
 import { declaredEventTypes } from '../contracts/registry.js';
 import type { SecretResolver } from '../secrets.js';
+import { registerIdentityHandlers } from './handlers-identity.js';
+import { registerProjectHandlers } from './handlers-projects.js';
+import { registerRepositoryHandlers } from './handlers-repositories.js';
 
 /**
  * Operation handlers.
  *
- * The foundation registers the real handlers that exist today (health,
- * capabilities, event schemas, OpenAPI document). Every other declared route
- * falls through to the explicit notConfigured handler: the contract is fully
- * enumerated, but unimplemented providers report a stable capability error
- * instead of pretending success.
+ * Implemented families register their real handlers here (credentials,
+ * projects, repositories plus the foundation health/capabilities/doc
+ * routes). Every other declared route falls through to the explicit
+ * notConfigured handler: the contract is fully enumerated, but unimplemented
+ * providers report a stable capability error instead of pretending success.
  */
 
 export type OperationHandler = (req: FastifyRequest, reply: FastifyReply) => Promise<unknown> | unknown;
@@ -99,6 +102,11 @@ export function buildHandlerMap(context: HandlerContext): Map<string, OperationH
   handlers.set('getEventSchemas', async () => eventSchemaBundle());
 
   handlers.set('getOpenApiDocument', async () => buildOpenApiDocument());
+
+  // Implemented route families (identity, projects, repositories).
+  registerIdentityHandlers(context, handlers);
+  registerProjectHandlers(context, handlers);
+  registerRepositoryHandlers(context, handlers);
 
   return handlers;
 }

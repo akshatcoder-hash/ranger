@@ -881,7 +881,8 @@
                   "required": [
                     "requestId",
                     "sessionId",
-                    "expiresAt"
+                    "expiresAt",
+                    "csrfToken"
                   ],
                   "properties": {
                     "requestId": {
@@ -895,6 +896,10 @@
                     "expiresAt": {
                       "type": "string",
                       "format": "date-time"
+                    },
+                    "csrfToken": {
+                      "type": "string",
+                      "description": "Synchronizer CSRF token; send as x-ranger-csrf on cookie-authenticated mutations without an Origin header"
                     }
                   }
                 }
@@ -2797,7 +2802,7 @@
                 "properties": {
                   "url": {
                     "type": "string",
-                    "description": "Approved repository URL"
+                    "description": "Approved repository URL (file, https, ssh or git; embedded credentials rejected)"
                   },
                   "ref": {
                     "type": "string",
@@ -2805,7 +2810,23 @@
                   },
                   "checkoutPath": {
                     "type": "string",
-                    "description": "Workspace-relative checkout path"
+                    "description": "Workspace-relative checkout path (default: workspace)"
+                  },
+                  "checkoutPolicy": {
+                    "type": "object",
+                    "required": [],
+                    "properties": {
+                      "shallow": {
+                        "type": "boolean",
+                        "description": "Approve shallow clones (default false)"
+                      },
+                      "submodules": {
+                        "type": "boolean",
+                        "description": "Approve submodule checkout (default false)"
+                      }
+                    },
+                    "additionalProperties": false,
+                    "description": "Approved checkout policy"
                   }
                 },
                 "additionalProperties": false
@@ -2846,6 +2867,7 @@
                         "dirty",
                         "contentHash",
                         "checkoutPath",
+                        "checkoutPolicy",
                         "connectedAt"
                       ],
                       "properties": {
@@ -2855,22 +2877,46 @@
                           "description": "Prefixed prj identifier"
                         },
                         "url": {
-                          "type": "string"
+                          "type": "string",
+                          "description": "Approved repository URL (no embedded credentials)"
                         },
                         "ref": {
-                          "type": "string"
+                          "type": "string",
+                          "description": "Approved branch, tag or commit"
                         },
                         "commit": {
-                          "type": "string"
+                          "type": "string",
+                          "description": "Resolved commit for the ref; empty until the source is available locally"
                         },
                         "dirty": {
-                          "type": "boolean"
+                          "type": "boolean",
+                          "description": "Working-tree snapshot has uncommitted or untracked changes"
                         },
                         "contentHash": {
-                          "type": "string"
+                          "type": "string",
+                          "description": "Deterministic hash of the local source snapshot; empty until resolvable"
                         },
                         "checkoutPath": {
-                          "type": "string"
+                          "type": "string",
+                          "description": "Workspace-relative checkout path"
+                        },
+                        "checkoutPolicy": {
+                          "type": "object",
+                          "required": [
+                            "shallow",
+                            "submodules"
+                          ],
+                          "properties": {
+                            "shallow": {
+                              "type": "boolean",
+                              "description": "Shallow clone approved"
+                            },
+                            "submodules": {
+                              "type": "boolean",
+                              "description": "Submodule checkout approved"
+                            }
+                          },
+                          "additionalProperties": false
                         },
                         "connectedAt": {
                           "type": "string",
@@ -3028,6 +3074,7 @@
                         "dirty",
                         "contentHash",
                         "checkoutPath",
+                        "checkoutPolicy",
                         "connectedAt"
                       ],
                       "properties": {
@@ -3037,22 +3084,46 @@
                           "description": "Prefixed prj identifier"
                         },
                         "url": {
-                          "type": "string"
+                          "type": "string",
+                          "description": "Approved repository URL (no embedded credentials)"
                         },
                         "ref": {
-                          "type": "string"
+                          "type": "string",
+                          "description": "Approved branch, tag or commit"
                         },
                         "commit": {
-                          "type": "string"
+                          "type": "string",
+                          "description": "Resolved commit for the ref; empty until the source is available locally"
                         },
                         "dirty": {
-                          "type": "boolean"
+                          "type": "boolean",
+                          "description": "Working-tree snapshot has uncommitted or untracked changes"
                         },
                         "contentHash": {
-                          "type": "string"
+                          "type": "string",
+                          "description": "Deterministic hash of the local source snapshot; empty until resolvable"
                         },
                         "checkoutPath": {
-                          "type": "string"
+                          "type": "string",
+                          "description": "Workspace-relative checkout path"
+                        },
+                        "checkoutPolicy": {
+                          "type": "object",
+                          "required": [
+                            "shallow",
+                            "submodules"
+                          ],
+                          "properties": {
+                            "shallow": {
+                              "type": "boolean",
+                              "description": "Shallow clone approved"
+                            },
+                            "submodules": {
+                              "type": "boolean",
+                              "description": "Submodule checkout approved"
+                            }
+                          },
+                          "additionalProperties": false
                         },
                         "connectedAt": {
                           "type": "string",

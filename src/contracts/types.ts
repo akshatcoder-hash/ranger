@@ -101,6 +101,7 @@ export interface ApiTokenListResponse extends OkResponse {
 export interface BrowserSessionCreatedResponse extends OkResponse {
   sessionId: string;
   expiresAt: string;
+  csrfToken: string;
 }
 
 export interface BrowserSessionSummary {
@@ -161,14 +162,21 @@ export interface MembershipListResponse extends OkResponse {
 
 // --- repositories --------------------------------------------------------------
 
+export interface CheckoutPolicy {
+  shallow: boolean;
+  submodules: boolean;
+}
+
 export interface Repository {
   projectId: string;
   url: string;
   ref: string;
+  /** Resolved commit for the ref; empty until the source is available locally. */
   commit: string;
   dirty: boolean;
   contentHash: string;
   checkoutPath: string;
+  checkoutPolicy: CheckoutPolicy;
   connectedAt: string;
 }
 

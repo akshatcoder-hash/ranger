@@ -1,0 +1,77 @@
+import type { FastifyRequest } from 'fastify';
+import { Errors } from '../errors.js';
+import { requireMembership, requirePrincipalId } from '../auth/authorization.js';
+import {
+  connectRepository,
+  disconnectRepository,
+  getRepositoryRecord,
+  type RepositoryRecord,
+} from '../repositories/store.js';
+import { iso } from './serialize.js';
+import type { HandlerContext, OperationHandler } from './handlers.js';
+
+/**
+ * Handlers for the repositories family: connect, read and disconnect the
+ * project repository reference. Connections record the approved URL, ref,
+ * checkout path and checkout policy (never credential material) and resolve
+ * commit/dirty/content-hash for local repositories.
+ */
+
+export function repositoryPayload(record: RepositoryRecord): Record<string, unknown> {
+  return {
+    projectId: record.projectId,
+    url: record.url,
+    ref: record.ref,
+    commit: record.commit,
+    dirty: record.dirty,
+    contentHash: record.contentHash,
+    checkoutPath: record.checkoutPath,
+    checkoutPolicy: record.checkoutPolicy,
+    connectedAt: iso(record.connectedAt),
+  };
+}
+
+interface ConnectRepositoryBody {
+  url?: string;
+  ref?: string;
+  checkoutPath?: string;
+  checkoutPolicy?: { shallow?: boolean; submodules?: boolean };
+}
+
+export function registerRepositoryHandlers(ctx: HandlerContext, handlers: Map<string, OperationHandler>): void {
+  const { db } = ctx;
+
+  handlers.set('connectRepository', async (req: FastifyRequest) => {
+    const principalId = requirePrincipalId(req);
+    const params = req.params as { projectId: string };
+    requireMembership(db, params.projectId, principalId);
+    const body = (req.body ?? {}) as ConnectRepositoryBody;
+    if (typeof body.url !== 'string' || typeof body.ref !== 'string') {
+      throw Errors.validation('url and ref are required');
+    }
+    const record = await connectRepository(db, params.projectId, principalId, {
+      url: body.url,
+      ref: body.ref,
+      checkoutPath: body.checkoutPath,
+      checkoutPolicy: body.checkoutPolicy,
+    });
+    return { repository: repositoryPayload(record) };
+  });
+
+  handlers.set('getRepository', async (req: FastifyRequest) => {
+    const principalId = requirePrincipalId(req);
+    const params = req.params as { projectId: string };
+    requireMembership(db, params.projectId, principalId);
+    const record = getRepositoryRecord(db, params.projectId);
+    if (record === null) throw Errors.notFound('No repository is connected for this project');
+    return { repository: repositoryPayload(record) };
+  });
+
+  handlers.set('disconnectRepository', async (req: FastifyRequest) => {
+    const principalId = requirePrincipalId(req);
+    const params = req.params as { projectId: string };
+    requireMembership(db, params.projectId, principalId);
+    disconnectRepository(db, params.projectId);
+    return {};
+  });
+}

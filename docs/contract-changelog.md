@@ -45,3 +45,37 @@ Initial publication of the Ranger v1 contract.
 - `budget_exceeded`: xAI $5 total / $4 soft admission stop and the Instabox
   six-creation allowance, enforced by the shared ledger
   (`src/budget/ledger.ts`) before any paid call.
+
+### v1 amendment — identity, projects and repositories (2026-10-18)
+
+The contract version stays v1 (additive tightening before any consumer);
+these families now return real behavior instead of `not_configured`:
+
+- **credentials-sessions**: bootstrap CLI (`scripts/bootstrap.ts`) creates
+  the initial principal plus a mode-0600 credential file outside the
+  repository (secrets never logged or echoed); only sha256 lookup keys and
+  scrypt hashes reach the database. `createApiToken` returns its secret
+  exactly once; `revokeApiToken`/`revokeBrowserSession` make the next use
+  fail with the standard `unauthorized` envelope while other principals keep
+  working; browser sessions survive API restarts until revoked.
+  `createBrowserSession` now also returns `csrfToken` (once-only
+  synchronizer token for cookie-authenticated mutations).
+- **Cookie CSRF/origin protection**: cookie-authenticated mutations require
+  a same-origin `Origin` header or the `x-ranger-csrf` synchronizer token;
+  violations return `forbidden` with details reason `origin_mismatch` or
+  `csrf_required`. Bearer authentication skips the check.
+- **connection tickets**: single-use, 60-second tickets bound to principal,
+  project, purpose and optional origin; reuse, expiry, purpose/project/origin
+  mismatch and revocation of the issuing credential or session all fail with
+  `unauthorized` and a stable reason in `details`.
+- **projects-memberships**: project CRUD with the customer-configurable
+  engineer display name; creators become owners; owners manage projects;
+  members read; non-members get `forbidden`; the last owner cannot be
+  removed (`conflict`). Names persist across restarts.
+- **repositories**: `connectRepository` persists the approved URL/ref,
+  checkout path and a new `checkoutPolicy` (`shallow`, `submodules`) and
+  rejects credential-bearing URLs, unapproved schemes, bad refs and path
+  traversal with `validation_failed`. Local `file://` repositories resolve
+  the real commit, dirty flag (including untracked files) and a
+  deterministic content hash at connect time; everything persists across
+  restarts and stays private to the project.

@@ -43,3 +43,17 @@ export function withTransaction<T>(db: DatabaseSync, fn: () => T): T {
     throw cause;
   }
 }
+
+/**
+ * node:sqlite returns rows as `Record<string, SQLOutputValue>`; feature
+ * modules map them onto explicit row interfaces. The cast must pass through
+ * `unknown` (a direct cast from the index-signature type fails structural
+ * overlap for multi-property rows).
+ */
+export function mapRow<T>(row: unknown): T | undefined {
+  return row as T | undefined;
+}
+
+export function mapRows<T>(rows: unknown): T[] {
+  return rows as T[];
+}

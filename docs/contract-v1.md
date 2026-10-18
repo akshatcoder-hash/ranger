@@ -14,31 +14,54 @@ per operation below.
 provider is not implemented yet returns `501` with the central envelope and
 stable code `not_configured` — never a fake success payload.
 
+**Implemented families (identity milestone):** credentials-sessions,
+projects-memberships and repositories are live. Principal-auth routes accept
+`Authorization: Bearer <api token or bootstrap credential>` or the revocable
+browser-session cookie (`ranger_session`, HttpOnly). Cookie-authenticated
+mutations require same-origin or CSRF protection (see the frontend guide).
+Unauthenticated requests to any principal-auth route return the standard
+`unauthorized` envelope; cross-project access returns `forbidden`; unknown
+resources return `not_found`.
+
 ### credentials-sessions
 Credentials and sessions (API tokens, browser sessions, connection tickets)
 
 - `GET /v1/auth/me` — getPrincipal
-- `POST /v1/auth/api-tokens` — createApiToken
-- `GET /v1/auth/api-tokens` — listApiTokens
-- `DELETE /v1/auth/api-tokens/{tokenId}` — revokeApiToken
-- `POST /v1/auth/browser-sessions` — createBrowserSession
+- `POST /v1/auth/api-tokens` — createApiToken (secret returned exactly once; stored only as lookup key + scrypt hash)
+- `GET /v1/auth/api-tokens` — listApiTokens (metadata only)
+- `DELETE /v1/auth/api-tokens/{tokenId}` — revokeApiToken (next use fails `unauthorized`)
+- `POST /v1/auth/browser-sessions` — createBrowserSession (sets HttpOnly cookie; response carries the once-only `csrfToken`)
 - `GET /v1/auth/browser-sessions` — listBrowserSessions
-- `DELETE /v1/auth/browser-sessions/{sessionId}` — revokeBrowserSession
-- `POST /v1/auth/connection-tickets` — createConnectionTicket
+- `DELETE /v1/auth/browser-sessions/{sessionId}` — revokeBrowserSession (cookie stops working immediately; sessions survive restarts until revoked)
+- `POST /v1/auth/connection-tickets` — createConnectionTicket (single-use, 60 s, bound to principal + project + purpose + optional origin; dies when the issuing credential/session is revoked)
 
 ### projects-memberships
 Projects, memberships and the customer-configurable engineer display name
+
+Creators become the first owner. Owners manage the project (name, engineer
+display name, memberships); members read and work. Every value survives API
+restarts; a non-member's request returns `forbidden` and lists only show
+projects the caller belongs to.
 
 - `POST /v1/projects` — createProject
 - `GET /v1/projects` — listProjects
 - `GET /v1/projects/{projectId}` — getProject
 - `PATCH /v1/projects/{projectId}` — updateProject
-- `POST /v1/projects/{projectId}/memberships` — addMembership
+- `POST /v1/projects/{projectId}/memberships` — addMembership (targets only the given principal)
 - `GET /v1/projects/{projectId}/memberships` — listMemberships
-- `DELETE /v1/projects/{projectId}/memberships/{principalId}` — removeMembership
+- `DELETE /v1/projects/{projectId}/memberships/{principalId}` — removeMembership (removing the last owner conflicts)
 
 ### repositories
 Repository connections and checkout references
+
+One repository per project. Connections record the approved URL (file,
+https, ssh or git; embedded credentials are rejected), ref, workspace-relative
+checkout path and checkout policy (`shallow`, `submodules`). Local
+`file://` repositories also resolve the real commit, working-tree dirty flag
+(including untracked files) and a deterministic content hash at connect time;
+remote URLs persist the approved reference and resolve these fields when the
+source is available locally. References persist across restarts and are
+readable only by project members.
 
 - `PUT /v1/projects/{projectId}/repository` — connectRepository
 - `GET /v1/projects/{projectId}/repository` — getRepository

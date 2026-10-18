@@ -10,6 +10,7 @@ import { getRegistry, type OperationDef } from '../contracts/registry.js';
 import { toFastifyPathFor } from '../contracts/openapi.js';
 import { mutationHeaders } from '../contracts/schema.js';
 import { buildHandlerMap, notConfiguredHandler, type HandlerContext, type OperationHandler } from './handlers.js';
+import { createPrincipalAuth } from './auth-middleware.js';
 
 /**
  * Fastify API application factory.
@@ -147,8 +148,9 @@ export async function buildApiServer(opts: ApiServerOptions): Promise<FastifyIns
   });
 
   const registry = getRegistry();
+  const principalAuth = createPrincipalAuth(opts.db);
   for (const op of registry) {
-    registerOperation(app, op, handlerMap.get(op.id) ?? notConfiguredHandler(op));
+    registerOperation(app, op, handlerMap.get(op.id) ?? notConfiguredHandler(op), principalAuth);
   }
 
   return app;
@@ -158,6 +160,7 @@ function registerOperation(
   app: FastifyInstance,
   op: OperationDef,
   handler: OperationHandler,
+  principalAuth: (op: OperationDef) => (req: FastifyRequest, reply: FastifyReply) => Promise<void>,
 ): void {
   const url = toFastifyPathFor(op);
   const schema: Record<string, unknown> = {
@@ -174,10 +177,16 @@ function registerOperation(
       void handler;
     });
     return;
-  }  app.route({
+  }
+  // Principal-auth routes authenticate centrally (bearer or session cookie,
+  // with CSRF/origin protection for cookie mutations). WebSocket routes keep
+  // their declared ticket auth wiring for the events/voice/desktop features.
+  const preHandler = op.auth === 'principal' ? principalAuth(op) : undefined;
+  app.route({
     method: op.method,
     url,
     ...(Object.keys(schema).length > 0 ? { schema } : {}),
+    ...(preHandler !== undefined ? { preHandler } : {}),
     ...(op.id === 'getOpenApiDocument' ? { config: { rawDoc: true } } : {}),
     handler: async (req, reply) => handler(req, reply),
   });

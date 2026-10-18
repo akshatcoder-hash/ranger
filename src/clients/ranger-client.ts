@@ -276,6 +276,10 @@ export class RangerClient {
   "url": string;
   "ref": string;
   "checkoutPath"?: string;
+  "checkoutPolicy"?: {
+    "shallow"?: boolean;
+    "submodules"?: boolean;
+  };
 } }): Promise<RepositoryResponse> {
     return this.request<RepositoryResponse>('PUT', '/v1/projects/{projectId}/repository', args as OpArgs);
   }

@@ -197,8 +197,12 @@ function credentialsFamily(): OperationDef[] {
       mutating: true,
       body: obj([], { apiToken: str() }),
       response: okResponse(
-        { sessionId: idField('ses'), expiresAt: timestamp() },
-        ['sessionId', 'expiresAt'],
+        {
+          sessionId: idField('ses'),
+          expiresAt: timestamp(),
+          csrfToken: str({ description: 'Synchronizer CSRF token; send as x-ranger-csrf on cookie-authenticated mutations without an Origin header' }),
+        },
+        ['sessionId', 'expiresAt', 'csrfToken'],
       ),
     },
     {
@@ -376,14 +380,18 @@ function projectsFamily(): OperationDef[] {
 // ---------------------------------------------------------------------------
 function repositoriesFamily(): OperationDef[] {
   const repository = (): JSONSchema =>
-    obj(['projectId', 'url', 'ref', 'commit', 'dirty', 'contentHash', 'checkoutPath', 'connectedAt'], {
+    obj(['projectId', 'url', 'ref', 'commit', 'dirty', 'contentHash', 'checkoutPath', 'checkoutPolicy', 'connectedAt'], {
       projectId: idField('prj'),
-      url: str(),
-      ref: str(),
-      commit: str(),
-      dirty: bool(),
-      contentHash: str(),
-      checkoutPath: str(),
+      url: str({ description: 'Approved repository URL (no embedded credentials)' }),
+      ref: str({ description: 'Approved branch, tag or commit' }),
+      commit: str({ description: 'Resolved commit for the ref; empty until the source is available locally' }),
+      dirty: bool({ description: 'Working-tree snapshot has uncommitted or untracked changes' }),
+      contentHash: str({ description: 'Deterministic hash of the local source snapshot; empty until resolvable' }),
+      checkoutPath: str({ description: 'Workspace-relative checkout path' }),
+      checkoutPolicy: obj(['shallow', 'submodules'], {
+        shallow: bool({ description: 'Shallow clone approved' }),
+        submodules: bool({ description: 'Submodule checkout approved' }),
+      }),
       connectedAt: timestamp(),
     });
   return [
@@ -397,9 +405,13 @@ function repositoriesFamily(): OperationDef[] {
       mutating: true,
       params: projectParams(),
       body: obj(['url', 'ref'], {
-        url: str({ description: 'Approved repository URL' }),
+        url: str({ description: 'Approved repository URL (file, https, ssh or git; embedded credentials rejected)' }),
         ref: str({ description: 'Branch, tag or commit to check out' }),
-        checkoutPath: str({ description: 'Workspace-relative checkout path' }),
+        checkoutPath: str({ description: 'Workspace-relative checkout path (default: workspace)' }),
+        checkoutPolicy: obj([], {
+          shallow: bool({ description: 'Approve shallow clones (default false)' }),
+          submodules: bool({ description: 'Approve submodule checkout (default false)' }),
+        }, { description: 'Approved checkout policy' }),
       }),
       response: okResponse({ repository: repository() }, ['repository']),
     },

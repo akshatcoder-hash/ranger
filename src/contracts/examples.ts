@@ -54,6 +54,17 @@ export const CONTRACT_EXAMPLES: ContractExample[] = [
     payload: { requestId: 'req-1a2b3d', tokenId: 'tok_9a1b2c3d-0000-4c3d-9f4e-2b7c5d1a3f10', token: '<redacted-in-docs>' },
   },
   {
+    operationId: 'createBrowserSession',
+    description: 'Browser session created (HttpOnly cookie set; CSRF token returned once)',
+    kind: 'response',
+    payload: {
+      requestId: 'req-1a2b43',
+      sessionId: 'ses_9a1b2c3d-1111-4c3d-9f4e-2b7c5d1a3f10',
+      expiresAt: '2026-10-25T12:00:00.000Z',
+      csrfToken: '<redacted-in-docs>',
+    },
+  },
+  {
     operationId: 'createConnectionTicket',
     description: 'Single-use connection ticket for an events subscription',
     kind: 'request',
@@ -65,9 +76,33 @@ export const CONTRACT_EXAMPLES: ContractExample[] = [
   },
   {
     operationId: 'connectRepository',
-    description: 'Connect the project repository',
+    description: 'Connect the project repository with its approved checkout policy',
     kind: 'request',
-    payload: { url: 'file:///srv/repos/customer-app', ref: 'main', checkoutPath: 'workspace' },
+    payload: {
+      url: 'file:///srv/repos/customer-app',
+      ref: 'main',
+      checkoutPath: 'workspace',
+      checkoutPolicy: { shallow: false, submodules: false },
+    },
+  },
+  {
+    operationId: 'connectRepository',
+    description: 'Repository connected with the resolved local snapshot',
+    kind: 'response',
+    payload: {
+      requestId: 'req-1a2b44',
+      repository: {
+        projectId: 'prj_0e2f6c9a-2222-4c3d-9f4e-2b7c5d1a3f10',
+        url: 'file:///srv/repos/customer-app',
+        ref: 'main',
+        commit: 'bd7f255339a45a5bf41bcdc2be650626c497e2b2',
+        dirty: false,
+        contentHash: '3f79bb7b435b05321651daefd374cdc681dc06faa65e374e38337b88ca046dea',
+        checkoutPath: 'workspace',
+        checkoutPolicy: { shallow: false, submodules: false },
+        connectedAt: '2026-10-18T12:00:00.000Z',
+      },
+    },
   },
   {
     operationId: 'createConversation',

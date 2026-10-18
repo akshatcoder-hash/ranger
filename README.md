@@ -7,12 +7,14 @@ workspaces and pinned Trace retrieval. **Backend only** — there is no product
 frontend; see `docs/frontend-guide.md` for the contract a future frontend
 would use.
 
-This is the **foundation milestone**: the project skeleton, migrations,
-config/error/schema foundations, the complete v1 contract (OpenAPI + realtime
-event schemas + generated typed client), the shared live-budget ledger,
-executable entrypoints and the test harnesses. Route families not yet
-implemented return an explicit `501 not_configured` envelope — never fake
-success.
+This is the **foundation + identity milestone**: the project skeleton,
+migrations, config/error/schema foundations, the complete v1 contract
+(OpenAPI + realtime event schemas + generated typed client), the shared
+live-budget ledger, executable entrypoints, test harnesses, and the identity
+layer — bootstrap credentials, hashed API tokens, revocable browser sessions,
+connection tickets, project/membership/engineer-name CRUD and durable
+repository references. Route families not yet implemented return an explicit
+`501 not_configured` envelope — never fake success.
 
 ## Requirements
 
@@ -26,11 +28,15 @@ success.
 src/config.ts            validated configuration (env + optional JSON file)
 src/errors.ts            central error envelope, stable codes, redaction
 src/secrets.ts           secret selection from the protected file (memory only)
+src/auth/                hashing, principals/credentials, sessions, tickets, authorization
+src/identity/            bootstrap CLI core (initial principal + protected credential file)
+src/projects/            project + membership persistence
+src/repositories/        repository records + local snapshot resolution (read-only git)
 src/db/                  node:sqlite open (WAL, FK, busy timeout) + migrations
 src/budget/ledger.ts     shared live-test admission ledger (never resets)
 src/contracts/           route registry, event schemas, OpenAPI builder, examples
 src/clients/             GENERATED typed client (committed; regenerate, don't edit)
-src/http/                Fastify app factory + handlers (registry-driven routes)
+src/http/                Fastify app factory, auth middleware, registry-driven handlers
 src/worker/              durable worker loop (claim/lease with fencing epoch)
 src/entrypoints/         api / worker / preview process entrypoints
 scripts/                 migrate, bootstrap, contract generation
@@ -80,10 +86,33 @@ never exceed the documented ceilings.
 ```sh
 npm run db:migrate                       # apply migrations to RANGER_DATA_DIR
 npm run bootstrap                        # verify data dir/migrations/env status
+npm run bootstrap -- --create-principal "Operator"   # initial principal + 0600 credential file
 npm run start:api                        # control API on 127.0.0.1:3100
 npm run start:worker                     # durable worker (claims leased jobs)
 npm run start:preview                    # preview gateway on 127.0.0.1:3101
 ```
+
+`bootstrap --create-principal` creates the initial principal and writes its
+bearer credential to `<RANGER_DATA_DIR>/bootstrap-credential.txt` (mode
+0600, outside the repository). The secret is shown nowhere else — the
+database stores only a lookup key and a scrypt hash. Additional principals
+for multi-user drivers:
+
+```sh
+npm run bootstrap -- --additional-principal "Second Operator" --credential-file /path/outside/repo/second-credential.txt
+```
+
+Authenticate API requests with `Authorization: Bearer <secret>` (bootstrap
+credential or API tokens). For browser-style access, exchange the credential
+via `POST /v1/auth/browser-sessions`: the HttpOnly `ranger_session` cookie is
+set and a one-time `csrfToken` is returned; cookie-authenticated mutations
+require a same-origin `Origin` header or the `x-ranger-csrf` token header.
+Realtime surfaces use `POST /v1/auth/connection-tickets` — single-use,
+60-second tickets bound to principal, project, purpose and origin; revoking
+the issuing token or session immediately invalidates its tickets. Projects,
+the customer-configurable engineer display name, memberships and repository
+references (approved URL/ref, checkout path, checkout policy, resolved
+commit/dirty/hash for local repositories) all persist across API restarts.
 
 The API serves the contract at `http://127.0.0.1:3100/v1/openapi.json`,
 capabilities at `/v1/capabilities`, event schemas at `/v1/events/schemas`
@@ -156,12 +185,16 @@ required (no cloud accounts, no public ports).
 
 - Implemented: project/toolchain, migrations, config/errors/secrets, budget
   ledger, full v1 contract skeleton + typed client, API/worker/preview
-  entrypoints, offline test suites, docs.
-- Not yet implemented (declared, return `not_configured`): authentication
-  and principals, projects/memberships, repositories, conversations and
+  entrypoints, offline test suites, docs; identity layer (bootstrap
+  principal + protected credential file, hashed API tokens, revocable
+  browser sessions with CSRF/origin checks, single-use connection tickets,
+  project/membership/engineer-name CRUD, durable repository references with
+  real local snapshot resolution).
+- Not yet implemented (declared, return `not_configured`): conversations and
   transactional events/cursor replay, voice relay, capture/frames/inspection,
   plans/approvals, runs, workspace execution, desktop/preview gateway,
   Trace retrieval. Trace bootstrap (pinned commit + model initialization)
-  arrives with the Trace milestone.
+  arrives with the Trace milestone. The declared WebSocket routes still close
+  with `4501 not_configured` until their features wire ticket consumption.
 - No physical microphone exists on this host; any browser media checks are
   synthetic and labeled as such.

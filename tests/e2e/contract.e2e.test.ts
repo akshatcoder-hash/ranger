@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -17,10 +17,7 @@ const PRJ = 'prj_00000000-1111-4c3d-9f4e-2b7c5d1a3f10';
 const PORT = 3903;
 const BASE = `http://127.0.0.1:${PORT}`;
 
-const FAMILY_SAMPLES: Record<string, (client: RangerClient) => Promise<unknown>> = {
-  'credentials-sessions': (client) => client.createApiToken({ body: { name: 'probe' } }),
-  'projects-memberships': (client) => client.createProject({ body: { name: 'probe' } }),
-  repositories: (client) => client.getRepository({ path: { projectId: PRJ } }),
+const NOT_CONFIGURED_FAMILY_SAMPLES: Record<string, (client: RangerClient) => Promise<unknown>> = {
   'conversations-requirements': (client) => client.listConversations({ path: { projectId: PRJ } }),
   events: (client) => client.replayProjectEvents({ path: { projectId: PRJ } }),
   voice: (client) =>
@@ -36,6 +33,13 @@ const FAMILY_SAMPLES: Record<string, (client: RangerClient) => Promise<unknown>>
   retrieval: (client) => client.retrievalStatus({ path: { projectId: PRJ } }),
 };
 
+/** Families with real handlers: unauthenticated requests fail unauthorized. */
+const IMPLEMENTED_FAMILY_SAMPLES: Record<string, (client: RangerClient) => Promise<unknown>> = {
+  'credentials-sessions': (client) => client.createApiToken({ body: { name: 'probe' } }),
+  'projects-memberships': (client) => client.createProject({ body: { name: 'probe' } }),
+  repositories: (client) => client.getRepository({ path: { projectId: PRJ } }),
+};
+
 let proc: ChildProcess;
 
 afterAll(async () => {
@@ -46,18 +50,21 @@ afterAll(async () => {
 });
 
 describe('typed client over the public API', () => {
+const dataDir = mkdtempSync(path.join(tmpdir(), 'ranger-e2e-'));
   proc = spawn('node', ['dist/src/entrypoints/api.js'], {
     cwd: process.cwd(),
     env: {
       ...process.env,
       RANGER_LOG_LEVEL: 'error',
-      RANGER_DATA_DIR: mkdtempSync(path.join(tmpdir(), 'ranger-e2e-')),
+      RANGER_DATA_DIR: dataDir,
       RANGER_HOST: '127.0.0.1',
       RANGER_PORT: String(PORT),
     },
     stdio: ['ignore', 'ignore', 'inherit'],
   });
   const client = new RangerClient({ baseUrl: BASE });
+  /** Authenticated client used to reach the not_configured handlers past auth. */
+  let authedClient = client;
   const requestIds: string[] = [];
 
   it('exposes health and capabilities with unique request ids', async () => {
@@ -80,6 +87,34 @@ describe('typed client over the public API', () => {
     throw new Error(`api never became healthy: ${lastError}`);
   });
 
+  it('bootstraps an initial principal through the real CLI and authenticates with its credential', async () => {
+    const bootstrap = spawn(
+      'node',
+      ['dist/scripts/bootstrap.js', '--create-principal', 'E2E Driver'],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, RANGER_LOG_LEVEL: 'error', RANGER_DATA_DIR: dataDir },
+        stdio: ['ignore', 'pipe', 'inherit'],
+      },
+    );
+    const stdout = await new Promise<string>((resolve, reject) => {
+      let collected = '';
+      bootstrap.stdout?.on('data', (chunk: Buffer) => {
+        collected += chunk.toString();
+      });
+      bootstrap.once('exit', (code) => (code === 0 ? resolve(collected) : reject(new Error(`bootstrap exited ${code}`))));
+    });
+    // The CLI names the credential file; it must never echo the secret.
+    expect(stdout).toContain('credential file: created at');
+    const credentialPath = path.join(dataDir, 'bootstrap-credential.txt');
+    const token = readFileSync(credentialPath, 'utf8').trim().split('=')[1]!;
+    expect(stdout.includes(token)).toBe(false);
+    authedClient = new RangerClient({ baseUrl: BASE, headers: { authorization: `Bearer ${token}` } });
+    const me = await authedClient.getPrincipal();
+    expect(me.principalId.startsWith('prin_')).toBe(true);
+    expect(me.displayName).toBe('E2E Driver');
+  });
+
   it('fetches the served openapi document through the client', async () => {
     const doc = await client.getOpenApiDocument();
     expect(doc['openapi']).toBe('3.1.0');
@@ -88,9 +123,28 @@ describe('typed client over the public API', () => {
   it('reports explicit capability errors for every unfinished family, with envelope requestIds', async () => {
     for (const family of ROUTE_FAMILIES) {
       // capabilities routes have real handlers; covered by earlier tests here.
-      if (family === 'capabilities') continue;
-      const sample = FAMILY_SAMPLES[family];
+      // Implemented families (identity feature) are asserted separately below.
+      if (family === 'capabilities' || IMPLEMENTED_FAMILY_SAMPLES[family] !== undefined) continue;
+      const sample = NOT_CONFIGURED_FAMILY_SAMPLES[family];
       if (sample === undefined) throw new Error(`no family sample for ${family}`);
+      let caught: unknown;
+      try {
+        await sample(authedClient);
+      } catch (cause) {
+        caught = cause;
+      }
+      expect(caught, `family ${family} should refuse`).toBeInstanceOf(RangerApiError);
+      const err = caught as RangerApiError;
+      expect(err.code, `family ${family}`).toBe('not_configured');
+      expect(err.status).toBe(501);
+      expect(err.requestId).toBeTruthy();
+      requestIds.push(err.requestId);
+      expect(new Set(requestIds).size).toBe(requestIds.length);
+    }
+  });
+
+  it('implemented families demand authentication (standard unauthorized envelope)', async () => {
+    for (const [family, sample] of Object.entries(IMPLEMENTED_FAMILY_SAMPLES)) {
       let caught: unknown;
       try {
         await sample(client);
@@ -99,8 +153,8 @@ describe('typed client over the public API', () => {
       }
       expect(caught, `family ${family} should refuse`).toBeInstanceOf(RangerApiError);
       const err = caught as RangerApiError;
-      expect(err.code, `family ${family}`).toBe('not_configured');
-      expect(err.status).toBe(501);
+      expect(err.code, `family ${family}`).toBe('unauthorized');
+      expect(err.status).toBe(401);
       expect(err.requestId).toBeTruthy();
       requestIds.push(err.requestId);
       expect(new Set(requestIds).size).toBe(requestIds.length);

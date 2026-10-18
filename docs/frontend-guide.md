@@ -15,15 +15,36 @@ Ranger.
   for desktop streams and private application previews. Bearer stream links
   and certificates never reach browser storage.
 
-## Authentication flow (land later: identity milestone)
+## Authentication flow (implemented: identity milestone)
 
-1. Authenticate the principal with an API token (hashed server-side).
-2. For browser use, exchange it via `createBrowserSession` for a
-   revocable session cookie; mutating requests require CSRF/origin protection.
-3. For realtime surfaces, call `createConnectionTicket` with the project,
+1. The operator bootstraps the first principal and credential locally:
+
+   ```sh
+   RANGER_DATA_DIR=~/.local/share/ranger npm run bootstrap -- --create-principal "Operator"
+   # → writes ~/.local/share/ranger/bootstrap-credential.txt (mode 0600);
+   #   the bearer secret inside is never echoed or logged.
+   ```
+
+   Further principals (for multi-user validation drivers) use
+   `--additional-principal "Second Operator" --credential-file <path>`.
+
+2. Send `Authorization: Bearer <secret>` on every request (the bootstrap
+   credential and API tokens created via `createApiToken` authenticate the
+   same way). Server-side only hashes are stored; the secret is displayed
+   exactly once at creation.
+
+3. For browser use, exchange the credential via `createBrowserSession`:
+   the response carries `sessionId`, `expiresAt` and the once-only
+   `csrfToken`, and the `ranger_session` HttpOnly cookie is set. Mutating
+   requests with the cookie must send a same-origin `Origin` header (or the
+   `x-ranger-csrf` token header when no Origin is sent, e.g. server-side
+   renderers); cross-origin cookie mutations are rejected with `forbidden`.
+
+4. For realtime surfaces, call `createConnectionTicket` with the project,
    purpose (`events`, `voice-relay`, `desktop-stream`, `app-preview`) and
-   origin. Tickets are short-lived and single-use; pass them as the `ticket`
-   query parameter on WebSocket upgrades.
+   origin. Tickets are short-lived (60 s) and single-use; pass them as the
+   `ticket` query parameter on WebSocket upgrades. Revoking the issuing API
+   token or browser session immediately invalidates its outstanding tickets.
 
 ## Events: subscribe and replay
 

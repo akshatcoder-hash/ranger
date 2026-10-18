@@ -103,7 +103,8 @@ describe('entrypoints', () => {
     const dataDir = mkdtempSync(path.join(tmpdir(), 'ranger-entry-worker-'));
     const proc = spawnEntrypoint('worker', { RANGER_DATA_DIR: dataDir });
     const line = await waitForStdoutLine(proc, 'ranger worker started');
-    expect(line).toContain('"migrationsApplied":1');
+    const migrationsApplied = Number((line.match(/"migrationsApplied":(\d+)/) ?? [])[1] ?? '0');
+    expect(migrationsApplied).toBeGreaterThanOrEqual(1);
     expect(await terminate(proc)).toBe(0);
   });
 
