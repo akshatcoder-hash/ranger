@@ -1,4 +1,5 @@
 import { Sandbox, type SandboxInfo } from '@insforge/instabox-sdk';
+import { translateCommandExitError } from './diagnostics.js';
 import type {
   InstaboxProvider,
   ProviderCommandRequest,
@@ -93,6 +94,7 @@ export class SdkInstaboxProvider implements InstaboxProvider {
       const result = await sandbox.commands.run(request.command, {
         cwd: request.cwd,
         envs: request.envs,
+        stdin: request.stdin,
         timeoutMs: request.timeoutMs,
       });
       return {
@@ -103,17 +105,9 @@ export class SdkInstaboxProvider implements InstaboxProvider {
         truncated: result.truncated,
       };
     } catch (cause) {
-      const exited = cause as { stdout?: string; stderr?: string; exitCode?: number; timedOut?: boolean; truncated?: boolean; name?: string };
-      if (exited.name === 'CommandExitError' && typeof exited.exitCode === 'number') {
-        return {
-          stdout: exited.stdout ?? '',
-          stderr: exited.stderr ?? '',
-          exitCode: exited.exitCode,
-          timedOut: exited.timedOut === true,
-          truncated: exited.truncated === true,
-        };
-      }
-      throw cause;
+      const translated = translateCommandExitError(cause, request.command);
+      if (translated === undefined) throw cause;
+      return translated;
     }
   }
 

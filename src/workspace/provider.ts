@@ -31,8 +31,15 @@ export interface ProviderMachine {
 export interface ProviderCommandRequest {
   machineId: string;
   command: string;
+  /**
+   * Leave unset for workload commands. The SDK guest agent applies cwd as
+   * the template user before the command runs, so a workload-only path
+   * fails the launch; the fence chdirs after the privilege drop instead.
+   */
   cwd?: string;
   envs?: Record<string, string>;
+  /** Base64 payload text delivered on stdin. Foreground commands only. */
+  stdin?: string;
   timeoutMs?: number;
   background?: boolean;
   /** User the guest command must run as. Workload calls pass the restricted identity. */
@@ -45,6 +52,8 @@ export interface ProviderCommandResult {
   exitCode: number;
   timedOut: boolean;
   truncated: boolean;
+  /** Sanitized server-reported error text, when the server provides one. */
+  error?: string;
   pid?: number;
 }
 

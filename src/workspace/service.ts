@@ -13,12 +13,13 @@ import { withTransaction } from '../db/db.js';
 import {
   COMMAND_OUTPUT_CAP_BYTES,
   FIXED_PREVIEW_PORTS,
+  SOURCE_FILE_CAP_BYTES,
   VM_KILL_TIMEOUT_MS,
-  WORKLOAD_PROJECT,
   WORKLOAD_USER,
   fencedWorkloadCommand,
   isFixedPreviewPort,
 } from './limits.js';
+import { WRITE_PATH_ENV, guestWriteCommand } from './guest-write.js';
 import { bootstrapWorkload } from './bootstrap.js';
 import { armWorkspaceWatchdog, destroyFailedBootstrap, destroyRecordedWorkspace } from './cleanup.js';
 import { SdkInstaboxProvider } from './sdk-provider.js';
@@ -87,8 +88,7 @@ function assertSafeRelative(relativePath: string): void {
 }
 
 function workloadShell(argv: string[]): string {
-  const inner = shellQuote(argv.map(shellQuote).join(' '));
-  return fencedWorkloadCommand(inner);
+  return fencedWorkloadCommand(argv.map(shellQuote).join(' '));
 }
 
 export class WorkspaceService {
@@ -201,27 +201,27 @@ export class WorkspaceService {
 
   async writeFile(projectId: string, relativePath: string, content: Buffer): Promise<{ path: string; sizeBytes: number }> {
     assertSafeRelative(relativePath);
+    if (content.byteLength > SOURCE_FILE_CAP_BYTES) {
+      throw Errors.validation('Workspace file exceeds the size cap', { reason: 'file_too_large' });
+    }
     const workspace = this.requireRunning(projectId);
-    saveSourceFile(this.options.db, projectId, relativePath, content);
-    const guestPath = `${WORKLOAD_PROJECT}/${relativePath}`;
-    const encoded = content.toString('base64');
-    const script = [
-      'set -eu',
-      `install -d -o ${WORKLOAD_USER} -g ${WORKLOAD_USER} -m 0750 "$(dirname ${shellQuote(guestPath)})"`,
-      `printf '%s' ${shellQuote(encoded)} | base64 -d > ${shellQuote(`${guestPath}.tmp`)}`,
-      `chown ${WORKLOAD_USER}:${WORKLOAD_USER} ${shellQuote(`${guestPath}.tmp`)}`,
-      `mv ${shellQuote(`${guestPath}.tmp`)} ${shellQuote(guestPath)}`,
-    ].join('\n');
+    // Real guest write: fenced workload identity, no provider-level cwd, the
+    // no-follow script refuses workload-planted symlinks. The source is
+    // recorded only after the guest write succeeded, so a failed write is
+    // never presented as saved source.
     const written = await providerFor(this.options).exec({
       machineId: workspace.machineId!,
-      command: `sudo --non-interactive /bin/bash -lc ${shellQuote(script)}`,
-      cwd: WORKLOAD_PROJECT,
+      command: guestWriteCommand(),
+      user: WORKLOAD_USER,
+      envs: { [WRITE_PATH_ENV]: relativePath },
+      stdin: content.toString('base64'),
       timeoutMs: 30_000,
     });
     if (written.exitCode !== 0) {
       const detail = `${written.stderr}\n${written.stdout}`.replace(/[A-Za-z0-9_\-]{24,}/g, '[redacted]').slice(0, 300);
       throw Errors.conflict('Workspace file was not written in the guest', { reason: 'guest_write_failed', detail });
     }
+    saveSourceFile(this.options.db, projectId, relativePath, content);
     return { path: relativePath, sizeBytes: content.byteLength };
   }
 
@@ -248,7 +248,6 @@ export class WorkspaceService {
       machineId: workspace.machineId!,
       command: workloadShell(argv),
       user: WORKLOAD_USER,
-      cwd: WORKLOAD_PROJECT,
       timeoutMs,
       background,
     });

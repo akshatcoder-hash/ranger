@@ -10,11 +10,12 @@ import {
 } from '../budget/ledger.js';
 import {
   COMMAND_OUTPUT_CAP_BYTES,
+  SOURCE_FILE_CAP_BYTES,
   VM_KILL_TIMEOUT_MS,
-  WORKLOAD_PROJECT,
   WORKLOAD_USER,
   fencedWorkloadCommand,
 } from './limits.js';
+import { WRITE_PATH_ENV, guestWriteCommand } from './guest-write.js';
 import { FakeInstabox } from './fake-provider.js';
 import type { InstaboxProvider, ProviderCreateRequest } from './provider.js';
 
@@ -197,7 +198,6 @@ export class InstaboxWorkspace {
       machineId: current.machineId,
       command,
       user: WORKLOAD_USER,
-      cwd: WORKLOAD_PROJECT,
       timeoutMs: input.timeoutMs,
     });
     const stdout = bound(result.stdout);
@@ -217,7 +217,6 @@ export class InstaboxWorkspace {
       machineId: current.machineId,
       command: this.workloadCommand(input.argv),
       user: WORKLOAD_USER,
-      cwd: WORKLOAD_PROJECT,
       timeoutMs: input.timeoutMs,
       background: true,
     });
@@ -245,15 +244,26 @@ export class InstaboxWorkspace {
     if (relativePath.includes('..') || relativePath.startsWith('/')) {
       throw Errors.validation('Workspace path escapes the project root', { reason: 'path_escape' });
     }
-    current.files.set(relativePath, content);
-    await this.options.provider.exec({
+    const bytes = Buffer.from(content, 'utf8');
+    if (bytes.byteLength > SOURCE_FILE_CAP_BYTES) {
+      throw Errors.validation('Workspace file exceeds the size cap', { reason: 'file_too_large' });
+    }
+    // Same real guest write as the public API: fenced workload identity, no
+    // provider-level cwd, no-follow script. The file is recorded only after
+    // the guest write succeeded so a failed write is never persisted.
+    const result = await this.options.provider.exec({
       machineId: current.machineId,
-      command: `ranger-write ${relativePath} ${Buffer.byteLength(content)}`,
+      command: guestWriteCommand(),
       user: WORKLOAD_USER,
-      cwd: WORKLOAD_PROJECT,
-      envs: { RANGER_B64: Buffer.from(content).toString('base64') },
+      envs: { [WRITE_PATH_ENV]: relativePath },
+      stdin: bytes.toString('base64'),
       timeoutMs: 30_000,
     });
+    if (result.exitCode !== 0) {
+      const detail = `${result.stderr}\n${result.stdout}`.replace(/[A-Za-z0-9_\-]{24,}/g, '[redacted]').slice(0, 300);
+      throw new Error(`guest write failed: ${detail}`);
+    }
+    current.files.set(relativePath, content);
   }
 
   async persistSource(projectId: string): Promise<PersistedSource> {
@@ -328,7 +338,6 @@ export class InstaboxWorkspace {
   }
 
   private workloadCommand(argv: string[]): string {
-    const inner = shellQuote(argv.map(shellQuote).join(' '));
-    return fencedWorkloadCommand(inner);
+    return fencedWorkloadCommand(argv.map(shellQuote).join(' '));
   }
 }

@@ -8,6 +8,8 @@ import type {
   ProviderSignal,
   ProviderSshCredentials,
 } from './provider.js';
+import { WRITE_PATH_ENV } from './guest-write.js';
+import { sanitizeProviderError } from './diagnostics.js';
 
 interface FakeProcess {
   pid: number;
@@ -18,8 +20,16 @@ interface FakeProcess {
 }
 
 /**
+ * Cwd values the template user can actually traverse. The project path is
+ * owned by the workload identity, so a provider-level cwd there models the
+ * real pre-privilege chdir denial.
+ */
+const TEMPLATE_ACCESSIBLE_CWDS = new Set(['/data/home', '/tmp', '/data', '/']);
+
+/**
  * In-memory Instabox stand-in for deterministic tests.
- * It records the provider wire and never dials the network.
+ * It records the provider wire, models the real cwd and write protocol,
+ * and never dials the network. Unknown commands fail closed.
  */
 export class FakeInstabox implements InstaboxProvider {
   readonly creates: ProviderCreateRequest[] = [];
@@ -34,8 +44,10 @@ export class FakeInstabox implements InstaboxProvider {
   private machines = new Map<string, ProviderMachine>();
   private processes: FakeProcess[] = [];
   private files = new Map<string, Map<string, string>>();
+  private symlinks = new Map<string, Map<string, string>>();
   private failAmbiguous: string | null = null;
   private failDefinite = false;
+  private failWrite: string | null = null;
   private operationToMachine = new Map<string, string>();
 
   failNextCreateAmbiguous(machineId: string): void {
@@ -44,6 +56,21 @@ export class FakeInstabox implements InstaboxProvider {
 
   failNextCreateDefinite(): void {
     this.failDefinite = true;
+  }
+
+  /** Make the next guest write fail with this bounded, secret-safe reason. */
+  failNextWrite(reason: string): void {
+    this.failWrite = reason;
+  }
+
+  /** Plant a workload-planted symlink at a project-relative path. */
+  plantSymlink(machineId: string, relativePath: string, absoluteTarget: string): void {
+    let map = this.symlinks.get(machineId);
+    if (map === undefined) {
+      map = new Map();
+      this.symlinks.set(machineId, map);
+    }
+    map.set(relativePath, absoluteTarget);
   }
 
   markTermIgnoring(pid: number): void {
@@ -119,36 +146,41 @@ export class FakeInstabox implements InstaboxProvider {
       this.processes.push({ pid, machineId: request.machineId, ignoresTerm: false, alive: true, command: request.command });
       return { stdout: '', stderr: '', exitCode: 0, timedOut: false, truncated: false, pid };
     }
+    const cwdDenial = this.cwdDenial(request);
+    if (cwdDenial !== null) return cwdDenial;
     return this.interpret(request);
   }
 
+  /**
+   * The SDK guest agent applies cwd as the template user before the command
+   * runs. A cwd the template user cannot traverse fails the launch before
+   * any shell starts, with the diagnosis on the server error field.
+   */
+  private cwdDenial(request: ProviderCommandRequest): ProviderCommandResult | null {
+    if (request.cwd === undefined || TEMPLATE_ACCESSIBLE_CWDS.has(request.cwd)) return null;
+    const raw = `failed to start command: chdir ${request.cwd}: permission denied`;
+    const detail = sanitizeProviderError(raw, request.command);
+    return { stdout: '', stderr: detail, exitCode: 126, timedOut: false, truncated: false, error: detail };
+  }
+
   private interpret(request: ProviderCommandRequest): ProviderCommandResult {
-    const files = this.files.get(request.machineId) ?? new Map<string, string>();
-    this.files.set(request.machineId, files);
-    const write = /^ranger-write (\S+) (\d+)$/.exec(request.command);
-    if (write !== null) {
-      const encoded = request.envs?.['RANGER_B64'] ?? '';
-      files.set(write[1]!, Buffer.from(encoded, 'base64').toString('utf8'));
-      return { stdout: 'ok\n', stderr: '', exitCode: 0, timedOut: false, truncated: false };
+    const machineId = request.machineId;
+    const files = this.files.get(machineId) ?? new Map<string, string>();
+    this.files.set(machineId, files);
+    const planted = this.symlinks.get(machineId) ?? new Map<string, string>();
+
+    // Real guest write protocol: no-follow script, target via env, payload
+    // on stdin. Modeled with the same refusals as the guest script.
+    if (request.envs?.[WRITE_PATH_ENV] !== undefined && request.command.includes('python3 -c')) {
+      return this.interpretWrite(request, files, planted);
     }
-    if (request.command.startsWith('ranger-list ')) {
-      const prefix = request.command.slice('ranger-list '.length);
-      const names = [...files.keys()].filter((name) => name.startsWith(prefix));
-      return { stdout: names.join('\n'), stderr: '', exitCode: 0, timedOut: false, truncated: false };
-    }
-    if (request.command.startsWith('ranger-read ')) {
-      const rel = request.command.slice('ranger-read '.length);
-      const body = files.get(rel);
-      if (body === undefined) return { stdout: '', stderr: 'missing\n', exitCode: 1, timedOut: false, truncated: false };
-      return { stdout: Buffer.from(body).toString('base64'), stderr: '', exitCode: 0, timedOut: false, truncated: false };
+    if (request.command.includes('useradd') || request.command.includes('bootstrap-complete')) {
+      return { stdout: 'bootstrap-complete\n', stderr: '', exitCode: 0, timedOut: false, truncated: false };
     }
     if (request.command.includes('echo')) {
       const tokens = [...request.command.matchAll(/'([^'\\]+)'/g)].map((match) => match[1] ?? '');
       const text = tokens.filter((token) => token !== 'echo').at(-1) ?? 'hello';
       return { stdout: `${text}\n`, stderr: '', exitCode: 0, timedOut: false, truncated: false };
-    }
-    if (request.command.includes('useradd') || request.command.includes('bootstrap-complete')) {
-      return { stdout: 'bootstrap-complete\n', stderr: '', exitCode: 0, timedOut: false, truncated: false };
     }
     if (request.command.includes('id -u')) {
       return { stdout: '1100\n', stderr: '', exitCode: 0, timedOut: false, truncated: false };
@@ -159,7 +191,45 @@ export class FakeInstabox implements InstaboxProvider {
     if (request.command.includes('docker')) {
       return { stdout: '', stderr: 'permission denied\n', exitCode: 1, timedOut: false, truncated: false };
     }
-    return { stdout: 'ok\n', stderr: '', exitCode: 0, timedOut: false, truncated: false };
+    // Fail closed: an unmodeled command must not look like a quiet success.
+    return {
+      stdout: '',
+      stderr: 'fake-provider-unsupported-command\n',
+      exitCode: 127,
+      timedOut: false,
+      truncated: false,
+      error: 'fake-provider-unsupported-command',
+    };
+  }
+
+  private interpretWrite(
+    request: ProviderCommandRequest,
+    files: Map<string, string>,
+    planted: Map<string, string>,
+  ): ProviderCommandResult {
+    const refused = (errno: number): ProviderCommandResult => ({
+      stdout: '',
+      stderr: `guest-write-refused errno=${errno}\n`,
+      exitCode: 4,
+      timedOut: false,
+      truncated: false,
+    });
+    if (this.failWrite !== null) {
+      const reason = this.failWrite;
+      this.failWrite = null;
+      return { stdout: '', stderr: `${reason}\n`, exitCode: 4, timedOut: false, truncated: false };
+    }
+    const relativePath = request.envs?.[WRITE_PATH_ENV] ?? '';
+    const parts = relativePath.split('/').filter((part) => part !== '' && part !== '.');
+    if (relativePath.startsWith('/') || parts.length === 0 || parts.includes('..')) return refused(0);
+    // O_NOFOLLOW parity: any workload-planted symlink on the path is
+    // refused, never followed, including intermediate directories.
+    for (let depth = 1; depth <= parts.length; depth += 1) {
+      if (planted.has(parts.slice(0, depth).join('/'))) return refused(40);
+    }
+    const payload = Buffer.from(request.stdin ?? '', 'base64').toString('utf8');
+    files.set(parts.join('/'), payload);
+    return { stdout: 'guest-write-ok\n', stderr: '', exitCode: 0, timedOut: false, truncated: false };
   }
 
   async signal(request: ProviderSignal): Promise<boolean> {

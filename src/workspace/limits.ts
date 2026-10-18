@@ -46,19 +46,30 @@ export function isFixedPreviewPort(port: number): port is FixedPreviewPort {
  */
 /**
  * Enter the workload cgroup, then drop to the restricted user with
- * no-new-privileges. The SDK exec API has no user field, so the drop is
- * the fence. The inner command is already shell-quoted.
+ * no-new-privileges, and only then chdir into the project.
  *
- * A missing cgroup or a failed drop exits before the payload. Never fall
- * back to the sudo-enabled template user.
+ * The SDK exec API has no user field: its guest agent starts every command
+ * as the template user and applies `cwd` before the command runs. The
+ * project is owned by the workload identity, so a provider-level cwd is
+ * denied before any shell starts. The chdir therefore happens inside the
+ * wrapper, after runuser/setpriv, where it succeeds as the workload owner.
+ *
+ * `inner` is the raw shell fragment to run; the fence quotes it. A missing
+ * cgroup or a failed drop exits before the payload. Never fall back to the
+ * sudo-enabled template user.
  */
 export function fencedWorkloadCommand(inner: string): string {
+  const afterDrop = `cd -- ${shellQuote(WORKLOAD_PROJECT)} && ${inner}`;
   return [
     ROOT_PATH,
     `test -f ${WORKLOAD_CGROUP}/cgroup.procs`,
     `echo $$ > ${WORKLOAD_CGROUP}/cgroup.procs`,
-    `exec runuser --user ${WORKLOAD_USER} --group ${WORKLOAD_USER} -- setpriv --no-new-privs --inh-caps -all --ambient-caps -all --bounding-set -all -- bash -lc ${inner}`,
+    `exec runuser --user ${WORKLOAD_USER} --group ${WORKLOAD_USER} -- setpriv --no-new-privs --inh-caps -all --ambient-caps -all --bounding-set -all -- bash -lc ${shellQuote(afterDrop)}`,
   ].join('\n');
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 export const WORKLOAD_EGRESS_RULES = [
