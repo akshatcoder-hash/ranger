@@ -1,0 +1,1157 @@
+[
+  {
+    "type": "createFxRectLayer",
+    "compositionId": "main",
+    "layerId": 1,
+    "name": "Context to plan · track",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "transform": {
+      "anchorPoint": [
+        180.0,
+        1.0
+      ],
+      "position": [
+        180,
+        158
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "rect": {
+      "position": [
+        0,
+        0
+      ],
+      "size": [
+        360,
+        2
+      ],
+      "fillColor": [
+        0.88,
+        0.87,
+        0.84,
+        1
+      ],
+      "fillEnabled": true,
+      "strokeColor": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "strokeEnabled": false,
+      "strokeWidth": 0,
+      "roundness": 0
+    }
+  },
+  {
+    "type": "createFxRectLayer",
+    "compositionId": "main",
+    "layerId": 2,
+    "name": "Plan to build · track",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "transform": {
+      "anchorPoint": [
+        180.0,
+        1.0
+      ],
+      "position": [
+        540,
+        158
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "rect": {
+      "position": [
+        0,
+        0
+      ],
+      "size": [
+        360,
+        2
+      ],
+      "fillColor": [
+        0.88,
+        0.87,
+        0.84,
+        1
+      ],
+      "fillEnabled": true,
+      "strokeColor": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "strokeEnabled": false,
+      "strokeWidth": 0,
+      "roundness": 0
+    }
+  },
+  {
+    "type": "createFxRectLayer",
+    "compositionId": "main",
+    "layerId": 3,
+    "name": "Workflow stop 1",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "transform": {
+      "anchorPoint": [
+        5.0,
+        5.0
+      ],
+      "position": [
+        180,
+        158
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "rect": {
+      "position": [
+        0,
+        0
+      ],
+      "size": [
+        10,
+        10
+      ],
+      "fillColor": [
+        0.84,
+        0.87,
+        0.83,
+        1
+      ],
+      "fillEnabled": true,
+      "strokeColor": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "strokeEnabled": false,
+      "strokeWidth": 0,
+      "roundness": 5
+    }
+  },
+  {
+    "type": "createFxRectLayer",
+    "compositionId": "main",
+    "layerId": 4,
+    "name": "Workflow stop 2",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "transform": {
+      "anchorPoint": [
+        5.0,
+        5.0
+      ],
+      "position": [
+        540,
+        158
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "rect": {
+      "position": [
+        0,
+        0
+      ],
+      "size": [
+        10,
+        10
+      ],
+      "fillColor": [
+        0.84,
+        0.87,
+        0.83,
+        1
+      ],
+      "fillEnabled": true,
+      "strokeColor": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "strokeEnabled": false,
+      "strokeWidth": 0,
+      "roundness": 5
+    }
+  },
+  {
+    "type": "createFxRectLayer",
+    "compositionId": "main",
+    "layerId": 5,
+    "name": "Workflow stop 3",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "transform": {
+      "anchorPoint": [
+        5.0,
+        5.0
+      ],
+      "position": [
+        900,
+        158
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "rect": {
+      "position": [
+        0,
+        0
+      ],
+      "size": [
+        10,
+        10
+      ],
+      "fillColor": [
+        0.84,
+        0.87,
+        0.83,
+        1
+      ],
+      "fillEnabled": true,
+      "strokeColor": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "strokeEnabled": false,
+      "strokeWidth": 0,
+      "roundness": 5
+    }
+  },
+  {
+    "type": "createFxRectLayer",
+    "compositionId": "main",
+    "layerId": 7,
+    "name": "Workflow step card 1",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "transform": {
+      "anchorPoint": [
+        150.0,
+        82.0
+      ],
+      "position": [
+        180,
+        271
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "rect": {
+      "position": [
+        0,
+        0
+      ],
+      "size": [
+        300,
+        164
+      ],
+      "fillColor": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "fillEnabled": true,
+      "strokeColor": [
+        0.91,
+        0.9,
+        0.88,
+        1
+      ],
+      "strokeEnabled": true,
+      "strokeWidth": 1,
+      "roundness": 10
+    }
+  },
+  {
+    "type": "createFxRectLayer",
+    "compositionId": "main",
+    "layerId": 8,
+    "name": "Workflow step card 2",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "transform": {
+      "anchorPoint": [
+        150.0,
+        82.0
+      ],
+      "position": [
+        540,
+        271
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "rect": {
+      "position": [
+        0,
+        0
+      ],
+      "size": [
+        300,
+        164
+      ],
+      "fillColor": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "fillEnabled": true,
+      "strokeColor": [
+        0.91,
+        0.9,
+        0.88,
+        1
+      ],
+      "strokeEnabled": true,
+      "strokeWidth": 1,
+      "roundness": 10
+    }
+  },
+  {
+    "type": "createFxRectLayer",
+    "compositionId": "main",
+    "layerId": 9,
+    "name": "Workflow step card 3",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "transform": {
+      "anchorPoint": [
+        150.0,
+        82.0
+      ],
+      "position": [
+        900,
+        271
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "rect": {
+      "position": [
+        0,
+        0
+      ],
+      "size": [
+        300,
+        164
+      ],
+      "fillColor": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "fillEnabled": true,
+      "strokeColor": [
+        0.91,
+        0.9,
+        0.88,
+        1
+      ],
+      "strokeEnabled": true,
+      "strokeWidth": 1,
+      "roundness": 10
+    }
+  },
+  {
+    "type": "createFxRectLayer",
+    "compositionId": "main",
+    "layerId": 6,
+    "name": "Progress marker",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "transform": {
+      "anchorPoint": [
+        4.0,
+        4.0
+      ],
+      "position": [
+        180,
+        158
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "rect": {
+      "position": [
+        0,
+        0
+      ],
+      "size": [
+        8,
+        8
+      ],
+      "fillColor": [
+        0.19,
+        0.42,
+        0.32,
+        1
+      ],
+      "fillEnabled": true,
+      "strokeColor": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "strokeEnabled": false,
+      "strokeWidth": 0,
+      "roundness": 4
+    },
+    "insertIndex": 0
+  },
+  {
+    "type": "createFxTextLayer",
+    "compositionId": "main",
+    "layerId": 10,
+    "name": "Heading",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "insertIndex": 0,
+    "transform": {
+      "anchorPoint": [
+        0,
+        0
+      ],
+      "position": [
+        48,
+        48
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "sourceText": {
+      "text": "A useful handoff, made visible.",
+      "fontFamily": "Inter",
+      "fontStyle": "Medium",
+      "fontSize": 31,
+      "fillColor": [
+        0.13,
+        0.13,
+        0.13,
+        1
+      ],
+      "strokeWidth": 0,
+      "justification": "left",
+      "boxText": true,
+      "boxPosition": [
+        0,
+        0
+      ],
+      "boxSize": [
+        960,
+        48
+      ],
+      "verticalAlign": "top",
+      "leading": 41.85
+    }
+  },
+  {
+    "type": "createFxTextLayer",
+    "compositionId": "main",
+    "layerId": 11,
+    "name": "Subheading",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "insertIndex": 0,
+    "transform": {
+      "anchorPoint": [
+        0,
+        0
+      ],
+      "position": [
+        49,
+        92
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "sourceText": {
+      "text": "Context, a shared plan, and work you can follow as it happens.",
+      "fontFamily": "Inter",
+      "fontStyle": "Regular",
+      "fontSize": 15,
+      "fillColor": [
+        0.44,
+        0.44,
+        0.42,
+        1
+      ],
+      "strokeWidth": 0,
+      "justification": "left",
+      "boxText": true,
+      "boxPosition": [
+        0,
+        0
+      ],
+      "boxSize": [
+        960,
+        27
+      ],
+      "verticalAlign": "top",
+      "leading": 20.25
+    }
+  },
+  {
+    "type": "createFxTextLayer",
+    "compositionId": "main",
+    "layerId": 12,
+    "name": "Step 1 label",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "insertIndex": 0,
+    "transform": {
+      "anchorPoint": [
+        0,
+        0
+      ],
+      "position": [
+        56,
+        212
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "sourceText": {
+      "text": "01  /  CONTEXT",
+      "fontFamily": "Inter",
+      "fontStyle": "Medium",
+      "fontSize": 10,
+      "fillColor": [
+        0.38,
+        0.47,
+        0.42,
+        1
+      ],
+      "strokeWidth": 0,
+      "justification": "left",
+      "boxText": true,
+      "boxPosition": [
+        0,
+        0
+      ],
+      "boxSize": [
+        248,
+        17
+      ],
+      "verticalAlign": "top",
+      "leading": 13.5
+    }
+  },
+  {
+    "type": "createFxTextLayer",
+    "compositionId": "main",
+    "layerId": 13,
+    "name": "Step 1 title",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "insertIndex": 0,
+    "transform": {
+      "anchorPoint": [
+        0,
+        0
+      ],
+      "position": [
+        56,
+        235
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "sourceText": {
+      "text": "Talk it through",
+      "fontFamily": "Inter",
+      "fontStyle": "Medium",
+      "fontSize": 19,
+      "fillColor": [
+        0.13,
+        0.13,
+        0.13,
+        1
+      ],
+      "strokeWidth": 0,
+      "justification": "left",
+      "boxText": true,
+      "boxPosition": [
+        0,
+        0
+      ],
+      "boxSize": [
+        248,
+        30
+      ],
+      "verticalAlign": "top",
+      "leading": 25.650000000000002
+    }
+  },
+  {
+    "type": "createFxTextLayer",
+    "compositionId": "main",
+    "layerId": 14,
+    "name": "Step 1 detail",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "insertIndex": 0,
+    "transform": {
+      "anchorPoint": [
+        0,
+        0
+      ],
+      "position": [
+        56,
+        270
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "sourceText": {
+      "text": "A real screen and a real problem.\nRanger follows along.",
+      "fontFamily": "Inter",
+      "fontStyle": "Regular",
+      "fontSize": 12,
+      "fillColor": [
+        0.46,
+        0.46,
+        0.44,
+        1
+      ],
+      "strokeWidth": 0,
+      "justification": "left",
+      "boxText": true,
+      "boxPosition": [
+        0,
+        0
+      ],
+      "boxSize": [
+        248,
+        55
+      ],
+      "verticalAlign": "top",
+      "leading": 16.200000000000003
+    }
+  },
+  {
+    "type": "createFxTextLayer",
+    "compositionId": "main",
+    "layerId": 15,
+    "name": "Step 2 label",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "insertIndex": 0,
+    "transform": {
+      "anchorPoint": [
+        0,
+        0
+      ],
+      "position": [
+        416,
+        212
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "sourceText": {
+      "text": "02  /  PLAN",
+      "fontFamily": "Inter",
+      "fontStyle": "Medium",
+      "fontSize": 10,
+      "fillColor": [
+        0.38,
+        0.47,
+        0.42,
+        1
+      ],
+      "strokeWidth": 0,
+      "justification": "left",
+      "boxText": true,
+      "boxPosition": [
+        0,
+        0
+      ],
+      "boxSize": [
+        248,
+        17
+      ],
+      "verticalAlign": "top",
+      "leading": 13.5
+    }
+  },
+  {
+    "type": "createFxTextLayer",
+    "compositionId": "main",
+    "layerId": 16,
+    "name": "Step 2 title",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "insertIndex": 0,
+    "transform": {
+      "anchorPoint": [
+        0,
+        0
+      ],
+      "position": [
+        416,
+        235
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "sourceText": {
+      "text": "Agree on the plan",
+      "fontFamily": "Inter",
+      "fontStyle": "Medium",
+      "fontSize": 19,
+      "fillColor": [
+        0.13,
+        0.13,
+        0.13,
+        1
+      ],
+      "strokeWidth": 0,
+      "justification": "left",
+      "boxText": true,
+      "boxPosition": [
+        0,
+        0
+      ],
+      "boxSize": [
+        248,
+        30
+      ],
+      "verticalAlign": "top",
+      "leading": 25.650000000000002
+    }
+  },
+  {
+    "type": "createFxTextLayer",
+    "compositionId": "main",
+    "layerId": 17,
+    "name": "Step 2 detail",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "insertIndex": 0,
+    "transform": {
+      "anchorPoint": [
+        0,
+        0
+      ],
+      "position": [
+        416,
+        270
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "sourceText": {
+      "text": "Choose the steps together\nbefore code changes.",
+      "fontFamily": "Inter",
+      "fontStyle": "Regular",
+      "fontSize": 12,
+      "fillColor": [
+        0.46,
+        0.46,
+        0.44,
+        1
+      ],
+      "strokeWidth": 0,
+      "justification": "left",
+      "boxText": true,
+      "boxPosition": [
+        0,
+        0
+      ],
+      "boxSize": [
+        248,
+        55
+      ],
+      "verticalAlign": "top",
+      "leading": 16.200000000000003
+    }
+  },
+  {
+    "type": "createFxTextLayer",
+    "compositionId": "main",
+    "layerId": 18,
+    "name": "Step 3 label",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "insertIndex": 0,
+    "transform": {
+      "anchorPoint": [
+        0,
+        0
+      ],
+      "position": [
+        776,
+        212
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "sourceText": {
+      "text": "03  /  BUILD",
+      "fontFamily": "Inter",
+      "fontStyle": "Medium",
+      "fontSize": 10,
+      "fillColor": [
+        0.38,
+        0.47,
+        0.42,
+        1
+      ],
+      "strokeWidth": 0,
+      "justification": "left",
+      "boxText": true,
+      "boxPosition": [
+        0,
+        0
+      ],
+      "boxSize": [
+        248,
+        17
+      ],
+      "verticalAlign": "top",
+      "leading": 13.5
+    }
+  },
+  {
+    "type": "createFxTextLayer",
+    "compositionId": "main",
+    "layerId": 19,
+    "name": "Step 3 title",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "insertIndex": 0,
+    "transform": {
+      "anchorPoint": [
+        0,
+        0
+      ],
+      "position": [
+        776,
+        235
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "sourceText": {
+      "text": "Try it together",
+      "fontFamily": "Inter",
+      "fontStyle": "Medium",
+      "fontSize": 19,
+      "fillColor": [
+        0.13,
+        0.13,
+        0.13,
+        1
+      ],
+      "strokeWidth": 0,
+      "justification": "left",
+      "boxText": true,
+      "boxPosition": [
+        0,
+        0
+      ],
+      "boxSize": [
+        248,
+        30
+      ],
+      "verticalAlign": "top",
+      "leading": 25.650000000000002
+    }
+  },
+  {
+    "type": "createFxTextLayer",
+    "compositionId": "main",
+    "layerId": 20,
+    "name": "Step 3 detail",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "insertIndex": 0,
+    "transform": {
+      "anchorPoint": [
+        0,
+        0
+      ],
+      "position": [
+        776,
+        270
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "sourceText": {
+      "text": "Watch the work, review changes,\nthen open the working app.",
+      "fontFamily": "Inter",
+      "fontStyle": "Regular",
+      "fontSize": 12,
+      "fillColor": [
+        0.46,
+        0.46,
+        0.44,
+        1
+      ],
+      "strokeWidth": 0,
+      "justification": "left",
+      "boxText": true,
+      "boxPosition": [
+        0,
+        0
+      ],
+      "boxSize": [
+        248,
+        55
+      ],
+      "verticalAlign": "top",
+      "leading": 16.200000000000003
+    }
+  },
+  {
+    "type": "createFxTextLayer",
+    "compositionId": "main",
+    "layerId": 21,
+    "name": "Footer note",
+    "activeRange": {
+      "start": 0,
+      "duration": 5400
+    },
+    "insertIndex": 0,
+    "transform": {
+      "anchorPoint": [
+        0,
+        0
+      ],
+      "position": [
+        49,
+        382
+      ],
+      "scale": [
+        100,
+        100
+      ],
+      "rotation": 0,
+      "opacity": 100
+    },
+    "sourceText": {
+      "text": "TALK  ·  PLAN  ·  BUILD",
+      "fontFamily": "Inter",
+      "fontStyle": "Medium",
+      "fontSize": 9,
+      "fillColor": [
+        0.49,
+        0.49,
+        0.47,
+        1
+      ],
+      "strokeWidth": 0,
+      "justification": "left",
+      "boxText": true,
+      "boxPosition": [
+        0,
+        0
+      ],
+      "boxSize": [
+        980,
+        16
+      ],
+      "verticalAlign": "top",
+      "leading": 12.15
+    }
+  },
+  {
+    "type": "setFxPropertyKeyframes",
+    "compositionId": "main",
+    "property": {
+      "layerId": 6,
+      "propertyType": "positionX"
+    },
+    "keyframes": [
+      {
+        "id": "workflow-dot-start",
+        "layerTime": 0,
+        "value": {
+          "type": "float",
+          "value": 180
+        },
+        "easing": {
+          "type": "linear"
+        }
+      },
+      {
+        "id": "workflow-dot-plan",
+        "layerTime": 1800,
+        "value": {
+          "type": "float",
+          "value": 540
+        },
+        "easing": {
+          "type": "cubicBezier",
+          "x1": 0.23,
+          "y1": 1,
+          "x2": 0.32,
+          "y2": 1
+        }
+      },
+      {
+        "id": "workflow-dot-build",
+        "layerTime": 3600,
+        "value": {
+          "type": "float",
+          "value": 900
+        },
+        "easing": {
+          "type": "cubicBezier",
+          "x1": 0.23,
+          "y1": 1,
+          "x2": 0.32,
+          "y2": 1
+        }
+      },
+      {
+        "id": "workflow-dot-hold",
+        "layerTime": 5200,
+        "value": {
+          "type": "float",
+          "value": 900
+        },
+        "easing": {
+          "type": "linear"
+        }
+      }
+    ]
+  }
+]

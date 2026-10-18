@@ -1,0 +1,4 @@
+[
+  {"type":"updateRectLayer","compositionId":"main","layerId":1,"values":{"x":360,"y":158}},
+  {"type":"updateRectLayer","compositionId":"main","layerId":2,"values":{"x":720,"y":158}}
+]
