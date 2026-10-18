@@ -141,18 +141,21 @@ Plan versions, revisions and approvals
 - `GET /v1/projects/{projectId}/approvals` — listApprovals
 
 ### runs
-Engineering runs: start, pause, resume, cancel and records
+Engineering runs: start, status and cancel. Pause and resume are rejected as unsupported (`unsupported_operation`, not success).
 
 - `POST /v1/projects/{projectId}/runs` — startRun
 - `GET /v1/projects/{projectId}/runs` — listRuns
 - `GET /v1/projects/{projectId}/runs/{runId}` — getRun
-- `POST /v1/projects/{projectId}/runs/{runId}/pause` — pauseRun
-- `POST /v1/projects/{projectId}/runs/{runId}/resume` — resumeRun
+- `POST /v1/projects/{projectId}/runs/{runId}/pause` — pauseRun (unsupported)
+- `POST /v1/projects/{projectId}/runs/{runId}/resume` — resumeRun (unsupported)
 - `POST /v1/projects/{projectId}/runs/{runId}/cancel` — cancelRun
 
 ### workspace
-Workspace status, files, commands, logs, diffs, artifacts and test results
+Ephemeral Instabox workspace: create, files, commands, screenshot, cleanup. No container adapter and no persistent VM.
 
+- `POST /v1/projects/{projectId}/workspace` — createWorkspace
+- `DELETE /v1/projects/{projectId}/workspace` — destroyWorkspace
+- `POST /v1/projects/{projectId}/workspace/screenshots` — captureWorkspaceScreenshot
 - `GET /v1/projects/{projectId}/workspace/status` — getWorkspaceStatus
 - `GET /v1/projects/{projectId}/workspace/files` — listWorkspaceFiles
 - `GET /v1/projects/{projectId}/workspace/file` — readWorkspaceFile

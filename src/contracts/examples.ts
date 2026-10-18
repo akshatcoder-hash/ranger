@@ -202,7 +202,6 @@ export const CONTRACT_EXAMPLES: ContractExample[] = [
       },
       adapters: {
         instabox: { kind: 'vm', available: false },
-        trustedFixture: { kind: 'container', available: false },
       },
       grounding: {
         atomOrbit: { enabled: false, detail: 'Optional Atom/Orbit grounding interface is disabled until real endpoints and artifacts exist' },

@@ -1,52 +1,151 @@
 import { randomUUID } from 'node:crypto';
-import Fastify from 'fastify';
-import { loadConfig } from '../config.js';
-import { Errors, redact } from '../errors.js';
+import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
+import websocket from '@fastify/websocket';
+import type { WebSocket as WsWebSocket } from 'ws';
+import { loadConfig, type RangerConfig } from '../config.js';
+import { openDatabase } from '../db/db.js';
+import { runMigrations, migrationsDirFromCwd } from '../db/migrate.js';
+import { Errors, isAppError, redact } from '../errors.js';
 import { redactRequestUrl, secretSafeLoggerOptions } from '../http/safe-url.js';
+import { consumeTicket } from '../auth/tickets.js';
+import { membershipRole } from '../auth/authorization.js';
+import { getDesktopSession, getPreviewSession, getWorkspace } from '../workspace/store.js';
+import { FIXED_PREVIEW_PORTS, isFixedPreviewPort } from '../workspace/limits.js';
 import { installGracefulShutdown } from './lifecycle.js';
 
 /**
- * Ranger preview gateway entrypoint (default 127.0.0.1:3101).
+ * Separate-origin preview gateway.
  *
- * The gateway is a separate origin from the control-service cookies. Today it
- * serves /health and explicitly refuses everything else: the protected
- * desktop stream and private SSH app proxy arrive with the execution
- * milestone. It never accepts arbitrary proxy targets.
+ * Desktop stream and private app preview authenticate with a single-use
+ * ticket plus current membership. Provider stream URLs stay server-side.
+ * Arbitrary target URLs and non-fixed guest ports are rejected.
  */
-export async function main(): Promise<void> {
-  const config = await loadConfig(process.env);
+
+const revokedViewers = new Set<string>();
+
+export function markDesktopViewerRevoked(sessionId: string): void {
+  revokedViewers.add(sessionId);
+}
+
+function sendError(reply: FastifyReply, req: FastifyRequest, status: number, code: string, message: string): void {
+  void reply.code(status).send({
+    requestId: req.id,
+    error: { code, message: redact(message) },
+  });
+}
+
+function ticketFrom(req: FastifyRequest): string {
+  const query = req.query as { ticket?: string };
+  if (typeof query.ticket !== 'string' || query.ticket.length === 0) {
+    throw Errors.unauthorized('Connection ticket is required', { reason: 'ticket_missing' });
+  }
+  return query.ticket;
+}
+
+export async function buildPreviewApp(config: RangerConfig) {
+  const db = openDatabase(config.dataDir);
+  runMigrations(db, migrationsDirFromCwd());
   const app = Fastify({
     genReqId: () => randomUUID(),
     logger: secretSafeLoggerOptions(config.logLevel),
   });
+  await app.register(websocket);
 
   app.get('/health', async () => ({ status: 'ok' }));
 
+  app.get('/v1/projects/:projectId/desktop/sessions/:sessionId/stream', { websocket: true }, (socket: WsWebSocket, req: FastifyRequest) => {
+    const params = req.params as { projectId: string; sessionId: string };
+    try {
+      const binding = consumeTicket(db, ticketFrom(req), {
+        purpose: 'desktop-stream',
+        projectId: params.projectId,
+      });
+      if (membershipRole(db, params.projectId, binding.principalId) === null) {
+        socket.close(4401, 'unauthorized');
+        return;
+      }
+      const session = getDesktopSession(db, params.projectId, params.sessionId);
+      if (session === null || session.state !== 'active' || session.revokedAt !== null || session.expiresAt < Date.now()) {
+        socket.close(4401, 'unauthorized');
+        return;
+      }
+      if (revokedViewers.has(params.sessionId)) {
+        socket.close(4401, 'unauthorized');
+        return;
+      }
+      const workspace = getWorkspace(db, params.projectId);
+      if (workspace === null || workspace.machineId === null || workspace.observedState !== 'running') {
+        socket.close(4401, 'unauthorized');
+        return;
+      }
+      socket.send(JSON.stringify({ kind: 'desktop', sessionId: params.sessionId, state: 'live' }));
+      const timer = setInterval(() => {
+        const current = getDesktopSession(db, params.projectId, params.sessionId);
+        if (current === null || current.state !== 'active' || revokedViewers.has(params.sessionId) || membershipRole(db, params.projectId, binding.principalId) === null) {
+          clearInterval(timer);
+          socket.close(4401, 'unauthorized');
+          return;
+        }
+        socket.send(JSON.stringify({ kind: 'desktop', sessionId: params.sessionId, state: 'live', at: Date.now() }));
+      }, 1000);
+      socket.on('close', () => clearInterval(timer));
+    } catch {
+      socket.close(4401, 'unauthorized');
+    }
+  });
+
+  app.get('/v1/projects/:projectId/preview/sessions/:sessionId/app', async (req, reply) => {
+    const params = req.params as { projectId: string; sessionId: string };
+    const target = (req.query as { target?: string; url?: string }).target ?? (req.query as { url?: string }).url;
+    if (target !== undefined) {
+      throw Errors.validation('Arbitrary preview targets are rejected', { reason: 'preview_target_rejected' });
+    }
+    const binding = consumeTicket(db, ticketFrom(req), {
+      purpose: 'app-preview',
+      projectId: params.projectId,
+    });
+    if (membershipRole(db, params.projectId, binding.principalId) === null) {
+      throw Errors.forbidden('Not a member of this project');
+    }
+    const session = getPreviewSession(db, params.projectId, params.sessionId);
+    if (session === null || session.state !== 'active' || session.expiresAt < Date.now()) {
+      throw Errors.unauthorized('Preview session is not active', { reason: 'preview_inactive' });
+    }
+    if (!isFixedPreviewPort(session.guestPort)) {
+      throw Errors.validation('Preview port is not an authorized fixed target', {
+        reason: 'preview_target_rejected',
+        allowed: [...FIXED_PREVIEW_PORTS],
+      });
+    }
+    return reply.send({
+      requestId: req.id,
+      sessionId: session.id,
+      guestPort: session.guestPort,
+      bindHost: '127.0.0.1',
+    });
+  });
+
   app.all('*', async (req) => {
-    throw Errors.notConfigured(
-      'The preview gateway has no configured routes yet; desktop stream and app proxy land with the execution milestone',
-      { gatewayPath: redactRequestUrl(req.url) },
-    );
+    throw Errors.notFound(`No preview route for ${redactRequestUrl(req.url)}`);
   });
 
   app.setErrorHandler((error, req, reply) => {
-    const appErr = error as { code?: string; message?: string };
-    const isEnvelope = typeof appErr.code === 'string' && appErr.code === 'not_configured';
-    void reply
-      .code(isEnvelope ? 501 : 500)
-      .send({
-        requestId: req.id,
-        error: {
-          code: isEnvelope ? 'not_configured' : 'internal_error',
-          message: redact(String(appErr.message ?? 'Internal error')),
-        },
-      });
+    if (isAppError(error)) {
+      sendError(reply, req, error.httpStatus, error.code, error.message);
+      return;
+    }
+    sendError(reply, req, 500, 'internal_error', 'Internal error');
   });
 
-  // Same ordering as the worker: shutdown is installed before the port is
-  // bound, so an immediate SIGTERM after health uses cleanup.
+  return { app, db };
+}
+
+export async function main(): Promise<void> {
+  const config = await loadConfig(process.env);
+  const { app, db } = await buildPreviewApp(config);
   installGracefulShutdown('ranger preview', async () => {
     await app.close();
+    db.close();
   });
   await app.listen({ host: config.host, port: config.previewPort });
   process.stdout.write(
@@ -54,7 +153,11 @@ export async function main(): Promise<void> {
   );
 }
 
-main().catch((cause) => {
-  process.stderr.write(`{"msg":"ranger preview failed to start","err":${JSON.stringify(String(cause))}}\n`);
-  process.exit(1);
-});
+const entryArg = process.argv[1] ?? '';
+const isDirect = entryArg.endsWith('/preview.js') || entryArg.endsWith('/preview.ts');
+if (isDirect) {
+  main().catch((cause) => {
+    process.stderr.write(`{"msg":"ranger preview failed to start","err":${JSON.stringify(String(cause))}}\n`);
+    process.exit(1);
+  });
+}

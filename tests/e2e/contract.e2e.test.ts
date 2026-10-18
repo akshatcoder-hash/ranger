@@ -26,8 +26,6 @@ const NOT_CONFIGURED_FAMILY_SAMPLES: Record<string, (client: RangerClient) => Pr
   capture: (client) => client.startCaptureSession({ path: { projectId: PRJ }, body: {} }),
   'plans-approvals': (client) => client.listPlans({ path: { projectId: PRJ } }),
   runs: (client) => client.listRuns({ path: { projectId: PRJ } }),
-  workspace: (client) => client.getWorkspaceStatus({ path: { projectId: PRJ } }),
-  'desktop-preview': (client) => client.createDesktopSession({ path: { projectId: PRJ }, body: {} }),
   retrieval: (client) => client.retrievalStatus({ path: { projectId: PRJ } }),
 };
 
@@ -38,6 +36,8 @@ const IMPLEMENTED_FAMILY_SAMPLES: Record<string, (client: RangerClient) => Promi
   repositories: (client) => client.getRepository({ path: { projectId: PRJ } }),
   'conversations-requirements': (client) => client.listConversations({ path: { projectId: PRJ } }),
   events: (client) => client.replayProjectEvents({ path: { projectId: PRJ } }),
+  workspace: (client) => client.getWorkspaceStatus({ path: { projectId: PRJ } }),
+  'desktop-preview': (client) => client.createDesktopSession({ path: { projectId: PRJ }, body: {} }),
 };
 
 let proc: ChildProcess;

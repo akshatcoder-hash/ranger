@@ -63,6 +63,7 @@ import type {
   WorkspaceFileContentResponse,
   WorkspaceFileListResponse,
   WorkspaceFileWriteResponse,
+  WorkspaceScreenshotResponse,
   WorkspaceStatusResponse,
 } from '../contracts/types.js';
 import { WebSocket } from 'ws';
@@ -585,7 +586,7 @@ export class RangerClient {
     return this.request<RunResponse>('GET', '/v1/projects/{projectId}/runs/{runId}', args as OpArgs);
   }
 
-  /** Pause a run at a checkpoint, quiescing active execution */
+  /** Unsupported: VM and run pause are not delivered capabilities */
   async pauseRun(args: { path: {
   "projectId": string;
   "runId": string;
@@ -593,7 +594,7 @@ export class RangerClient {
     return this.request<RunResponse>('POST', '/v1/projects/{projectId}/runs/{runId}/pause', args as OpArgs);
   }
 
-  /** Resume a paused run, reconciling state without duplicating work */
+  /** Unsupported: VM and run resume are not delivered capabilities */
   async resumeRun(args: { path: {
   "projectId": string;
   "runId": string;
@@ -607,6 +608,29 @@ export class RangerClient {
   "runId": string;
 } }): Promise<RunResponse> {
     return this.request<RunResponse>('POST', '/v1/projects/{projectId}/runs/{runId}/cancel', args as OpArgs);
+  }
+
+  /** Create one ephemeral Instabox workspace for the project (server-resolved sandbox, vault false) */
+  async createWorkspace(args: { path: {
+  "projectId": string;
+}; body: {
+  "sourceRevision"?: string;
+} }): Promise<WorkspaceStatusResponse> {
+    return this.request<WorkspaceStatusResponse>('POST', '/v1/projects/{projectId}/workspace', args as OpArgs);
+  }
+
+  /** Destroy the project workspace and keep persisted source outside the VM */
+  async destroyWorkspace(args: { path: {
+  "projectId": string;
+} }): Promise<WorkspaceStatusResponse> {
+    return this.request<WorkspaceStatusResponse>('DELETE', '/v1/projects/{projectId}/workspace', args as OpArgs);
+  }
+
+  /** Capture a real guest desktop screenshot and persist it as an artifact */
+  async captureWorkspaceScreenshot(args: { path: {
+  "projectId": string;
+}; body: Record<string, unknown> }): Promise<WorkspaceScreenshotResponse> {
+    return this.request<WorkspaceScreenshotResponse>('POST', '/v1/projects/{projectId}/workspace/screenshots', args as OpArgs);
   }
 
   /** Workspace health, provider mapping and desired/observed state */

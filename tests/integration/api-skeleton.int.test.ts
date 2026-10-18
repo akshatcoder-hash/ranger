@@ -37,8 +37,6 @@ const FAMILY_SAMPLES: Record<string, { method: 'GET' | 'POST'; url: string; body
   capture: { method: 'POST', url: `/v1/projects/${PRJ}/capture/sessions`, body: {} },
   'plans-approvals': { method: 'GET', url: `/v1/projects/${PRJ}/plans` },
   runs: { method: 'GET', url: `/v1/projects/${PRJ}/runs` },
-  workspace: { method: 'GET', url: `/v1/projects/${PRJ}/workspace/status` },
-  'desktop-preview': { method: 'POST', url: `/v1/projects/${PRJ}/desktop/sessions`, body: {} },
   retrieval: { method: 'GET', url: `/v1/projects/${PRJ}/retrieval/status` },
 };
 
@@ -49,6 +47,8 @@ const IMPLEMENTED_FAMILY_SAMPLES: Record<string, { method: 'GET' | 'POST'; url: 
   repositories: { method: 'GET', url: `/v1/projects/${PRJ}/repository` },
   'conversations-requirements': { method: 'GET', url: `/v1/projects/${PRJ}/conversations` },
   events: { method: 'GET', url: `/v1/projects/${PRJ}/events` },
+  workspace: { method: 'GET', url: `/v1/projects/${PRJ}/workspace/status` },
+  'desktop-preview': { method: 'POST', url: `/v1/projects/${PRJ}/desktop/sessions`, body: {} },
 };
 
 describe('api skeleton', () => {
@@ -114,7 +114,7 @@ describe('api skeleton', () => {
     expect(typeof body.providers?.trace?.detail).toBe('string');
     expect(body.grounding?.atomOrbit?.enabled).toBe(false);
     expect(body.adapters?.instabox?.kind).toBe('vm');
-    expect(body.adapters?.trustedFixture?.kind).toBe('container');
+    expect(body.adapters?.trustedFixture).toBeUndefined();
   });
 
   it('serves the realtime event schema bundle', async () => {

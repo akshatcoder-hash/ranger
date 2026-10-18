@@ -12,6 +12,7 @@ import { registerProjectHandlers } from './handlers-projects.js';
 import { registerRepositoryHandlers } from './handlers-repositories.js';
 import { registerConversationHandlers } from './handlers-conversations.js';
 import { registerEventHandlers } from './handlers-events.js';
+import { registerWorkspaceHandlers } from './handlers-workspace.js';
 
 /**
  * Operation handlers.
@@ -98,8 +99,10 @@ export function buildHandlerMaps(context: HandlerContext): HandlerMaps {
         trace: traceStatus(context.config),
       },
       adapters: {
-        instabox: { kind: 'vm', available: false },
-        trustedFixture: { kind: 'container', available: false },
+        instabox: {
+          kind: 'vm',
+          available: present.has('INSTABOX_API_KEY') && context.config.liveBudgetFile !== null,
+        },
       },
       grounding: {
         atomOrbit: {
@@ -129,6 +132,7 @@ export function buildHandlerMaps(context: HandlerContext): HandlerMaps {
   registerRepositoryHandlers(context, handlers);
   registerConversationHandlers(context, handlers);
   registerEventHandlers(context, handlers, wsHandlers);
+  registerWorkspaceHandlers(context, handlers);
 
   return { http: handlers, ws: wsHandlers };
 }

@@ -50,14 +50,14 @@ export interface ProviderStatus {
 }
 
 export interface AdapterStatus {
-  kind: 'vm' | 'container';
+  kind: 'vm';
   available: boolean;
 }
 
 export interface CapabilitiesResponse extends OkResponse {
   contractVersion: string;
   providers: { xai: ProviderStatus; instabox: ProviderStatus; trace: ProviderStatus };
-  adapters: { instabox: AdapterStatus; trustedFixture: AdapterStatus };
+  adapters: { instabox: AdapterStatus };
   grounding: { atomOrbit: { enabled: boolean; detail: string } };
   limits: {
     maxConcurrentRuns: number;
@@ -428,7 +428,7 @@ export interface WorkspaceStatusResponse extends OkResponse {
   workspace: {
     projectId: string;
     adapter: string;
-    adapterKind: 'vm' | 'container';
+    adapterKind: 'vm';
     desiredState: string;
     observedState: string;
     sourceRevision: string | null;
@@ -443,6 +443,11 @@ export interface WorkspaceFileSummary {
 
 export interface WorkspaceFileListResponse extends OkResponse {
   files: WorkspaceFileSummary[];
+}
+
+export interface WorkspaceScreenshotResponse extends OkResponse {
+  contentBase64: string;
+  artifactId: string;
 }
 
 export interface WorkspaceFileContentResponse extends OkResponse {

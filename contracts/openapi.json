@@ -53,11 +53,11 @@
       },
       {
         "family": "runs",
-        "description": "Engineering runs: start, pause, resume, cancel and records"
+        "description": "Engineering runs: start, status and cancel. Pause and resume are rejected as unsupported"
       },
       {
         "family": "workspace",
-        "description": "Workspace status, files, commands, logs, diffs, artifacts and test results"
+        "description": "Workspace create, status, files, commands, logs, diffs, artifacts, screenshots and cleanup"
       },
       {
         "family": "desktop-preview",
@@ -10456,11 +10456,11 @@
     "/v1/projects/{projectId}/runs/{runId}/pause": {
       "post": {
         "operationId": "pauseRun",
-        "summary": "Pause a run at a checkpoint, quiescing active execution",
+        "summary": "Unsupported: VM and run pause are not delivered capabilities",
         "tags": [
           "runs"
         ],
-        "description": "Pause a run at a checkpoint, quiescing active execution",
+        "description": "Unsupported: VM and run pause are not delivered capabilities",
         "parameters": [
           {
             "name": "projectId",
@@ -10677,11 +10677,11 @@
     "/v1/projects/{projectId}/runs/{runId}/resume": {
       "post": {
         "operationId": "resumeRun",
-        "summary": "Resume a paused run, reconciling state without duplicating work",
+        "summary": "Unsupported: VM and run resume are not delivered capabilities",
         "tags": [
           "runs"
         ],
-        "description": "Resume a paused run, reconciling state without duplicating work",
+        "description": "Unsupported: VM and run resume are not delivered capabilities",
         "parameters": [
           {
             "name": "projectId",
@@ -11116,6 +11116,582 @@
         }
       }
     },
+    "/v1/projects/{projectId}/workspace": {
+      "post": {
+        "operationId": "createWorkspace",
+        "summary": "Create one ephemeral Instabox workspace for the project (server-resolved sandbox, vault false)",
+        "tags": [
+          "workspace"
+        ],
+        "description": "Create one ephemeral Instabox workspace for the project (server-resolved sandbox, vault false)",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^prj_[0-9a-fA-F-]+$",
+              "description": "Prefixed prj identifier"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Scoped idempotency key: identical retries return the stored result; reuse with different input conflicts."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [],
+                "properties": {
+                  "sourceRevision": {
+                    "type": "string",
+                    "maxLength": 128
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerApiToken": []
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success (envelope carries requestId)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "requestId",
+                    "workspace"
+                  ],
+                  "properties": {
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "workspace": {
+                      "type": "object",
+                      "required": [
+                        "projectId",
+                        "adapter",
+                        "adapterKind",
+                        "desiredState",
+                        "observedState",
+                        "sourceRevision"
+                      ],
+                      "properties": {
+                        "projectId": {
+                          "type": "string",
+                          "pattern": "^prj_[0-9a-fA-F-]+$",
+                          "description": "Prefixed prj identifier"
+                        },
+                        "adapter": {
+                          "type": "string"
+                        },
+                        "adapterKind": {
+                          "type": "string",
+                          "enum": [
+                            "vm"
+                          ]
+                        },
+                        "desiredState": {
+                          "type": "string"
+                        },
+                        "observedState": {
+                          "type": "string"
+                        },
+                        "sourceRevision": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed or invalid cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Budget admission stop",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict (including idempotency conflict)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not configured / not yet implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "destroyWorkspace",
+        "summary": "Destroy the project workspace and keep persisted source outside the VM",
+        "tags": [
+          "workspace"
+        ],
+        "description": "Destroy the project workspace and keep persisted source outside the VM",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^prj_[0-9a-fA-F-]+$",
+              "description": "Prefixed prj identifier"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Scoped idempotency key: identical retries return the stored result; reuse with different input conflicts."
+          }
+        ],
+        "security": [
+          {
+            "bearerApiToken": []
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success (envelope carries requestId)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "requestId",
+                    "workspace"
+                  ],
+                  "properties": {
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "workspace": {
+                      "type": "object",
+                      "required": [
+                        "projectId",
+                        "adapter",
+                        "adapterKind",
+                        "desiredState",
+                        "observedState",
+                        "sourceRevision"
+                      ],
+                      "properties": {
+                        "projectId": {
+                          "type": "string",
+                          "pattern": "^prj_[0-9a-fA-F-]+$",
+                          "description": "Prefixed prj identifier"
+                        },
+                        "adapter": {
+                          "type": "string"
+                        },
+                        "adapterKind": {
+                          "type": "string",
+                          "enum": [
+                            "vm"
+                          ]
+                        },
+                        "desiredState": {
+                          "type": "string"
+                        },
+                        "observedState": {
+                          "type": "string"
+                        },
+                        "sourceRevision": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed or invalid cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Budget admission stop",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict (including idempotency conflict)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not configured / not yet implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{projectId}/workspace/screenshots": {
+      "post": {
+        "operationId": "captureWorkspaceScreenshot",
+        "summary": "Capture a real guest desktop screenshot and persist it as an artifact",
+        "tags": [
+          "workspace"
+        ],
+        "description": "Capture a real guest desktop screenshot and persist it as an artifact",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^prj_[0-9a-fA-F-]+$",
+              "description": "Prefixed prj identifier"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Scoped idempotency key: identical retries return the stored result; reuse with different input conflicts."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [],
+                "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerApiToken": []
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success (envelope carries requestId)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "requestId",
+                    "contentBase64",
+                    "artifactId"
+                  ],
+                  "properties": {
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "contentBase64": {
+                      "type": "string"
+                    },
+                    "artifactId": {
+                      "type": "string",
+                      "pattern": "^art_[0-9a-fA-F-]+$",
+                      "description": "Prefixed art identifier"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed or invalid cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Budget admission stop",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict (including idempotency conflict)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not configured / not yet implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/projects/{projectId}/workspace/status": {
       "get": {
         "operationId": "getWorkspaceStatus",
@@ -11181,8 +11757,7 @@
                         "adapterKind": {
                           "type": "string",
                           "enum": [
-                            "vm",
-                            "container"
+                            "vm"
                           ]
                         },
                         "desiredState": {
@@ -13308,7 +13883,7 @@
                   "ttlSeconds": {
                     "type": "integer",
                     "minimum": 5,
-                    "maximum": 3600
+                    "maximum": 60
                   }
                 },
                 "additionalProperties": false
@@ -15190,8 +15765,7 @@
                     "adapters": {
                       "type": "object",
                       "required": [
-                        "instabox",
-                        "trustedFixture"
+                        "instabox"
                       ],
                       "properties": {
                         "instabox": {
@@ -15205,25 +15779,6 @@
                               "type": "string",
                               "enum": [
                                 "vm"
-                              ]
-                            },
-                            "available": {
-                              "type": "boolean"
-                            }
-                          },
-                          "additionalProperties": false
-                        },
-                        "trustedFixture": {
-                          "type": "object",
-                          "required": [
-                            "kind",
-                            "available"
-                          ],
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "container"
                               ]
                             },
                             "available": {

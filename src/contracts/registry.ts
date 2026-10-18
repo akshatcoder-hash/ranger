@@ -57,8 +57,8 @@ export const FAMILY_DESCRIPTIONS: Record<RouteFamily, string> = {
   voice: 'Voice sessions and the secure xAI realtime relay',
   capture: 'Capture sessions, frame ingestion, inspection and retained evidence',
   'plans-approvals': 'Plan versions, revisions and approvals',
-  runs: 'Engineering runs: start, pause, resume, cancel and records',
-  workspace: 'Workspace status, files, commands, logs, diffs, artifacts and test results',
+  runs: 'Engineering runs: start, status and cancel. Pause and resume are rejected as unsupported',
+  workspace: 'Workspace create, status, files, commands, logs, diffs, artifacts, screenshots and cleanup',
   'desktop-preview': 'Authenticated desktop stream sessions and private application previews',
   retrieval: 'Project-scoped Trace retrieval and the labeled fallback',
   capabilities: 'Capabilities and provider-configuration status',
@@ -1066,7 +1066,7 @@ function runsFamily(): OperationDef[] {
       method: 'post',
       path: '/v1/projects/{projectId}/runs/{runId}/pause',
       family: 'runs',
-      summary: 'Pause a run at a checkpoint, quiescing active execution',
+      summary: 'Unsupported: VM and run pause are not delivered capabilities',
       auth: 'principal',
       mutating: true,
       params: bothIds('projectId', 'prj', 'runId', 'run'),
@@ -1077,7 +1077,7 @@ function runsFamily(): OperationDef[] {
       method: 'post',
       path: '/v1/projects/{projectId}/runs/{runId}/resume',
       family: 'runs',
-      summary: 'Resume a paused run, reconciling state without duplicating work',
+      summary: 'Unsupported: VM and run resume are not delivered capabilities',
       auth: 'principal',
       mutating: true,
       params: bothIds('projectId', 'prj', 'runId', 'run'),
@@ -1103,6 +1103,65 @@ function runsFamily(): OperationDef[] {
 function workspaceFamily(): OperationDef[] {
   return [
     {
+      id: 'createWorkspace',
+      method: 'post',
+      path: '/v1/projects/{projectId}/workspace',
+      family: 'workspace',
+      summary: 'Create one ephemeral Instabox workspace for the project (server-resolved sandbox, vault false)',
+      auth: 'principal',
+      mutating: true,
+      params: projectParams(),
+      body: obj([], { sourceRevision: str({ maxLength: 128 }) }),
+      response: okResponse(
+        {
+          workspace: obj(['projectId', 'adapter', 'adapterKind', 'desiredState', 'observedState', 'sourceRevision'], {
+            projectId: idField('prj'),
+            adapter: str(),
+            adapterKind: str({ enum: ['vm'] }),
+            desiredState: str(),
+            observedState: str(),
+            sourceRevision: nullable(str()),
+          }),
+        },
+        ['workspace'],
+      ),
+    },
+    {
+      id: 'destroyWorkspace',
+      method: 'delete',
+      path: '/v1/projects/{projectId}/workspace',
+      family: 'workspace',
+      summary: 'Destroy the project workspace and keep persisted source outside the VM',
+      auth: 'principal',
+      mutating: true,
+      params: projectParams(),
+      response: okResponse(
+        {
+          workspace: obj(['projectId', 'adapter', 'adapterKind', 'desiredState', 'observedState', 'sourceRevision'], {
+            projectId: idField('prj'),
+            adapter: str(),
+            adapterKind: str({ enum: ['vm'] }),
+            desiredState: str(),
+            observedState: str(),
+            sourceRevision: nullable(str()),
+          }),
+        },
+        ['workspace'],
+      ),
+    },
+    {
+      id: 'captureWorkspaceScreenshot',
+      method: 'post',
+      path: '/v1/projects/{projectId}/workspace/screenshots',
+      family: 'workspace',
+      summary: 'Capture a real guest desktop screenshot and persist it as an artifact',
+      auth: 'principal',
+      mutating: true,
+      params: projectParams(),
+      body: obj([], {}),
+      response: okResponse({ contentBase64: str(), artifactId: idField('art') }, ['contentBase64', 'artifactId']),
+    },
+    {
       id: 'getWorkspaceStatus',
       method: 'get',
       path: '/v1/projects/{projectId}/workspace/status',
@@ -1115,7 +1174,7 @@ function workspaceFamily(): OperationDef[] {
           workspace: obj(['projectId', 'adapter', 'adapterKind', 'desiredState', 'observedState', 'sourceRevision'], {
             projectId: idField('prj'),
             adapter: str(),
-            adapterKind: str({ enum: ['vm', 'container'] }),
+            adapterKind: str({ enum: ['vm'] }),
             desiredState: str(),
             observedState: str(),
             sourceRevision: nullable(str()),
@@ -1307,7 +1366,7 @@ function desktopPreviewFamily(): OperationDef[] {
       auth: 'principal',
       mutating: true,
       params: projectParams(),
-      body: obj([], { ttlSeconds: int({ minimum: 5, maximum: 3600 }) }),
+      body: obj([], { ttlSeconds: int({ minimum: 5, maximum: 60 }) }),
       response: okResponse(
         {
           session: obj(['sessionId', 'projectId', 'state', 'gatewayPath', 'expiresAt'], {
@@ -1518,9 +1577,8 @@ function capabilitiesFamily(): OperationDef[] {
             instabox: obj(['configured', 'detail'], { configured: bool(), detail: str() }),
             trace: obj(['configured', 'detail'], { configured: bool(), detail: str() }),
           }),
-          adapters: obj(['instabox', 'trustedFixture'], {
+          adapters: obj(['instabox'], {
             instabox: obj(['kind', 'available'], { kind: str({ enum: ['vm'] }), available: bool() }),
-            trustedFixture: obj(['kind', 'available'], { kind: str({ enum: ['container'] }), available: bool() }),
           }),
           grounding: obj(['atomOrbit'], {
             atomOrbit: obj(['enabled', 'detail'], { enabled: bool(), detail: str() }),

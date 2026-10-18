@@ -17,6 +17,7 @@ export type ErrorCode =
   | 'rate_limited'
   | 'budget_exceeded'
   | 'not_configured'
+  | 'unsupported_operation'
   | 'invalid_cursor'
   | 'cursor_expired'
   | 'internal_error';
@@ -41,6 +42,7 @@ const DEFAULT_STATUS: Record<ErrorCode, number> = {
   rate_limited: 429,
   budget_exceeded: 402,
   not_configured: 501,
+  unsupported_operation: 501,
   invalid_cursor: 400,
   cursor_expired: 410,
   internal_error: 500,
@@ -83,6 +85,8 @@ export const Errors = {
     new AppError('budget_exceeded', message, { details }),
   notConfigured: (message: string, details?: Record<string, unknown>) =>
     new AppError('not_configured', message, { details }),
+  unsupported: (message: string, details?: Record<string, unknown>) =>
+    new AppError('unsupported_operation', message, { details }),
   invalidCursor: (message: string, details?: Record<string, unknown>) =>
     new AppError('invalid_cursor', message, { details }),
   cursorExpired: (message: string, details?: Record<string, unknown>) =>

@@ -145,9 +145,9 @@ describe('entrypoints', () => {
     });
     await waitForHealth('http://127.0.0.1:3902/health', captured);
     const res = await fetch('http://127.0.0.1:3902/anything/else');
-    expect(res.status).toBe(501);
+    expect(res.status).toBe(404);
     const body = (await res.json()) as { error: { code: string }; requestId: string };
-    expect(body.error.code).toBe('not_configured');
+    expect(body.error.code).toBe('not_found');
     expect(body.requestId).toBeTruthy();
     expect(await terminate(captured.proc)).toBe(0);
   });

@@ -241,7 +241,7 @@ describe('info-level request logs redact connection tickets', () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
     const previewRes = await fetch(`http://127.0.0.1:3909/desktop?ticket=${encodeURIComponent(ticket)}`);
-    expect(previewRes.status).toBe(501);
+    expect(previewRes.status).toBe(404);
     const previewBody = await previewRes.text();
     expect(previewBody).not.toContain(ticket);
 

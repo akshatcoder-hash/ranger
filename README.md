@@ -43,6 +43,7 @@ src/budget/ledger.ts     shared live-test admission ledger (never resets)
 src/contracts/           route registry, event schemas, OpenAPI builder, examples
 src/clients/             GENERATED typed client (committed; regenerate, don't edit)
 src/http/                Fastify app factory, auth middleware, registry-driven handlers
+src/workspace/           Instabox create/work/preview/destroy, restricted workload, cleanup
 src/worker/              durable worker loop (claim/lease with fencing epoch)
 src/entrypoints/         api / worker / preview process entrypoints
 scripts/                 migrate, bootstrap, contract generation
@@ -187,9 +188,10 @@ and liveness at `/health`. The worker starts with zero registered job
 handlers in the foundation (it idles cleanly); later milestones register
 handlers. Each entrypoint installs its SIGTERM/SIGINT cleanup handler
 before it announces readiness (the worker started line, or the API and
-preview listen), so an immediate stop runs cleanup and exits 0. The preview
-gateway refuses all proxy routes with
-`not_configured` until the execution milestone implements them.
+preview listen), so an immediate stop runs cleanup and exits 0. The preview gateway is a separate origin. It serves an authenticated desktop
+stream and a fixed-port private app preview. Arbitrary targets return
+`validation_failed`. Unknown gateway paths return `not_found`. Provider
+stream URLs and certificates never appear in client responses.
 
 Migrations and configuration work from a fresh data directory and data
 survives API/worker restarts (WAL, foreign keys, busy timeout).

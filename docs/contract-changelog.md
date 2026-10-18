@@ -5,6 +5,22 @@ served in `/v1/capabilities` (`contractVersion`) must always appear here.
 
 ## v1 — 2026-10-18
 
+### v1 amendment — Instabox workspace and rejected deferred lifecycle (2026-10-18)
+
+The contract version stays v1. Public behavior changes:
+
+- Workspace create, destroy and screenshot are supported operations. The
+  sandbox id is resolved server-side. A client-supplied sandbox id is
+  `validation_failed`, not adopted.
+- Capabilities no longer advertise a container/trusted-fixture adapter.
+  Instabox is the only execution adapter, kind `vm`.
+- `pauseRun` and `resumeRun` remain declared only so clients get an explicit
+  `unsupported_operation` rejection. That rejection is not a successful pause
+  or resume. There is no restart operation.
+- Desktop and preview session routes are implemented. Provider stream URLs
+  and SSH certificates stay server-side. The preview gateway is a separate
+  origin and rejects arbitrary targets.
+
 ### v1 amendment — secret-safe request logs and browser-session request shape (2026-10-18)
 
 Documentation and logging corrections; the contract version stays v1. No
