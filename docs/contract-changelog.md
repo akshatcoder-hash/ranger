@@ -5,6 +5,21 @@ served in `/v1/capabilities` (`contractVersion`) must always appear here.
 
 ## v1 — 2026-10-18
 
+### v1 amendment — linked-worktree commondir refusal (2026-10-18)
+
+Local snapshot inspection refuses one more unsupported repository form; the
+contract version stays v1 and the public error code is unchanged.
+
+- A real `.git` directory that contains a `commondir` entry (file, symlink,
+  or any other form) is refused with `validation_failed` / details reason
+  `local_path_not_approved` BEFORE any git command runs. Git would otherwise
+  read refs, objects, config and `info/attributes` from the named common
+  directory, including an outside HEAD and a common-dir clean filter. This
+  matches the already-unsupported gitfile and symlinked-`.git` forms. A
+  normal approved fixture with no `commondir` entry still resolves commit,
+  dirty flag and content hash. `.git/objects/info/alternates` is not part of
+  this refusal.
+
 ### v1 amendment — event stream midstream revocation and slow-consumer close alignment (2026-10-18)
 
 Security and documentation corrections for the events subscription; the
@@ -50,8 +65,9 @@ stays v1. Public behavior changes:
   `RANGER_APPROVED_SNAPSHOT_ROOTS` (or the config-file
   `approvedSnapshotRoots`); unapproved paths answer `validation_failed`
   with details reason `local_path_not_approved` before any filesystem
-  probing. The `.git` entry must be a real directory: gitfile (`gitdir:`)
-  and symlinked `.git` metadata are refused as unsupported forms, effective
+  probing. The `.git` entry must be a real directory: gitfile (`gitdir:`),
+  symlinked `.git`, and any `.git/commondir` entry are refused as
+  unsupported forms before a git command runs, effective
   git dir/worktree are verified canonically inside the approved root, and
   repo-local `core.worktree` redirection answers `repository_redirect`.
   Nonempty or symlinked `.git/info/attributes` answers `attributes_rejected`

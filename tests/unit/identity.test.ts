@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -514,6 +515,49 @@ describe('local repository snapshot', () => {
       code: 'validation_failed',
       details: { reason: 'repository_redirect' },
     });
+  });
+
+  it('refuses a .git/commondir entry before outside HEAD or common-dir filters can run', async () => {
+    const outsideDir = mkdtempSync(path.join(tmpdir(), 'ranger-commondir-out-'));
+    const outside = createFixtureRepo(outsideDir, 'outside-app');
+    const outsideHead = execFileSync('git', ['-C', outside.root, 'rev-parse', 'HEAD']).toString().trim();
+    const marker = path.join(baseDir, 'commondir-filter-marker');
+    const cleanCommand = `touch '${marker}'`;
+    // The outside common dir owns the refs, objects, config and info/attributes
+    // that a linked worktree would consult. A real .git directory plus a
+    // commondir file is the same unsupported form as a gitfile.
+    execFileSync('git', ['-C', outside.root, 'config', 'filter.sentinel.clean', cleanCommand]);
+    writeFileSync(path.join(outside.root, '.git', 'info', 'attributes'), '* filter=sentinel\n');
+
+    const linked = path.join(baseDir, 'commondir-app');
+    mkdirSync(path.join(linked, '.git'), { recursive: true });
+    writeFileSync(path.join(linked, '.git', 'commondir'), `${path.join(outside.root, '.git')}\n`);
+    writeFileSync(path.join(linked, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    // A per-worktree index is what makes `git status` consult the common-dir
+    // clean filter. The commondir file itself is the unsupported form.
+    copyFileSync(path.join(outside.root, '.git', 'index'), path.join(linked, '.git', 'index'));
+    writeFileSync(path.join(linked, 'index.ts'), 'export const version = 2;\n');
+
+    // Positive control: unhardened git follows commondir and both returns the
+    // outside commit and runs the common-dir clean filter.
+    const unhardenedHead = execFileSync('git', ['-C', linked, 'rev-parse', '--verify', 'HEAD']).toString().trim();
+    expect(unhardenedHead).toBe(outsideHead);
+    execFileSync('git', ['-C', linked, 'status', '--porcelain'], { stdio: 'ignore' });
+    expect(existsSync(marker), 'common-dir filter must run without hardening (positive control)').toBe(true);
+    rmSync(marker);
+
+    await expect(resolveLocalSnapshot(`file://${linked}`, 'main', [baseDir])).rejects.toMatchObject({
+      code: 'validation_failed',
+      details: { reason: 'local_path_not_approved' },
+    });
+    expect(existsSync(marker), 'common-dir filter must not run during refused inspection').toBe(false);
+
+    // The normal approved fixture is unaffected by the commondir refusal.
+    const snapshot = await resolveLocalSnapshot(fixture.fileUrl, 'main', [baseDir]);
+    expect(snapshot).not.toBeNull();
+    expect(snapshot!.commit).toBe(
+      execFileSync('git', ['-C', fixture.root, 'rev-parse', 'HEAD']).toString().trim(),
+    );
   });
 
   it('never executes attribute filter helpers via worktree, info or config-selected attributes', async () => {

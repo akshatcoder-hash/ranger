@@ -135,9 +135,10 @@ root (`RANGER_APPROVED_SNAPSHOT_ROOTS`): checks are realpath/symlink-safe,
 unapproved paths are refused with `local_path_not_approved` before any
 filesystem probing, and inspection is hardened against repository-controlled
 git mechanisms. The `.git` entry must be a real directory (gitfile
-`gitdir:` pointers and symlinked `.git` are refused, `repository_redirect`
-covers detected `core.worktree` redirection after a canonical
-git-dir/worktree containment check), nonempty or symlinked
+`gitdir:` pointers, symlinked `.git`, and any `.git/commondir` entry are
+refused as unsupported linked-worktree forms before a git command runs,
+`repository_redirect` covers detected `core.worktree` redirection after a
+canonical git-dir/worktree containment check), nonempty or symlinked
 `.git/info/attributes` is refused (`attributes_rejected`), no repository
 lock is taken, and no repository-configured helper executes
 (`--no-optional-locks`, `core.fsmonitor=false`, `core.hooksPath=/dev/null`,
@@ -174,7 +175,10 @@ The API serves the contract at `http://127.0.0.1:3100/v1/openapi.json`,
 capabilities at `/v1/capabilities`, event schemas at `/v1/events/schemas`
 and liveness at `/health`. The worker starts with zero registered job
 handlers in the foundation (it idles cleanly); later milestones register
-handlers. The preview gateway refuses all proxy routes with
+handlers. Each entrypoint installs its SIGTERM/SIGINT cleanup handler
+before it announces readiness (the worker started line, or the API and
+preview listen), so an immediate stop runs cleanup and exits 0. The preview
+gateway refuses all proxy routes with
 `not_configured` until the execution milestone implements them.
 
 Migrations and configuration work from a fresh data directory and data

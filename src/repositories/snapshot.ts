@@ -29,9 +29,13 @@ import { Errors } from '../errors.js';
  *   filesystem probing, all checks run on canonical (realpath) paths;
  * - the `.git` entry must be a real directory: gitfile (`gitdir:`) and
  *   symlinked `.git` metadata are unsupported repository forms and are
- *   refused outright, and the effective git dir/worktree are verified
- *   canonically inside the approved root, so repo-local `core.worktree`
- *   or include-driven redirection is refused before the ref is read;
+ *   refused outright. A real `.git` directory that contains a `commondir`
+ *   file is the same unsupported linked-worktree form: Git would read
+ *   refs, objects, config and `info/attributes` from the named common
+ *   directory, so any such entry is refused before a git command runs.
+ *   The effective git dir/worktree are still verified canonically inside
+ *   the approved root, so repo-local `core.worktree` or include-driven
+ *   redirection is refused before the ref is read;
  * - `.git/info/attributes` (which `--attr-source` cannot suppress) must be
  *   absent, empty and a regular file, or inspection is refused.
  *
@@ -126,7 +130,10 @@ function canonicalApprovedRoots(approvedRoots: string[]): string[] {
  * `.git` metadata entry must be a real directory: a gitfile (`gitdir:`
  * pointer), a symlinked `.git` (even to a target inside the approved root)
  * or any other indirection is an unsupported repository form, refused before
- * any git command runs. A vanished `.git` is reported by the worktree probe.
+ * any git command runs. A real directory that contains a `commondir` entry
+ * (the linked-worktree common-dir pointer, any form) is refused the same
+ * way, before Git can follow it. A vanished `.git` is reported by the
+ * worktree probe.
  */
 export function requireApprovedSnapshotRoot(candidate: string, approvedRoots: string[]): string {
   const roots = canonicalApprovedRoots(approvedRoots);
@@ -142,7 +149,24 @@ export function requireApprovedSnapshotRoot(candidate: string, approvedRoots: st
     gitStat = undefined;
   }
   if (gitStat !== undefined && !gitStat.isDirectory()) notApproved();
+  // Linked worktrees keep a real .git directory (or gitfile) whose commondir
+  // names another repository. Reject the entry itself — file, symlink or
+  // anything else — before any git command can read the outside HEAD,
+  // config or info/attributes.
+  if (gitStat !== undefined && commondirEntryPresent(gitEntry)) notApproved();
   return real;
+}
+
+/** True when `.git/commondir` exists in any form. Unreadable entries fail closed. */
+function commondirEntryPresent(gitEntry: string): boolean {
+  try {
+    lstatSync(path.join(gitEntry, 'commondir'));
+    return true;
+  } catch (cause) {
+    const code = (cause as { code?: string }).code;
+    if (code === 'ENOENT') return false;
+    return true;
+  }
 }
 
 /**
@@ -325,8 +349,10 @@ export async function hashRepositoryFiles(root: string): Promise<string> {
  * symlink, attributes_rejected when `.git/info/attributes` is nonempty or
  * symlinked, repository_redirect when the effective git dir/worktree is not
  * contained in the approved roots, and validation_failed when the local
- * path is not a readable git worktree or the ref does not resolve. Every
- * refusal happens before the ref or working tree is inspected.
+ * path is not a readable git worktree or the ref does not resolve. A
+ * `.git/commondir` entry (linked worktree) is `local_path_not_approved`
+ * before any git command. Every refusal happens before the ref or working
+ * tree is inspected.
  */
 export async function resolveLocalSnapshot(
   url: string,

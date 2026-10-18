@@ -13,15 +13,17 @@ export async function main(): Promise<void> {
   const db = openDatabase(config.dataDir);
   const migrations = runMigrations(db, migrationsDirFromCwd());
   const app = await buildApiServer({ config, db });
-  await app.listen({ host: config.host, port: config.port });
-  process.stdout.write(
-    `{"msg":"ranger api listening","host":"${config.host}","port":${config.port},"migrationsApplied":${migrations.length}}\n`,
-  );
-
+  // Same ordering as the worker: the handler exists before listen returns,
+  // so a SIGTERM in the window between bind and the listening line still
+  // runs cleanup instead of the default disposition.
   installGracefulShutdown('ranger api', async () => {
     await app.close();
     db.close();
   });
+  await app.listen({ host: config.host, port: config.port });
+  process.stdout.write(
+    `{"msg":"ranger api listening","host":"${config.host}","port":${config.port},"migrationsApplied":${migrations.length}}\n`,
+  );
 }
 
 main().catch((cause) => {

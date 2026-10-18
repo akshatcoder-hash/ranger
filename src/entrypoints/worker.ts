@@ -32,15 +32,17 @@ export async function main(): Promise<void> {
       error: (obj, msg) => logLine(process.stderr, msg, obj as Record<string, unknown>),
     },
   });
-  loop.start();
-  process.stdout.write(
-    `{"msg":"ranger worker started","migrationsApplied":${migrations.length}}\n`,
-  );
-
+  // SIGTERM handling must be installed before readiness is visible. A parent
+  // that signals as soon as it reads the started line otherwise hits Node's
+  // default disposition and the process dies by signal instead of cleanup.
   installGracefulShutdown('ranger worker', async () => {
     await loop.stop();
     db.close();
   });
+  loop.start();
+  process.stdout.write(
+    `{"msg":"ranger worker started","migrationsApplied":${migrations.length}}\n`,
+  );
 }
 
 main().catch((cause) => {

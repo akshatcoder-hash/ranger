@@ -42,14 +42,15 @@ export async function main(): Promise<void> {
       });
   });
 
+  // Same ordering as the worker: shutdown is installed before the port is
+  // bound, so an immediate SIGTERM after health uses cleanup.
+  installGracefulShutdown('ranger preview', async () => {
+    await app.close();
+  });
   await app.listen({ host: config.host, port: config.previewPort });
   process.stdout.write(
     `{"msg":"ranger preview gateway listening","host":"${config.host}","port":${config.previewPort}}\n`,
   );
-
-  installGracefulShutdown('ranger preview', async () => {
-    await app.close();
-  });
 }
 
 main().catch((cause) => {
