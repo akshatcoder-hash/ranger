@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import Fastify from 'fastify';
 import { loadConfig } from '../config.js';
 import { Errors, redact } from '../errors.js';
+import { redactRequestUrl, secretSafeLoggerOptions } from '../http/safe-url.js';
 import { installGracefulShutdown } from './lifecycle.js';
 
 /**
@@ -16,7 +17,7 @@ export async function main(): Promise<void> {
   const config = await loadConfig(process.env);
   const app = Fastify({
     genReqId: () => randomUUID(),
-    logger: { level: config.logLevel },
+    logger: secretSafeLoggerOptions(config.logLevel),
   });
 
   app.get('/health', async () => ({ status: 'ok' }));
@@ -24,7 +25,7 @@ export async function main(): Promise<void> {
   app.all('*', async (req) => {
     throw Errors.notConfigured(
       'The preview gateway has no configured routes yet; desktop stream and app proxy land with the execution milestone',
-      { gatewayPath: req.url },
+      { gatewayPath: redactRequestUrl(req.url) },
     );
   });
 

@@ -4,6 +4,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { generateSecret } from '../auth/hashing.js';
 import { createCredentialFromSecret, createPrincipal, findFirstCredential } from '../auth/principals.js';
 import { withTransaction } from '../db/db.js';
+import { credentialPathInsideRepo } from './repo-root.js';
 
 /**
  * Self-hosted bootstrap identity.
@@ -36,10 +37,11 @@ export function defaultBootstrapCredentialPath(dataDir: string): string {
 }
 
 function assertOutsideRepo(credentialPath: string, repoRoot: string): void {
-  const resolved = path.resolve(credentialPath);
-  const root = path.resolve(repoRoot);
-  const relative = path.relative(root, resolved);
-  if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+  // Lexical ancestry catches docs/root/dist destinations even when a parent
+  // directory does not exist yet. Canonical ancestry catches an external
+  // symlink whose target is inside the repository. Both run before any
+  // existence probe that could create a file.
+  if (credentialPathInsideRepo(credentialPath, repoRoot)) {
     throw new Error('Bootstrap credential file must be created outside the repository tree');
   }
 }

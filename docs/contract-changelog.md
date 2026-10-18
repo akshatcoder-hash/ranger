@@ -5,6 +5,22 @@ served in `/v1/capabilities` (`contractVersion`) must always appear here.
 
 ## v1 — 2026-10-18
 
+### v1 amendment — secret-safe request logs and browser-session request shape (2026-10-18)
+
+Documentation and logging corrections; the contract version stays v1. No
+new revocation policy.
+
+- Request logs redact connection-ticket query values on WebSocket upgrades
+  (accepted and rejected) while keeping method, path and non-secret query
+  parameters. Unknown-route and preview error payloads do not echo a
+  `ticket` query. Header redaction is unchanged.
+- `createBrowserSession` already requires principal authentication (bearer
+  or an existing session cookie) in addition to the body `apiToken`. The
+  guide and operation summary now say so. A browser session remains an
+  independent credential: revoking the API token that was presented in
+  `apiToken` does not revoke sessions already created from it. Each session
+  is revoked with `revokeBrowserSession`.
+
 ### v1 amendment — linked-worktree commondir refusal (2026-10-18)
 
 Local snapshot inspection refuses one more unsupported repository form; the

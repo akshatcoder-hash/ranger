@@ -33,18 +33,34 @@ Ranger.
    same way). Server-side only hashes are stored; the secret is displayed
    exactly once at creation.
 
-3. For browser use, exchange the credential via `createBrowserSession`:
-   the response carries `sessionId`, `expiresAt` and the once-only
-   `csrfToken`, and the `ranger_session` HttpOnly cookie is set. Mutating
-   requests with the cookie must send a same-origin `Origin` header (or the
-   `x-ranger-csrf` token header when no Origin is sent, e.g. server-side
-   renderers); cross-origin cookie mutations are rejected with `forbidden`.
+3. For browser use, call `createBrowserSession`. The route is
+   principal-authenticated, the same as other credential routes: send
+   `Authorization: Bearer <secret>` (or an existing `ranger_session` cookie)
+   AND a JSON body `{ "apiToken": "<same or another API credential>" }`.
+   The bearer (or cookie) proves the caller; the body credential is the one
+   the new session is issued for. The response carries `sessionId`,
+   `expiresAt` and the once-only `csrfToken`, and the `ranger_session`
+   HttpOnly cookie is set. A call with only the body and no principal
+   authentication is `unauthorized`. Mutating requests with the cookie must
+   send a same-origin `Origin` header (or the `x-ranger-csrf` token header
+   when no Origin is sent, e.g. server-side renderers); cross-origin cookie
+   mutations are rejected with `forbidden`.
+
+   Browser sessions are independent credentials. Revoking the API token that
+   was presented in `apiToken` does not revoke sessions already created from
+   it. Revoke each session with `revokeBrowserSession`; that session's cookie
+   and the tickets it issued stop working, and other sessions keep working.
+   There is no token-to-session cascade.
 
 4. For realtime surfaces, call `createConnectionTicket` with the project,
    purpose (`events`, `voice-relay`, `desktop-stream`, `app-preview`) and
    origin. Tickets are short-lived (60 s) and single-use; pass them as the
-   `ticket` query parameter on WebSocket upgrades. Revoking the issuing API
-   token or browser session immediately invalidates its outstanding tickets.
+   `ticket` query parameter on WebSocket upgrades. The server redacts that
+   query value from request logs and from unknown-route error payloads; do
+   not log it in the browser either. Revoking the issuing API token or
+   browser session immediately invalidates its outstanding tickets. It does
+   not revoke other sessions that happen to have been created while that
+   token was still valid.
 
 ## Events: subscribe and replay (implemented: conversations/events milestone)
 

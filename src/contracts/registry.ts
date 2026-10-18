@@ -192,7 +192,7 @@ function credentialsFamily(): OperationDef[] {
       method: 'post',
       path: '/v1/auth/browser-sessions',
       family: 'credentials-sessions',
-      summary: 'Exchange an API credential for a revocable browser session cookie',
+      summary: 'Create a browser session for the body apiToken; requires principal authentication and does not cascade-revoke with that token',
       auth: 'principal',
       mutating: true,
       body: obj([], { apiToken: str() }),

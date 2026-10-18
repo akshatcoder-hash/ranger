@@ -101,7 +101,11 @@ npm run start:preview                    # preview gateway on 127.0.0.1:3101
 
 `bootstrap --create-principal` creates the initial principal and writes its
 bearer credential to `<RANGER_DATA_DIR>/bootstrap-credential.txt` (mode
-0600, outside the repository). The secret is shown nowhere else — the
+0600, outside the repository). The compiled CLI resolves the repository
+root from `package.json` (so `dist/scripts` is not treated as the root) and
+refuses a credential path that is lexically inside the repo or whose
+canonical path, including through an external symlink, lands inside it.
+The check runs before any file is created. The secret is shown nowhere else — the
 database stores only a lookup key and a scrypt hash. The credential file is
 written before any database row: a collision with an existing file (which is
 never overwritten) or a write failure leaves retryable state with no
@@ -112,10 +116,14 @@ npm run bootstrap -- --additional-principal "Second Operator" --credential-file 
 ```
 
 Authenticate API requests with `Authorization: Bearer <secret>` (bootstrap
-credential or API tokens). For browser-style access, exchange the credential
-via `POST /v1/auth/browser-sessions`: the HttpOnly `ranger_session` cookie is
-set and a one-time `csrfToken` is returned; cookie-authenticated mutations
-require a same-origin `Origin` header or the `x-ranger-csrf` token header.
+credential or API tokens). For browser-style access, `POST
+/v1/auth/browser-sessions` requires that principal authentication as well as
+a body `apiToken`. The HttpOnly `ranger_session` cookie is set and a
+one-time `csrfToken` is returned. Each session is revoked on its own;
+revoking the API token does not revoke sessions already created from it.
+Cookie-authenticated mutations require a same-origin `Origin` header or the
+`x-ranger-csrf` token header. Request logs redact connection-ticket query
+values; unknown-route errors do not echo them.
 Realtime surfaces use `POST /v1/auth/connection-tickets` — single-use,
 60-second tickets bound to principal, project, purpose and origin; revoking
 the issuing token or session immediately invalidates its tickets. Projects,

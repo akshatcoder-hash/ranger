@@ -5,6 +5,7 @@ import { appliedMigrations, migrationsDirFromCwd, runMigrations } from '../src/d
 import { loadConfig } from '../src/config.js';
 import { SecretResolver } from '../src/secrets.js';
 import { createAdditionalPrincipal, ensureInitialPrincipal } from '../src/identity/bootstrap.js';
+import { resolveRepoRoot } from '../src/identity/repo-root.js';
 
 /**
  * Self-hosted bootstrap CLI.
@@ -32,7 +33,9 @@ const migrations = appliedMigrations(db);
 const secrets = new SecretResolver(config.secretFile);
 const secretNames = secrets.presentNames();
 
-const repoRoot = path.resolve(import.meta.dirname, '..');
+// Compiled entry lives at dist/scripts; one parent is dist, not the repo.
+// Walk to package.json so source (`scripts/`) and built contexts agree.
+const repoRoot = resolveRepoRoot(import.meta.dirname);
 const credentialFileArg = process.argv.indexOf('--credential-file');
 const credentialFile =
   credentialFileArg >= 0 ? process.argv[credentialFileArg + 1] : undefined;

@@ -186,7 +186,7 @@ export class RangerClient {
     return this.request<OkResponse>('DELETE', '/v1/auth/api-tokens/{tokenId}', args as OpArgs);
   }
 
-  /** Exchange an API credential for a revocable browser session cookie */
+  /** Create a browser session for the body apiToken; requires principal authentication and does not cascade-revoke with that token */
   async createBrowserSession(args: { body: {
   "apiToken"?: string;
 } }): Promise<BrowserSessionCreatedResponse> {

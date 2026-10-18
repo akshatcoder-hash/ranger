@@ -5,6 +5,7 @@ import type { WebSocket as WsWebSocket } from 'ws';
 import type { DatabaseSync } from 'node:sqlite';
 import type { RangerConfig } from '../config.js';
 import { AppError, Errors, isAppError, redact } from '../errors.js';
+import { redactRequestUrl, secretSafeLoggerOptions } from './safe-url.js';
 import { SecretResolver } from '../secrets.js';
 import { getRegistry, type OperationDef } from '../contracts/registry.js';
 import { toFastifyPathFor } from '../contracts/openapi.js';
@@ -86,18 +87,7 @@ export async function buildApiServer(opts: ApiServerOptions): Promise<FastifyIns
         allErrors: true,
       },
     },
-    logger: {
-      level: opts.config.logLevel,
-      redact: {
-        paths: [
-          'req.headers.authorization',
-          'req.headers.cookie',
-          'req.headers["x-api-key"]',
-          'req.headers["idempotency-key"]',
-        ],
-        censor: '[redacted]',
-      },
-    },
+    logger: secretSafeLoggerOptions(opts.config.logLevel),
   });
 
   await app.register(websocket, { options: { maxPayload: 4 * 1024 * 1024 } });
@@ -144,7 +134,7 @@ export async function buildApiServer(opts: ApiServerOptions): Promise<FastifyIns
   });
 
   app.setNotFoundHandler((req, reply) => {
-    sendEnvelope(reply, req, Errors.notFound(`No route for ${req.method} ${req.url}`));
+    sendEnvelope(reply, req, Errors.notFound(`No route for ${req.method} ${redactRequestUrl(req.url)}`));
   });
 
   const registry = getRegistry();

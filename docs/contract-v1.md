@@ -33,7 +33,7 @@ Credentials and sessions (API tokens, browser sessions, connection tickets)
 - `POST /v1/auth/api-tokens` — createApiToken (secret returned exactly once; stored only as lookup key + scrypt hash)
 - `GET /v1/auth/api-tokens` — listApiTokens (metadata only)
 - `DELETE /v1/auth/api-tokens/{tokenId}` — revokeApiToken (next use fails `unauthorized`)
-- `POST /v1/auth/browser-sessions` — createBrowserSession (sets HttpOnly cookie; response carries the once-only `csrfToken`)
+- `POST /v1/auth/browser-sessions` — createBrowserSession (principal authentication required in addition to the body `apiToken`; sets HttpOnly cookie; response carries the once-only `csrfToken`; the session is an independent credential and is not revoked when that API token is later revoked)
 - `GET /v1/auth/browser-sessions` — listBrowserSessions
 - `DELETE /v1/auth/browser-sessions/{sessionId}` — revokeBrowserSession (cookie stops working immediately; sessions survive restarts until revoked)
 - `POST /v1/auth/connection-tickets` — createConnectionTicket (single-use, 60 s, bound to principal + project + purpose + optional origin; dies when the issuing credential/session is revoked)

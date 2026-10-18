@@ -830,11 +830,11 @@
     "/v1/auth/browser-sessions": {
       "post": {
         "operationId": "createBrowserSession",
-        "summary": "Exchange an API credential for a revocable browser session cookie",
+        "summary": "Create a browser session for the body apiToken; requires principal authentication and does not cascade-revoke with that token",
         "tags": [
           "credentials-sessions"
         ],
-        "description": "Exchange an API credential for a revocable browser session cookie",
+        "description": "Create a browser session for the body apiToken; requires principal authentication and does not cascade-revoke with that token",
         "parameters": [
           {
             "name": "Idempotency-Key",
