@@ -151,9 +151,15 @@ makes replay exact: `GET /v1/projects/{id}/events` replays by opaque cursor
 `cursor_expired` 410 past the replay window — default 30 days, configurable
 down), and `WS /v1/projects/{id}/events/subscribe` authenticates the upgrade
 with an `events` ticket (purpose + project + origin + current membership)
-before delivering ordered live events. Subscribe close codes: `4401`
-unauthorized, `4400` invalid_cursor, `4410` cursor_expired, `4502`
-slow_consumer. Replay never invokes tools or changes state.
+before delivering ordered live events. Authorization is re-validated before
+EVERY delivered batch: removing a member, revoking the issuing token, or
+letting the issuing browser session expire closes the stream `4401`
+unauthorized (one `kind:"error"` frame first, then no further project
+payloads). Subscribe close codes: `4401` unauthorized, `4400`
+invalid_cursor, `4410` cursor_expired, `4502` slow_consumer — the `4502`
+close carries the code/reason only, with NO error frame, because the
+outbound buffer is already saturated and nothing more may be enqueued onto
+it. Replay never invokes tools or changes state.
 
 The API serves the contract at `http://127.0.0.1:3100/v1/openapi.json`,
 capabilities at `/v1/capabilities`, event schemas at `/v1/events/schemas`

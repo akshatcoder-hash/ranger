@@ -56,6 +56,13 @@ Ranger.
   `events`, the path projectId, and — for origin-bound tickets — the browser
   `Origin` header) and enforces CURRENT membership at upgrade time; a
   principal removed from the project is closed without any event delivery.
+  Authorization is re-validated before EVERY delivered batch: if the
+  subscriber's membership is removed, or the API token or browser session
+  that issued the ticket is revoked or expires while connected, the server
+  closes the stream `4401` with one error frame (details reason
+  `membership_removed`, `issuer_revoked` or `issuer_expired`) and no later
+  project event is delivered. Reconnect by creating a fresh ticket with a
+  still-valid credential and resuming from your cursor.
 - Events arrive in strictly increasing per-project `sequence` with no gaps or
   duplicates. Keep the `sequence`/timestamp of the last event you processed;
   on reconnect, subscribe again with a fresh ticket and that cursor (the
@@ -66,13 +73,19 @@ Ranger.
   HTTP replay); a cursor older than the 30-day replay window closes with
   `4410` (`cursor_expired`, also 410 on HTTP replay). Recover by
   resubscribing WITHOUT a cursor to replay full history.
-- Before any error frame the server sends one JSON message
-  `{kind:"error", requestId, error:{code, message, details}}`, then closes.
+- Before every rejection close EXCEPT `4502` the server sends one JSON
+  message `{kind:"error", requestId, error:{code, message, details}}`, then
+  closes. The `4502` slow_consumer close carries NO error frame: the
+  outbound buffer is already saturated past its bound, so the server
+  enqueues nothing more onto that socket — the close code/reason itself is
+  the signal.
 - Close codes on this route: `4401` unauthorized (missing/invalid/reused
-  ticket, wrong purpose/project/origin, non-membership), `4400`
-  invalid_cursor, `4410` cursor_expired, `4502` slow_consumer (the outbound
-  buffer exceeded its bound — resume with your cursor), `4501`
-  not_configured (only while a declared realtime route is unimplemented).
+  ticket, wrong purpose/project/origin, non-membership at upgrade, or a
+  midstream authorization loss: membership removed or issuing token/session
+  revoked or expired), `4400` invalid_cursor, `4410` cursor_expired, `4502`
+  slow_consumer (the outbound buffer exceeded its bound — resume with your
+  cursor), `4501` not_configured (only while a declared realtime route is
+  unimplemented).
 - Mutating conversations supports the scoped `Idempotency-Key` header: an
   identical retry returns the stored result with no second side effect or
   duplicate event; reusing a key with different input returns `conflict`.

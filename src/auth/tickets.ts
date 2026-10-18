@@ -16,6 +16,9 @@ import { generateSecret, lookupForSecret, verifySecret } from './hashing.js';
  * Revocation propagates: a ticket stops working when its issuing credential
  * (API token or browser session) is revoked, when the ticket itself is
  * expired/used/revoked, or when the bound purpose/project/origin mismatch.
+ * Consuming returns the issuing-credential binding so consumers of
+ * long-lived connections can re-validate liveness/expiry before every
+ * further delivery (see src/events/stream-delivery.ts).
  */
 
 export const CONNECTION_TICKET_PURPOSES = ['events', 'voice-relay', 'desktop-stream', 'app-preview'] as const;
@@ -40,11 +43,19 @@ export interface TicketRow {
   revokedAt: number | null;
 }
 
+/**
+ * The binding retained from a consumed ticket. The ticket itself stays
+ * single-use; its ISSUING credential binding (which credential kind/id
+ * authorized the connection) is returned so long-lived consumers can
+ * re-validate issuer liveness/expiry for as long as the connection lives.
+ */
 export interface TicketBinding {
   ticketId: string;
   principalId: string;
   projectId: string;
   purpose: string;
+  credentialKind: TicketIssuingCredentialKind;
+  credentialId: string;
 }
 
 /**
@@ -162,23 +173,9 @@ export function consumeTicket(
 
   // The issuing credential must still be alive: revoking an API token or a
   // browser session immediately invalidates its outstanding tickets.
-  const now = Date.now();
-  if (row.credential_kind === 'api_token') {
-    const cred = mapRow<{ revoked_at: number | null }>(
-      db.prepare('SELECT revoked_at FROM credentials WHERE id = ?').get(row.credential_id),
-    );
-    if (cred === undefined || cred.revoked_at !== null) throw ticketError('issuer_revoked');
-  } else {
-    const ses = mapRow<{ revoked_at: number | null; expires_at: number }>(
-      db
-        .prepare('SELECT revoked_at, expires_at FROM browser_sessions WHERE id = ?')
-        .get(row.credential_id),
-    );
-    if (ses === undefined || ses.revoked_at !== null || ses.expires_at <= now) {
-      throw ticketError('issuer_revoked');
-    }
-  }
+  assertIssuerAlive(db, row.credential_kind as TicketIssuingCredentialKind, row.credential_id);
 
+  const now = Date.now();
   return withTransaction(db, () => {
     const result = db
       .prepare('UPDATE connection_tickets SET used_at = ? WHERE id = ? AND used_at IS NULL')
@@ -189,6 +186,50 @@ export function consumeTicket(
       principalId: row.principal_id,
       projectId: row.project_id,
       purpose: row.purpose,
+      credentialKind: row.credential_kind as TicketIssuingCredentialKind,
+      credentialId: row.credential_id,
     };
   });
+}
+
+/**
+ * The issuing credential of a ticket-authenticated connection must still be
+ * alive. Used at ticket consumption AND re-checked before every further
+ * delivery on long-lived streams (src/events/stream-delivery.ts), so
+ * revoking an API token or browser session — or letting a session expire —
+ * terminates streams it authorized. Throws `unauthorized` with a stable
+ * reason: `issuer_revoked` (unknown/revoked credential or session) or
+ * `issuer_expired` (session past its expiry).
+ */
+export function assertIssuerAlive(
+  db: DatabaseSync,
+  credentialKind: TicketIssuingCredentialKind,
+  credentialId: string,
+): void {
+  if (credentialKind === 'api_token') {
+    const cred = mapRow<{ revoked_at: number | null }>(
+      db.prepare('SELECT revoked_at FROM credentials WHERE id = ?').get(credentialId),
+    );
+    if (cred === undefined || cred.revoked_at !== null) {
+      throw Errors.unauthorized('The credential that issued this connection is no longer valid', {
+        reason: 'issuer_revoked',
+      });
+    }
+    return;
+  }
+  const ses = mapRow<{ revoked_at: number | null; expires_at: number }>(
+    db
+      .prepare('SELECT revoked_at, expires_at FROM browser_sessions WHERE id = ?')
+      .get(credentialId),
+  );
+  if (ses === undefined || ses.revoked_at !== null) {
+    throw Errors.unauthorized('The credential that issued this connection is no longer valid', {
+      reason: 'issuer_revoked',
+    });
+  }
+  if (ses.expires_at <= Date.now()) {
+    throw Errors.unauthorized('The browser session that issued this connection has expired', {
+      reason: 'issuer_expired',
+    });
+  }
 }

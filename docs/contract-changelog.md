@@ -5,6 +5,35 @@ served in `/v1/capabilities` (`contractVersion`) must always appear here.
 
 ## v1 — 2026-10-18
 
+### v1 amendment — event stream midstream revocation and slow-consumer close alignment (2026-10-18)
+
+Security and documentation corrections for the events subscription; the
+contract version stays v1. Public behavior changes:
+
+- **Midstream authorization re-validation**: the events subscription now
+  re-validates its authorization before EVERY delivered batch (replay page
+  or live tick), not only at upgrade. The consumed ticket's retained
+  issuing-credential binding (which API token or browser session authorized
+  the connection) must still be alive, and the principal must still be a
+  project member. Removing a member, revoking the issuing API token, or
+  revoking/expiring the issuing browser session closes the stream `4401`
+  unauthorized with ONE `kind:"error"` frame (details reason
+  `membership_removed`, `issuer_revoked` or `issuer_expired`) before any
+  later project payload is delivered. The ticket itself stays single-use
+  and is consumed exactly once at upgrade; repeated delivery never
+  re-consumes it. Still-authorized subscribers keep receiving ordered
+  replay and live events with no duplicates.
+- **4502 slow_consumer close is frame-less (documentation now matches the
+  wire)**: the slow_consumer close carries the close code/reason ONLY — no
+  error frame is sent. By definition the outbound buffer is already
+  saturated past its bound, so the server never enqueues additional data
+  (including error frames) onto that socket; the close code itself is the
+  documented signal and clients recover by reconnecting with their cursor.
+  Rejection closes `4401`/`4400`/`4410` still send exactly one error frame
+  first (those sockets are not saturated). The behavior is pinned by a
+  deterministic pump test seam (fake sockets over a real event history),
+  not by TCP overload stress.
+
 ### v1 amendment — identity and repository boundary fixes (2026-10-18)
 
 Security-boundary corrections from foundation scrutiny; the contract version

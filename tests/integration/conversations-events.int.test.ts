@@ -118,7 +118,7 @@ describe('conversations and transactional events', () => {
   const envelopeValidate = ajv.compile(EVENT_ENVELOPE_SCHEMA);
   const dataValidators = new Map(EVENT_TYPES.map((t) => [t.name, ajv.compile(t.dataSchema)]));
 
-  function inject(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, opts: { headers?: Record<string, string>; body?: Record<string, unknown> } = {}): Promise<{ statusCode: number; body: string; json: () => unknown }> {
+  function inject(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, opts: { headers?: Record<string, string>; body?: Record<string, unknown> } = {}): Promise<{ statusCode: number; body: string; json: () => unknown; headers: Record<string, unknown> }> {
     return app.inject({
       method,
       url,
@@ -593,6 +593,192 @@ describe('conversations and transactional events', () => {
       }
     } finally {
       await expiryApp.close();
+    }
+  });
+
+  it('revalidates membership and issuer liveness midstream: removed member and revoked/expired issuer are closed 4401 before later project events', async () => {
+    const subscribeUrl = (projectId: string, query: string): string =>
+      `ws://127.0.0.1:${PORT}/v1/projects/${projectId}/events/subscribe${query}`;
+
+    /** Wait until an event matching the predicate arrived (or fail). */
+    const waitForEvent = async (subscriber: Subscriber, predicate: (e: RangerProjectEvent) => boolean): Promise<void> => {
+      const deadline = Date.now() + 8000;
+      while (!subscriber.events.some(predicate) && subscriber.closed === null && Date.now() < deadline) {
+        await subscriber.waitEventCount(subscriber.events.length + 1, 2000);
+      }
+      expect(subscriber.events.some(predicate)).toBe(true);
+    };
+
+    const requestIdOf = (res: { json: () => unknown }): string => (res.json() as { requestId: string }).requestId;
+
+    // The member was removed by an earlier test; re-add for these scenarios.
+    const readded = await inject('POST', `/v1/projects/${store.projectId}/memberships`, {
+      headers: bearerA,
+      body: { principalId: store.memberPrincipalId, role: 'member' },
+    });
+    expect(readded.statusCode).toBe(200);
+    const historyBefore = await allEvents(store.projectId, bearerA);
+
+    // --- Scenario A: membership removed midstream --------------------------
+    const memberTicketRes = await inject('POST', '/v1/auth/connection-tickets', {
+      headers: bearerB,
+      body: { projectId: store.projectId, purpose: 'events' },
+    });
+    expect(memberTicketRes.statusCode).toBe(200);
+    const ownerTicketRes = await inject('POST', '/v1/auth/connection-tickets', {
+      headers: bearerA,
+      body: { projectId: store.projectId, purpose: 'events' },
+    });
+    const memberSubscriber = new Subscriber(subscribeUrl(store.projectId, `?ticket=${encodeURIComponent((memberTicketRes.json() as { ticket: string }).ticket)}`));
+    const ownerSubscriber = new Subscriber(subscribeUrl(store.projectId, `?ticket=${encodeURIComponent((ownerTicketRes.json() as { ticket: string }).ticket)}`));
+    try {
+      await memberSubscriber.waitEventCount(historyBefore.length);
+      await ownerSubscriber.waitEventCount(historyBefore.length);
+      expect(memberSubscriber.closed).toBeNull();
+
+      const removed = await inject('DELETE', `/v1/projects/${store.projectId}/memberships/${store.memberPrincipalId}`, { headers: bearerA });
+      expect(removed.statusCode).toBe(200);
+
+      // The pump re-checks membership before EVERY delivered batch: the
+      // removed member's stream closes 4401 with the documented error frame,
+      // even with no new project events.
+      const memberClose = await memberSubscriber.waitClose();
+      expect(memberClose.code).toBe(4401);
+      expect(memberClose.reason).toBe('unauthorized');
+      expect(memberSubscriber.errorFrames[0]?.error.code).toBe('unauthorized');
+      expect(memberSubscriber.errorFrames[0]?.error.details).toMatchObject({ reason: 'membership_removed' });
+
+      // A later project event is created after the close and NEVER reaches
+      // the removed member; the still-authorized owner receives it in order.
+      const afterRemoval = await inject('POST', `/v1/projects/${store.projectId}/conversations/${store.conversationId}/messages`, {
+        headers: bearerA,
+        body: { role: 'user', content: 'after removal' },
+      });
+      expect(afterRemoval.statusCode).toBe(200);
+      const afterRemovalRequestId = requestIdOf(afterRemoval);
+      await waitForEvent(ownerSubscriber, (e) => e.requestId === afterRemovalRequestId);
+      expect(memberSubscriber.events.some((e) => e.requestId === afterRemovalRequestId)).toBe(false);
+      // The owner stream stayed ordered and duplicate-free across the episode.
+      const ownerSequences = ownerSubscriber.events.map((e) => e.sequence);
+      expect([...ownerSequences].sort((a, b) => a - b)).toEqual(ownerSequences);
+      expect(new Set(ownerSequences).size).toBe(ownerSequences.length);
+    } finally {
+      memberSubscriber.destroy();
+      ownerSubscriber.destroy();
+    }
+
+    // --- Scenario B: issuing API token revoked midstream -------------------
+    const tokenRes = await inject('POST', '/v1/auth/api-tokens', { headers: bearerA, body: { name: 'subscriber-issuer' } });
+    expect(tokenRes.statusCode).toBe(200);
+    const { tokenId, token } = tokenRes.json() as { tokenId: string; token: string };
+    const tokenTicketRes = await inject('POST', '/v1/auth/connection-tickets', {
+      headers: { authorization: `Bearer ${token}` },
+      body: { projectId: store.projectId, purpose: 'events' },
+    });
+    expect(tokenTicketRes.statusCode).toBe(200);
+    const tokenSubscriber = new Subscriber(subscribeUrl(store.projectId, `?ticket=${encodeURIComponent((tokenTicketRes.json() as { ticket: string }).ticket)}`));
+    try {
+      await tokenSubscriber.waitEventCount(1);
+      expect(tokenSubscriber.closed).toBeNull();
+
+      const revokeRes = await inject('DELETE', `/v1/auth/api-tokens/${tokenId}`, { headers: bearerA });
+      expect(revokeRes.statusCode).toBe(200);
+      const tokenClose = await tokenSubscriber.waitClose();
+      expect(tokenClose.code).toBe(4401);
+      expect(tokenSubscriber.errorFrames[0]?.error.code).toBe('unauthorized');
+      expect(tokenSubscriber.errorFrames[0]?.error.details).toMatchObject({ reason: 'issuer_revoked' });
+
+      // Events created after the close never reach the revoked-issuer stream.
+      const postRevoke = await inject('POST', `/v1/projects/${store.projectId}/conversations/${store.conversationId}/messages`, {
+        headers: bearerA,
+        body: { role: 'user', content: 'after token revoke' },
+      });
+      expect(postRevoke.statusCode).toBe(200);
+      expect(tokenSubscriber.events.some((e) => e.requestId === requestIdOf(postRevoke))).toBe(false);
+    } finally {
+      tokenSubscriber.destroy();
+    }
+
+    // --- Scenario C: issuing browser session revoked midstream -------------
+    const ownerToken = bearerA.authorization!.slice('Bearer '.length);
+    const sessionRes = await inject('POST', '/v1/auth/browser-sessions', {
+      headers: bearerA,
+      body: { apiToken: ownerToken },
+    });
+    expect(sessionRes.statusCode).toBe(200);
+    const sessionBody = sessionRes.json() as { sessionId: string; csrfToken: string };
+    const rawSetCookie = sessionRes.headers['set-cookie'];
+    const cookieHeader = (Array.isArray(rawSetCookie) ? rawSetCookie[0]! : rawSetCookie!).split(';')[0]!;
+
+    const sessionTicketRes = await inject('POST', '/v1/auth/connection-tickets', {
+      headers: { cookie: cookieHeader, 'x-ranger-csrf': sessionBody.csrfToken },
+      body: { projectId: store.projectId, purpose: 'events' },
+    });
+    expect(sessionTicketRes.statusCode, sessionTicketRes.body).toBe(200);
+    const sessionSubscriber = new Subscriber(subscribeUrl(store.projectId, `?ticket=${encodeURIComponent((sessionTicketRes.json() as { ticket: string }).ticket)}`));
+    try {
+      await sessionSubscriber.waitEventCount(1);
+      expect(sessionSubscriber.closed).toBeNull();
+
+      const revokeRes = await inject('DELETE', `/v1/auth/browser-sessions/${sessionBody.sessionId}`, { headers: bearerA });
+      expect(revokeRes.statusCode).toBe(200);
+      const sessionClose = await sessionSubscriber.waitClose();
+      expect(sessionClose.code).toBe(4401);
+      expect(sessionSubscriber.errorFrames[0]?.error.details).toMatchObject({ reason: 'issuer_revoked' });
+
+      const postRevoke = await inject('POST', `/v1/projects/${store.projectId}/conversations/${store.conversationId}/messages`, {
+        headers: bearerA,
+        body: { role: 'user', content: 'after session revoke' },
+      });
+      expect(postRevoke.statusCode).toBe(200);
+      expect(sessionSubscriber.events.some((e) => e.requestId === requestIdOf(postRevoke))).toBe(false);
+    } finally {
+      sessionSubscriber.destroy();
+    }
+
+    // --- Scenario D: issuing browser session EXPIRES midstream -------------
+    const expiringSessionRes = await inject('POST', '/v1/auth/browser-sessions', {
+      headers: bearerA,
+      body: { apiToken: ownerToken },
+    });
+    expect(expiringSessionRes.statusCode).toBe(200);
+    const expiringSession = expiringSessionRes.json() as { sessionId: string; csrfToken: string };
+    const rawExpiringCookie = expiringSessionRes.headers['set-cookie'];
+    const expiringCookie = (Array.isArray(rawExpiringCookie) ? rawExpiringCookie[0]! : rawExpiringCookie!).split(';')[0]!;
+    const expiringTicketRes = await inject('POST', '/v1/auth/connection-tickets', {
+      headers: { cookie: expiringCookie, 'x-ranger-csrf': expiringSession.csrfToken },
+      body: { projectId: store.projectId, purpose: 'events' },
+    });
+    expect(expiringTicketRes.statusCode, expiringTicketRes.body).toBe(200);
+    const expiringSubscriber = new Subscriber(subscribeUrl(store.projectId, `?ticket=${encodeURIComponent((expiringTicketRes.json() as { ticket: string }).ticket)}`));
+    try {
+      await expiringSubscriber.waitEventCount(1);
+      expect(expiringSubscriber.closed).toBeNull();
+
+      // Expiry (not revocation) is enforced the same way: the pump's per-batch
+      // liveness check closes the stream within one poll tick.
+      const expiryDb = openDatabase(dataDir);
+      try {
+        expiryDb
+          .prepare('UPDATE browser_sessions SET expires_at = ? WHERE id = ?')
+          .run(Date.now() - 1_000, expiringSession.sessionId);
+      } finally {
+        expiryDb.close();
+      }
+
+      const expiryClose = await expiringSubscriber.waitClose();
+      expect(expiryClose.code).toBe(4401);
+      expect(expiringSubscriber.errorFrames[0]?.error.code).toBe('unauthorized');
+      expect(expiringSubscriber.errorFrames[0]?.error.details).toMatchObject({ reason: 'issuer_expired' });
+
+      const postExpiry = await inject('POST', `/v1/projects/${store.projectId}/conversations/${store.conversationId}/messages`, {
+        headers: bearerA,
+        body: { role: 'user', content: 'after session expiry' },
+      });
+      expect(postExpiry.statusCode).toBe(200);
+      expect(expiringSubscriber.events.some((e) => e.requestId === requestIdOf(postExpiry))).toBe(false);
+    } finally {
+      expiringSubscriber.destroy();
     }
   });
 });

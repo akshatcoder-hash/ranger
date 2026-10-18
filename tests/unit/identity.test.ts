@@ -195,11 +195,15 @@ describe('connection tickets', () => {
     expect(created.ticket.expiresAt - created.ticket.createdAt).toBe(DEFAULT_TICKET_TTL_MS);
 
     const binding = consumeTicket(db, created.secret, { purpose: 'events', projectId: project.id });
+    // The binding retains the issuing credential so long-lived consumers can
+    // re-validate issuer liveness/expiry before every further delivery.
     expect(binding).toEqual({
       ticketId: created.ticket.id,
       principalId: principal.id,
       projectId: project.id,
       purpose: 'events',
+      credentialKind: 'api_token',
+      credentialId: cred.credential.id,
     });
     expectAppErrorCode(() => consumeTicket(db, created.secret, { purpose: 'events' }), 'unauthorized');
   });

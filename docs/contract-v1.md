@@ -109,7 +109,7 @@ never observes a half-applied mutation.
 
 - `GET /v1/events/schemas` — getEventSchemas
 - `GET /v1/projects/{projectId}/events` — replayProjectEvents (member-auth HTTP replay; `invalid_cursor` 400 / `cursor_expired` 410 on bad cursors; pure read — no tools, no state change)
-- `GET /v1/projects/{projectId}/events/subscribe` — subscribeProjectEvents (WebSocket upgrade; consumes a single-use `events` ticket with projectId and upgrade origin and enforces current membership BEFORE delivery; ordered replay then live delivery; closes `4400` invalid_cursor, `4410` cursor_expired, `4401` unauthorized, `4502` slow_consumer)
+- `GET /v1/projects/{projectId}/events/subscribe` — subscribeProjectEvents (WebSocket upgrade; consumes a single-use `events` ticket with projectId and upgrade origin, enforces current membership BEFORE delivery, and RE-VALIDATES membership plus the issuing token/session liveness and expiry before EVERY delivered batch; ordered replay then live delivery; closes `4400` invalid_cursor, `4410` cursor_expired, `4401` unauthorized — at upgrade or midstream when membership/issuer authorization is lost, one error frame first and no later project payloads, `4502` slow_consumer — close code/reason only, NO error frame, because the outbound buffer is already saturated)
 
 ### voice
 Voice sessions and the secure xAI realtime relay
