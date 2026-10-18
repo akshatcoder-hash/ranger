@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { rangerApi } from '../api'
+import { MediaLifecycle, OperationEpoch } from './lifecycle'
 
 type Screen = 'home' | 'start' | 'workspace' | 'review'
 type Mode = 'live' | 'demo'
@@ -39,15 +40,34 @@ export function App() {
   const [message, setMessage] = useState('')
   const [messages, setMessages] = useState<string[]>([])
   const [mediaState, setMediaState] = useState<'idle' | 'requesting' | 'active'>('idle')
-  const mediaRef = useRef<MediaStream | null>(null)
-  const mediaSessionRef = useRef<string | null>(null)
+  const [mediaLifecycle] = useState(() => new MediaLifecycle(id => {
+    void rangerApi.endMediaSession(id, new AbortController().signal)
+  }))
+  const mediaApiControllerRef = useRef<AbortController | null>(null)
   const requestRef = useRef<AbortController | null>(null)
+  const operationEpochRef = useRef(new OperationEpoch())
   const previousModeRef = useRef(location.mode)
   const dialogRef = useRef<HTMLDivElement>(null)
   const nameInputRef = useRef<HTMLInputElement>(null)
   const demo = location.mode === 'demo'
 
+  const invalidateRequest = useCallback(() => {
+    operationEpochRef.current.invalidate()
+    requestRef.current?.abort()
+    requestRef.current = null
+    setBusy(false)
+  }, [])
+
+  const clearMedia = useCallback(() => {
+    mediaApiControllerRef.current?.abort()
+    mediaApiControllerRef.current = null
+    mediaLifecycle.release()
+    setMediaState('idle')
+  }, [mediaLifecycle])
+
   const navigate = useCallback((screen: Screen, mode: Mode = location.mode, projectId = location.projectId, replace = false) => {
+    invalidateRequest()
+    clearMedia()
     const path = screen === 'home' ? '/' : screen === 'start' ? '/start' : `/${screen}/${encodeURIComponent(projectId)}`
     const query = mode === 'demo' ? '?mode=demo' : ''
     window.history[replace ? 'replaceState' : 'pushState']({}, '', `${path}${query}`)
@@ -55,24 +75,26 @@ export function App() {
     setNotice(null)
     if (screen === 'workspace') setWorkspaceTab('workspace')
     window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior })
-  }, [location.mode, location.projectId])
+  }, [clearMedia, invalidateRequest, location.mode, location.projectId])
 
   useEffect(() => {
-    const onPop = () => { setLocation(readLocation()); setNotice(null) }
+    const onPop = () => {
+      invalidateRequest()
+      clearMedia()
+      setLocation(readLocation())
+      setNotice(null)
+    }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
-  }, [])
+  }, [clearMedia, invalidateRequest])
 
   useEffect(() => {
     if (previousModeRef.current === location.mode) return
     previousModeRef.current = location.mode
-    mediaRef.current?.getTracks().forEach(track => track.stop())
-    mediaRef.current = null
-    if (mediaSessionRef.current) void rangerApi.endMediaSession(mediaSessionRef.current, new AbortController().signal)
-    mediaSessionRef.current = null
-    requestRef.current?.abort()
+    invalidateRequest()
+    clearMedia()
     setRepoConnected(false); setContextFiles([]); setApproved(false); setMessages([]); setMediaState('idle'); setBusy(false)
-  }, [location.mode])
+  }, [clearMedia, invalidateRequest, location.mode])
 
   useEffect(() => {
     if (!modal) return
@@ -93,10 +115,10 @@ export function App() {
   }, [modal])
 
   useEffect(() => () => {
-    mediaRef.current?.getTracks().forEach(track => track.stop())
-    if (mediaSessionRef.current) void rangerApi.endMediaSession(mediaSessionRef.current, new AbortController().signal)
+    mediaApiControllerRef.current?.abort()
+    mediaLifecycle.release()
     requestRef.current?.abort()
-  }, [])
+  }, [mediaLifecycle])
 
   const openRename = () => { setNameDraft(engineer); setModal('name') }
   const saveRename = (event: FormEvent) => {
@@ -108,22 +130,27 @@ export function App() {
 
   const createProject = async (event: FormEvent) => {
     event.preventDefault()
-    if (busy || !prompt.trim()) return
+    if (busy || (requestRef.current && !requestRef.current.signal.aborted) || !prompt.trim()) return
     if (demo) {
       requestRef.current?.abort()
       const controller = new AbortController(); requestRef.current = controller
+      const operation = operationEpochRef.current.begin()
       setBusy(true)
       await new Promise<void>(resolve => {
         const timeout = window.setTimeout(resolve, 260)
         controller.signal.addEventListener('abort', () => { window.clearTimeout(timeout); resolve() }, { once: true })
       })
-      if (controller.signal.aborted) return
+      if (!operationEpochRef.current.isCurrent(operation) || controller.signal.aborted) return
+      requestRef.current = null
       setBusy(false); navigate('workspace', 'demo'); return
     }
-    requestRef.current?.abort()
+    invalidateRequest()
     const controller = new AbortController(); requestRef.current = controller
+    const operation = operationEpochRef.current.begin()
     setBusy(true)
     const result = await rangerApi.createProject({ prompt: prompt.trim(), engineerName: engineer, repository: repoConnected ? 'northstar/support-inbox' : undefined }, controller.signal)
+    if (!operationEpochRef.current.isCurrent(operation)) return
+    requestRef.current = null
     setBusy(false)
     if (result.ok) navigate('workspace', 'live', result.data.projectId)
     else if (result.reason !== 'aborted') setNotice({ kind: 'error', text: result.message })
@@ -141,51 +168,65 @@ export function App() {
   }
 
   const decidePlan = async (accept: boolean) => {
-    if (busy) return
+    if (busy || (requestRef.current && !requestRef.current.signal.aborted)) return
     if (demo) { setApproved(accept); setModal(null); setNotice({ kind: 'success', text: accept ? 'Sample plan approved for this walkthrough.' : 'Plan sent back for changes.' }); return }
-    requestRef.current?.abort(); const controller = new AbortController(); requestRef.current = controller
+    invalidateRequest(); const controller = new AbortController(); requestRef.current = controller
+    const operation = operationEpochRef.current.begin()
     setBusy(true)
     const result = await rangerApi.decidePlan({ approved: accept, planId: 'current' }, controller.signal)
+    if (!operationEpochRef.current.isCurrent(operation)) return
+    requestRef.current = null
     setBusy(false)
     if (result.ok) { setApproved(result.data.accepted); setModal(null) }
     else if (result.reason !== 'aborted') setNotice({ kind: 'error', text: result.message })
   }
 
   const startMedia = async (kind: 'voice' | 'screen') => {
-    if (busy || mediaState === 'requesting') return
+    if (busy || mediaLifecycle.phase !== 'idle') return
     if (demo) { setMediaState('active'); setNotice({ kind: 'info', text: `Sample ${kind === 'voice' ? 'call' : 'screen share'} shown. No media is being recorded.` }); return }
+    const operation = mediaLifecycle.begin()
+    if (operation === null) return
     setMediaState('requesting'); setNotice(null)
     try {
       const stream = kind === 'voice'
         ? await navigator.mediaDevices.getUserMedia({ audio: true })
         : await navigator.mediaDevices.getDisplayMedia({ video: true })
-      mediaRef.current = stream
+      if (!mediaLifecycle.attach(operation, stream)) return
+      const onTrackEnded = () => {
+        if (mediaLifecycle.release(operation)) {
+          mediaApiControllerRef.current?.abort()
+          mediaApiControllerRef.current = null
+          setMediaState('idle')
+        }
+      }
+      stream.getTracks().forEach(track => track.addEventListener('ended', onTrackEnded, { once: true }))
+      if (!mediaLifecycle.isCurrent(operation)) return
       const controller = new AbortController()
+      mediaApiControllerRef.current = controller
       const result = await rangerApi.startMediaSession({ kind, stream }, controller.signal)
+      if (!mediaLifecycle.isCurrent(operation)) {
+        if (result.ok) void rangerApi.endMediaSession(result.data.id, new AbortController().signal)
+        return
+      }
+      mediaApiControllerRef.current = null
       if (!result.ok) {
-        stream.getTracks().forEach(track => track.stop()); mediaRef.current = null
+        mediaLifecycle.release(operation)
         setMediaState('idle'); setNotice({ kind: 'error', text: result.message }); return
       }
-      mediaSessionRef.current = result.data.id
+      mediaLifecycle.setSession(operation, result.data.id)
+      if (!mediaLifecycle.activate(operation)) return
       setMediaState('active')
-      stream.getTracks().forEach(track => track.addEventListener('ended', () => {
-        mediaRef.current?.getTracks().forEach(otherTrack => otherTrack.stop())
-        mediaRef.current = null
-        if (mediaSessionRef.current) void rangerApi.endMediaSession(mediaSessionRef.current, new AbortController().signal)
-        mediaSessionRef.current = null; setMediaState('idle')
-      }, { once: true }))
     } catch (error) {
-      mediaRef.current?.getTracks().forEach(track => track.stop()); mediaRef.current = null; setMediaState('idle')
+      if (!mediaLifecycle.isCurrent(operation)) return
+      mediaApiControllerRef.current = null
+      mediaLifecycle.release(operation); setMediaState('idle')
       const messageText = error instanceof DOMException && error.name === 'NotAllowedError' ? 'Permission was declined. You can try again when you are ready.' : 'Media could not be started in this browser.'
       setNotice({ kind: 'error', text: messageText })
     }
   }
 
   const stopMedia = () => {
-    mediaRef.current?.getTracks().forEach(track => track.stop())
-    mediaRef.current = null
-    if (mediaSessionRef.current) void rangerApi.endMediaSession(mediaSessionRef.current, new AbortController().signal)
-    mediaSessionRef.current = null; setMediaState('idle'); setNotice({ kind: 'info', text: 'Media stopped.' })
+    clearMedia(); setNotice({ kind: 'info', text: 'Media stopped.' })
   }
 
   const sendMessage = (event: FormEvent) => {
@@ -196,7 +237,11 @@ export function App() {
     setMessages(items => [...items, clean]); setMessage('')
   }
 
-  const cancelRequest = () => { requestRef.current?.abort(); setBusy(false); setNotice({ kind: 'info', text: 'Request cancelled.' }) }
+  const cancelRequest = () => {
+    invalidateRequest()
+    if (mediaLifecycle.phase === 'requesting') clearMedia()
+    setBusy(false); setNotice({ kind: 'info', text: 'Request cancelled.' })
+  }
 
   return <div className="app-shell">
     {location.screen === 'home' && <Landing demo={demo} onStart={() => navigate('start')} onDemo={() => navigate('start', 'demo')} onWorkspace={() => navigate('workspace', demo ? 'demo' : 'live')} />}
