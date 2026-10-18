@@ -16,16 +16,20 @@ import {
   VM_KILL_TIMEOUT_MS,
   WORKLOAD_PROJECT,
   WORKLOAD_USER,
+  fencedWorkloadCommand,
   isFixedPreviewPort,
 } from './limits.js';
 import { bootstrapWorkload } from './bootstrap.js';
-import { armWorkspaceWatchdog, destroyRecordedWorkspace } from './cleanup.js';
+import { armWorkspaceWatchdog, destroyFailedBootstrap, destroyRecordedWorkspace } from './cleanup.js';
 import { SdkInstaboxProvider } from './sdk-provider.js';
+import { rememberDesktopStream, forgetDesktopStream } from './viewing.js';
+import { mintPreviewKeypair, openPreviewTunnel, type TunnelHandle } from './preview-tunnel.js';
 import { workspaceProviderForTests } from './runtime.js';
 import type { InstaboxProvider, ProviderCreateRequest } from './provider.js';
 import {
   getArtifact,
   getCommand,
+  getPreviewSession,
   getWorkspace,
   insertArtifact,
   insertCommand,
@@ -41,12 +45,14 @@ import {
   readSourceFile,
   revokeDesktopSession,
   saveSourceFile,
+  setPreviewLocalPort,
   stopPreviewSession,
   type CommandRow,
   type WorkspaceRow,
 } from './store.js';
 
 const FEATURE = 'lean-instabox-workspace-viewing';
+const previewTunnels = new Map<string, TunnelHandle>();
 
 export interface WorkspaceServiceOptions {
   db: DatabaseSync;
@@ -58,8 +64,8 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function providerFor(_options: WorkspaceServiceOptions): InstaboxProvider {
-  return workspaceProviderForTests() ?? new SdkInstaboxProvider();
+function providerFor(options: WorkspaceServiceOptions): InstaboxProvider {
+  return workspaceProviderForTests() ?? new SdkInstaboxProvider(apiKeyFor(options));
 }
 
 function apiKeyFor(options: WorkspaceServiceOptions): string {
@@ -81,7 +87,8 @@ function assertSafeRelative(relativePath: string): void {
 }
 
 function workloadShell(argv: string[]): string {
-  return `runuser -u ${WORKLOAD_USER} -- ${argv.map(shellQuote).join(' ')}`;
+  const inner = shellQuote(argv.map(shellQuote).join(' '));
+  return fencedWorkloadCommand(inner);
 }
 
 export class WorkspaceService {
@@ -102,6 +109,11 @@ export class WorkspaceService {
     }
     if (existing !== null && existing.observedState === 'running' && existing.destroyedAt === null) {
       return existing;
+    }
+    if (existing !== null && existing.observedState !== 'destroyed') {
+      throw new AppError('conflict', 'A workspace create is already recorded for this project', {
+        details: { reason: 'workspace_create_in_progress', observedState: existing.observedState },
+      });
     }
     const operationKey = `ws-${projectId}-${randomUUID()}`;
     if (this.options.db.isTransaction) {
@@ -145,7 +157,17 @@ export class WorkspaceService {
         killTimeoutMs: reservation.killTimeoutMs,
         deadlineAt,
       });
-      await bootstrapWorkload(providerFor(this.options), machine.machineId);
+      try {
+        await bootstrapWorkload(providerFor(this.options), machine.machineId);
+      } catch (cause) {
+        await destroyFailedBootstrap({
+          db: this.options.db,
+          provider: providerFor(this.options),
+          ledgerFile: this.options.config.liveBudgetFile,
+          projectId,
+        });
+        throw cause;
+      }
       armWorkspaceWatchdog({
         deadlineAt,
         onDeadline: () =>
@@ -165,6 +187,13 @@ export class WorkspaceService {
           details: { reason: 'uncertain_create' },
         });
       }
+      if (cause instanceof AppError) throw cause;
+      if (/bootstrap/i.test(message)) {
+        throw Errors.conflict('Workload bootstrap failed; the machine was destroyed', {
+          reason: 'bootstrap_failed',
+          detail: message.slice(0, 400),
+        });
+      }
       releaseInstaboxReservation(ledgerFile, reservation.reservationId);
       throw Errors.notConfigured('Instabox provider is not available', { reason: 'provider_unavailable' });
     }
@@ -174,14 +203,25 @@ export class WorkspaceService {
     assertSafeRelative(relativePath);
     const workspace = this.requireRunning(projectId);
     saveSourceFile(this.options.db, projectId, relativePath, content);
-    await providerFor(this.options).exec({
+    const guestPath = `${WORKLOAD_PROJECT}/${relativePath}`;
+    const encoded = content.toString('base64');
+    const script = [
+      'set -eu',
+      `install -d -o ${WORKLOAD_USER} -g ${WORKLOAD_USER} -m 0750 "$(dirname ${shellQuote(guestPath)})"`,
+      `printf '%s' ${shellQuote(encoded)} | base64 -d > ${shellQuote(`${guestPath}.tmp`)}`,
+      `chown ${WORKLOAD_USER}:${WORKLOAD_USER} ${shellQuote(`${guestPath}.tmp`)}`,
+      `mv ${shellQuote(`${guestPath}.tmp`)} ${shellQuote(guestPath)}`,
+    ].join('\n');
+    const written = await providerFor(this.options).exec({
       machineId: workspace.machineId!,
-      command: `ranger-write ${shellQuote(relativePath)} ${content.byteLength}`,
-      user: WORKLOAD_USER,
+      command: `sudo --non-interactive /bin/bash -lc ${shellQuote(script)}`,
       cwd: WORKLOAD_PROJECT,
-      envs: { RANGER_B64: content.toString('base64') },
       timeoutMs: 30_000,
     });
+    if (written.exitCode !== 0) {
+      const detail = `${written.stderr}\n${written.stdout}`.replace(/[A-Za-z0-9_\-]{24,}/g, '[redacted]').slice(0, 300);
+      throw Errors.conflict('Workspace file was not written in the guest', { reason: 'guest_write_failed', detail });
+    }
     return { path: relativePath, sizeBytes: content.byteLength };
   }
 
@@ -202,7 +242,7 @@ export class WorkspaceService {
     return { path: relativePath, contentBase64: content.toString('base64'), sizeBytes: content.byteLength };
   }
 
-  async runCommand(projectId: string, argv: string[], timeoutMs: number): Promise<CommandRow> {
+  async runCommand(projectId: string, argv: string[], timeoutMs: number, background = false): Promise<CommandRow> {
     const workspace = this.requireRunning(projectId);
     const result = await providerFor(this.options).exec({
       machineId: workspace.machineId!,
@@ -210,15 +250,16 @@ export class WorkspaceService {
       user: WORKLOAD_USER,
       cwd: WORKLOAD_PROJECT,
       timeoutMs,
+      background,
     });
     const logs = (result.stdout + result.stderr).slice(0, COMMAND_OUTPUT_CAP_BYTES);
     return insertCommand(this.options.db, {
       projectId,
       argv,
-      state: result.exitCode === 0 ? 'succeeded' : 'failed',
-      pid: null,
+      state: background ? 'running' : result.exitCode === 0 ? 'succeeded' : 'failed',
+      pid: result.pid ?? null,
       logs,
-      exitCode: result.exitCode,
+      exitCode: background ? null : result.exitCode,
       timedOut: result.timedOut,
     });
   }
@@ -294,7 +335,8 @@ export class WorkspaceService {
     const workspace = this.requireRunning(projectId);
     const bounded = Math.min(60, Math.max(5, ttlSeconds));
     const session = insertDesktopSession(this.options.db, projectId, bounded * 1000);
-    await providerFor(this.options).streamUrl(workspace.machineId!, bounded);
+    const stream = await providerFor(this.options).streamUrl(workspace.machineId!, bounded);
+    rememberDesktopStream(session.id, stream);
     return {
       sessionId: session.id,
       expiresAt: session.expiresAt,
@@ -305,6 +347,7 @@ export class WorkspaceService {
   revokeDesktop(projectId: string, sessionId: string): void {
     const workspace = this.requireKnown(projectId);
     revokeDesktopSession(this.options.db, projectId, sessionId);
+    forgetDesktopStream(sessionId);
     if (workspace.machineId !== null) {
       void providerFor(this.options).revokeStreams(workspace.machineId);
     }
@@ -317,8 +360,13 @@ export class WorkspaceService {
         allowed: [...FIXED_PREVIEW_PORTS],
       });
     }
-    this.requireRunning(projectId);
+    const workspace = this.requireRunning(projectId);
     const session = insertPreviewSession(this.options.db, projectId, guestPort, 60_000);
+    if (workspaceProviderForTests() === null && workspace.machineId !== null) {
+      const tunnel = await this.openFixedTunnel(workspace.machineId, guestPort);
+      previewTunnels.set(session.id, tunnel);
+      setPreviewLocalPort(this.options.db, projectId, session.id, tunnel.localPort);
+    }
     return {
       sessionId: session.id,
       expiresAt: session.expiresAt,
@@ -326,9 +374,35 @@ export class WorkspaceService {
     };
   }
 
-  stopPreview(projectId: string, sessionId: string): void {
+  async stopPreview(projectId: string, sessionId: string): Promise<void> {
     this.requireKnown(projectId);
+    const tunnel = previewTunnels.get(sessionId);
+    if (tunnel !== undefined) {
+      previewTunnels.delete(sessionId);
+      await tunnel.stop();
+    }
     stopPreviewSession(this.options.db, projectId, sessionId);
+  }
+
+  /** Loopback bind of an already-open preview, for gateway proxying. */
+  previewBind(projectId: string, sessionId: string): { host: '127.0.0.1'; port: number } | null {
+    const row = getPreviewSession(this.options.db, projectId, sessionId);
+    if (row === null || row.localPort === null) return null;
+    return { host: '127.0.0.1', port: row.localPort };
+  }
+
+  private async openFixedTunnel(machineId: string, guestPort: number): Promise<TunnelHandle> {
+    const key = mintPreviewKeypair();
+    const creds = await providerFor(this.options).sshCredentials(machineId, key.publicKey, 120);
+    return openPreviewTunnel({
+      host: creds.host,
+      port: creds.port,
+      username: creds.username,
+      certificate: creds.certificate,
+      knownHostsLine: creds.knownHostsLine,
+      guestPort,
+      privateKeyPem: key.privateKeyPem,
+    });
   }
 
   rejectDeferred(operation: string): never {

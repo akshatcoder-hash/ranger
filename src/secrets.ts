@@ -34,6 +34,20 @@ export class SecretMissingError extends AppError {
   }
 }
 
+/**
+ * Drop one matching pair of outer quotes. This is not shell evaluation:
+ * no expansion, no escape processing, and mismatched quotes stay put.
+ */
+export function stripMatchingQuotes(value: string): string {
+  if (value.length < 2) return value;
+  const first = value[0];
+  const last = value[value.length - 1];
+  if ((first === '"' || first === "'") && first === last) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
 /** Parse a KEY=VALUE environment-style file. Values are never logged. */
 export function parseSecretFile(raw: string): Map<string, string> {
   const map = new Map<string, string>();
@@ -43,7 +57,7 @@ export function parseSecretFile(raw: string): Map<string, string> {
     const eq = trimmed.indexOf('=');
     if (eq <= 0) continue;
     const key = trimmed.slice(0, eq).trim();
-    const value = trimmed.slice(eq + 1).trim();
+    const value = stripMatchingQuotes(trimmed.slice(eq + 1).trim());
     if (key !== '' && value !== '') map.set(key, value);
   }
   return map;

@@ -1239,6 +1239,7 @@ function workspaceFamily(): OperationDef[] {
         args: arr(str(), { maxItems: 100 }),
         cwd: str(),
         timeoutMs: int({ minimum: 1, maximum: 600000 }),
+        background: bool({ description: 'Start detached and return the process-group handle for later termination' }),
       }),
       response: okResponse(
         {

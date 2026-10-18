@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { recordInstaboxRelease } from '../budget/ledger.js';
 import type { InstaboxProvider } from './provider.js';
-import { getWorkspace, markWorkspaceDestroyed } from './store.js';
+import { clearFailedWorkspace, getWorkspace, markWorkspaceDestroyed } from './store.js';
 
 /**
  * Destroy a recorded workspace. Called from the API and from the deadline
@@ -20,6 +20,17 @@ export async function destroyRecordedWorkspace(input: {
     if (input.ledgerFile !== null) recordInstaboxRelease(input.ledgerFile, row.machineId);
   }
   markWorkspaceDestroyed(input.db, input.projectId);
+}
+
+/** Destroy a machine whose bootstrap failed, then forget the row. */
+export async function destroyFailedBootstrap(input: {
+  db: DatabaseSync;
+  provider: InstaboxProvider;
+  ledgerFile: string | null;
+  projectId: string;
+}): Promise<void> {
+  await destroyRecordedWorkspace(input);
+  clearFailedWorkspace(input.db, input.projectId);
 }
 
 /**

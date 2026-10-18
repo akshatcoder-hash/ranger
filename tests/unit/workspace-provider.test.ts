@@ -3,12 +3,14 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { readLedger } from '../../src/budget/ledger.js';
+import { generateKeyPairSync } from 'node:crypto';
 import {
   FakeInstabox,
   InstaboxWorkspace,
   type InstaboxProvider,
   type ProviderCreateRequest,
 } from '../../src/workspace/instabox.js';
+import { opensshEd25519PublicKey } from '../../src/workspace/preview-tunnel.js';
 
 /**
  * Deterministic Instabox provider-wire tests.
@@ -120,7 +122,10 @@ describe('instabox workspace provider wire (deterministic, not live)', () => {
     expect(finished.stdout).toContain('hello');
     const executed = provider.commands[0];
     expect(executed?.user).toBe('ranger');
-    expect(executed?.command).toContain('runuser');
+    expect(executed?.command).toContain('setpriv');
+    expect(executed?.command).toContain('--no-new-privs');
+    expect(executed?.command).toContain('runuser --user ranger');
+    expect(executed?.command).toContain('/sys/fs/cgroup/ranger-workload/cgroup.procs');
     expect(executed?.command).not.toContain('INSTABOX_API_KEY');
     expect(executed?.envs === undefined || !('INSTABOX_API_KEY' in executed.envs)).toBe(true);
   });
@@ -197,6 +202,15 @@ describe('instabox workspace provider wire (deterministic, not live)', () => {
     expect(preview.guestPort).toBe(4173);
     expect(JSON.stringify(preview)).not.toContain('BEGIN CERT');
     expect(JSON.stringify(preview)).not.toContain('PRIVATE KEY');
+  });
+
+  it('encodes an Ed25519 public key as an OpenSSH line, not PEM', () => {
+    const pair = generateKeyPairSync('ed25519');
+    const line = opensshEd25519PublicKey(pair.publicKey);
+    expect(line.startsWith('ssh-ed25519 AAAA')).toBe(true);
+    expect(line).not.toContain('BEGIN');
+    const decoded = Buffer.from(line.split(' ')[1]!, 'base64');
+    expect(decoded.subarray(4, 15).toString()).toBe('ssh-ed25519');
   });
 
   it('rejects pause, resume and restart as unsupported', async () => {

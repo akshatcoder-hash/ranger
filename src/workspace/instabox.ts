@@ -13,6 +13,7 @@ import {
   VM_KILL_TIMEOUT_MS,
   WORKLOAD_PROJECT,
   WORKLOAD_USER,
+  fencedWorkloadCommand,
 } from './limits.js';
 import { FakeInstabox } from './fake-provider.js';
 import type { InstaboxProvider, ProviderCreateRequest } from './provider.js';
@@ -327,7 +328,7 @@ export class InstaboxWorkspace {
   }
 
   private workloadCommand(argv: string[]): string {
-    const inner = argv.map(shellQuote).join(' ');
-    return `runuser -u ${WORKLOAD_USER} -- ${inner}`;
+    const inner = shellQuote(argv.map(shellQuote).join(' '));
+    return fencedWorkloadCommand(inner);
   }
 }

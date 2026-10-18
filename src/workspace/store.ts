@@ -81,7 +81,21 @@ export function insertWorkspace(
   const now = Date.now();
   db.prepare(
     `INSERT INTO workspaces (project_id, operation_key, source_revision, desired_state, observed_state, vault, uncertain, created_at)
-     VALUES (?, ?, ?, 'running', 'creating', 0, 0, ?)`,
+     VALUES (?, ?, ?, 'running', 'creating', 0, 0, ?)
+     ON CONFLICT(project_id) DO UPDATE SET
+       operation_key = excluded.operation_key,
+       machine_id = NULL,
+       reservation_id = NULL,
+       source_revision = excluded.source_revision,
+       desired_state = 'running',
+       observed_state = 'creating',
+       vault = 0,
+       kill_timeout_ms = NULL,
+       deadline_at = NULL,
+       uncertain = 0,
+       created_at = excluded.created_at,
+       destroyed_at = NULL
+     WHERE workspaces.observed_state = 'destroyed'`,
   ).run(input.projectId, input.operationKey, input.sourceRevision, now);
   const created = getWorkspace(db, input.projectId);
   if (created === null) throw Errors.internal('Workspace insert did not persist');
@@ -109,6 +123,15 @@ export function markWorkspaceDestroyed(db: DatabaseSync, projectId: string): voi
   db.prepare(
     `UPDATE workspaces SET observed_state = 'destroyed', desired_state = 'destroyed', destroyed_at = ? WHERE project_id = ?`,
   ).run(Date.now(), projectId);
+}
+
+/**
+ * A failed bootstrap already spent the recorded machine. Clear that row so a
+ * later authorized create can reserve a replacement. Never used after an
+ * uncertain create: that identity must stay recorded.
+ */
+export function clearFailedWorkspace(db: DatabaseSync, projectId: string): void {
+  db.prepare('DELETE FROM workspaces WHERE project_id = ? AND uncertain = 0').run(projectId);
 }
 
 export function saveSourceFile(db: DatabaseSync, projectId: string, relativePath: string, content: Buffer): void {

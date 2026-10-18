@@ -51,6 +51,10 @@ export class FakeInstabox implements InstaboxProvider {
     if (proc !== undefined) proc.ignoresTerm = true;
   }
 
+  lastBackgroundPid(): number | null {
+    return this.processes.at(-1)?.pid ?? null;
+  }
+
   livePidsSync(leaderPid: number): number[] {
     return this.processes.filter((item) => item.pid === leaderPid && item.alive).map((item) => item.pid);
   }
@@ -139,8 +143,8 @@ export class FakeInstabox implements InstaboxProvider {
       return { stdout: Buffer.from(body).toString('base64'), stderr: '', exitCode: 0, timedOut: false, truncated: false };
     }
     if (request.command.includes('echo')) {
-      const quoted = [...request.command.matchAll(/'([^']*)'/g)].map((match) => match[1] ?? '');
-      const text = quoted.filter((part) => part !== 'echo').at(-1) ?? 'hello';
+      const tokens = [...request.command.matchAll(/'([^'\\]+)'/g)].map((match) => match[1] ?? '');
+      const text = tokens.filter((token) => token !== 'echo').at(-1) ?? 'hello';
       return { stdout: `${text}\n`, stderr: '', exitCode: 0, timedOut: false, truncated: false };
     }
     if (request.command.includes('useradd') || request.command.includes('bootstrap-complete')) {

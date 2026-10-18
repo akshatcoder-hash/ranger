@@ -12452,6 +12452,10 @@
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 600000
+                  },
+                  "background": {
+                    "type": "boolean",
+                    "description": "Start detached and return the process-group handle for later termination"
                   }
                 },
                 "additionalProperties": false

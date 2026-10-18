@@ -58,4 +58,29 @@ describe('SecretResolver', () => {
     expect(parsed.get('B')).toBe('two = with equals');
     expect(parsed.size).toBe(2);
   });
+
+  it('strips one matching pair of double quotes and keeps the inner value', () => {
+    const parsed = parseSecretFile('INSTABOX_API_KEY="synthetic-double"\n');
+    expect(parsed.get('INSTABOX_API_KEY')).toBe('synthetic-double');
+  });
+
+  it('strips one matching pair of single quotes and keeps the inner value', () => {
+    const parsed = parseSecretFile("INSTABOX_API_KEY='synthetic-single'\n");
+    expect(parsed.get('INSTABOX_API_KEY')).toBe('synthetic-single');
+  });
+
+  it('leaves an unquoted value unchanged, including embedded quotes', () => {
+    const parsed = parseSecretFile('INSTABOX_API_KEY=synthetic-plain\nXAI_API_KEY=keep"inner\'quotes\n');
+    expect(parsed.get('INSTABOX_API_KEY')).toBe('synthetic-plain');
+    expect(parsed.get('XAI_API_KEY')).toBe('keep"inner\'quotes');
+  });
+
+  it('does not shell-evaluate quoted values or strip mismatched quotes', () => {
+    const parsed = parseSecretFile(
+      'INSTABOX_API_KEY="synthetic-$(echo leak)"\nXAI_API_KEY=\'not-closed\nOTHER="mismatched\'\n',
+    );
+    expect(parsed.get('INSTABOX_API_KEY')).toBe('synthetic-$(echo leak)');
+    expect(parsed.get('XAI_API_KEY')).toBe("'not-closed");
+    expect(parsed.get('OTHER')).toBe('"mismatched\'');
+  });
 });

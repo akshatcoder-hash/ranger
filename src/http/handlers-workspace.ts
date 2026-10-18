@@ -97,12 +97,12 @@ export function registerWorkspaceHandlers(ctx: HandlerContext, handlers: Map<str
 
   handlers.set('startWorkspaceCommand', async (req) => {
     const projectId = authorize(req);
-    const body = (req.body ?? {}) as { command?: string; args?: string[]; timeoutMs?: number };
+    const body = (req.body ?? {}) as { command?: string; args?: string[]; timeoutMs?: number; background?: boolean };
     if (typeof body.command !== 'string' || body.command.length === 0) {
       throw Errors.validation('command is required');
     }
     const argv = [body.command, ...(body.args ?? [])];
-    const row = await service.runCommand(projectId, argv, body.timeoutMs ?? 30_000);
+    const row = await service.runCommand(projectId, argv, body.timeoutMs ?? 30_000, body.background === true);
     return { command: commandBody(row) };
   });
 

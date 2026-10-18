@@ -224,6 +224,37 @@ describe('workspace public API (deterministic fake provider)', () => {
     await h.app.close();
   });
 
+  it('returns a process handle for a background command and kills a TERM-ignoring descendant', async () => {
+    const h = await harness();
+    await h.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${h.projectId}/workspace`,
+      headers: h.ownerAuth,
+      payload: {},
+    });
+    const started = await h.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${h.projectId}/workspace/commands`,
+      headers: h.ownerAuth,
+      payload: { command: 'sleep', args: ['30'], timeoutMs: 30000, background: true },
+    });
+    expect(started.statusCode).toBe(200);
+    const body = started.json() as { command: { commandId: string; state: string } };
+    expect(body.command.state).toBe('running');
+    const leader = h.provider.lastBackgroundPid();
+    expect(leader).toBeGreaterThan(0);
+    h.provider.markTermIgnoring(leader!);
+    const stopped = await h.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${h.projectId}/workspace/commands/${body.command.commandId}/terminate`,
+      headers: h.ownerAuth,
+    });
+    expect(stopped.statusCode).toBe(200);
+    expect(stopped.json()).toMatchObject({ command: { state: 'terminated' } });
+    expect(h.provider.signals.map((signal) => signal.signal)).toEqual(['TERM', 'KILL']);
+    await h.app.close();
+  });
+
   it('keeps provider stream material server-side on desktop session create', async () => {
     const h = await harness();
     await h.app.inject({

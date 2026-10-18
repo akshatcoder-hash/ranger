@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { COMMAND_OUTPUT_CAP_BYTES, WORKLOAD_PROJECT, WORKLOAD_USER } from './limits.js';
+import { COMMAND_OUTPUT_CAP_BYTES, WORKLOAD_PROJECT, WORKLOAD_USER, fencedWorkloadCommand } from './limits.js';
 import type { InstaboxProvider } from './provider.js';
 import { getCommand, insertCommand, markCommandTerminated, type CommandRow } from './store.js';
 
@@ -19,7 +19,8 @@ function shellQuote(value: string): string {
 }
 
 function workloadCommand(argv: string[]): string {
-  return `runuser -u ${WORKLOAD_USER} -- ${argv.map(shellQuote).join(' ')}`;
+  const inner = shellQuote(argv.map(shellQuote).join(' '));
+  return fencedWorkloadCommand(inner);
 }
 
 /**

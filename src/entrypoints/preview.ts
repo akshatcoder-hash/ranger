@@ -11,6 +11,7 @@ import { consumeTicket } from '../auth/tickets.js';
 import { membershipRole } from '../auth/authorization.js';
 import { getDesktopSession, getPreviewSession, getWorkspace } from '../workspace/store.js';
 import { FIXED_PREVIEW_PORTS, isFixedPreviewPort } from '../workspace/limits.js';
+import { desktopStreamFor } from '../workspace/viewing.js';
 import { installGracefulShutdown } from './lifecycle.js';
 
 /**
@@ -53,6 +54,35 @@ export async function buildPreviewApp(config: RangerConfig) {
 
   app.get('/health', async () => ({ status: 'ok' }));
 
+  app.get('/v1/projects/:projectId/desktop/sessions/:sessionId/view', async (req, reply) => {
+    const params = req.params as { projectId: string; sessionId: string };
+    const binding = consumeTicket(db, ticketFrom(req), {
+      purpose: 'desktop-stream',
+      projectId: params.projectId,
+    });
+    if (membershipRole(db, params.projectId, binding.principalId) === null) {
+      throw Errors.forbidden('Not a member of this project');
+    }
+    const session = getDesktopSession(db, params.projectId, params.sessionId);
+    if (session === null || session.state !== 'active' || session.revokedAt !== null || session.expiresAt < Date.now() || revokedViewers.has(params.sessionId)) {
+      throw Errors.unauthorized('Desktop session is not active', { reason: 'desktop_inactive' });
+    }
+    const stream = desktopStreamFor(params.sessionId);
+    if (stream === null || stream.expiresAtMs <= Date.now()) {
+      throw Errors.unauthorized('Desktop stream is not available', { reason: 'desktop_stream_missing' });
+    }
+    const upstream = await fetch(stream.url);
+    const raw = await upstream.text();
+    const socketPath = `/v1/projects/${params.projectId}/desktop/sessions/${params.sessionId}/stream`;
+    const body = raw
+      .replaceAll(stream.url, socketPath)
+      .replace(/https:\/\/dashboard\.instabox\.sh\/[^"'<\s]+/g, socketPath);
+    reply.header('content-type', 'text/html; charset=utf-8');
+    reply.header('cache-control', 'no-store');
+    reply.header('referrer-policy', 'no-referrer');
+    return reply.code(upstream.status).send(body);
+  });
+
   app.get('/v1/projects/:projectId/desktop/sessions/:sessionId/stream', { websocket: true }, (socket: WsWebSocket, req: FastifyRequest) => {
     const params = req.params as { projectId: string; sessionId: string };
     try {
@@ -78,17 +108,34 @@ export async function buildPreviewApp(config: RangerConfig) {
         socket.close(4401, 'unauthorized');
         return;
       }
-      socket.send(JSON.stringify({ kind: 'desktop', sessionId: params.sessionId, state: 'live' }));
+      const stream = desktopStreamFor(params.sessionId);
+      if (stream === null || stream.expiresAtMs <= Date.now()) {
+        socket.close(4401, 'unauthorized');
+        return;
+      }
+      const upstream = new WebSocket(stream.url);
+      const closeBoth = (code: number): void => {
+        clearInterval(timer);
+        try { upstream.close(); } catch { /* already closed */ }
+        try { socket.close(code); } catch { /* already closed */ }
+      };
+      upstream.addEventListener('message', (event) => {
+        if (socket.readyState === socket.OPEN) socket.send(event.data);
+      });
+      upstream.addEventListener('close', () => closeBoth(1000));
+      socket.on('message', (data) => {
+        if (upstream.readyState !== WebSocket.OPEN) return;
+        const payload = Array.isArray(data) ? Buffer.concat(data) : data;
+        upstream.send(payload);
+      });
       const timer = setInterval(() => {
         const current = getDesktopSession(db, params.projectId, params.sessionId);
-        if (current === null || current.state !== 'active' || revokedViewers.has(params.sessionId) || membershipRole(db, params.projectId, binding.principalId) === null) {
-          clearInterval(timer);
-          socket.close(4401, 'unauthorized');
-          return;
+        const member = membershipRole(db, params.projectId, binding.principalId);
+        if (current === null || current.state !== 'active' || current.revokedAt !== null || revokedViewers.has(params.sessionId) || member === null) {
+          closeBoth(4401);
         }
-        socket.send(JSON.stringify({ kind: 'desktop', sessionId: params.sessionId, state: 'live', at: Date.now() }));
       }, 1000);
-      socket.on('close', () => clearInterval(timer));
+      socket.on('close', () => closeBoth(1000));
     } catch {
       socket.close(4401, 'unauthorized');
     }
@@ -111,18 +158,16 @@ export async function buildPreviewApp(config: RangerConfig) {
     if (session === null || session.state !== 'active' || session.expiresAt < Date.now()) {
       throw Errors.unauthorized('Preview session is not active', { reason: 'preview_inactive' });
     }
-    if (!isFixedPreviewPort(session.guestPort)) {
+    if (!isFixedPreviewPort(session.guestPort) || session.localPort === null) {
       throw Errors.validation('Preview port is not an authorized fixed target', {
         reason: 'preview_target_rejected',
         allowed: [...FIXED_PREVIEW_PORTS],
       });
     }
-    return reply.send({
-      requestId: req.id,
-      sessionId: session.id,
-      guestPort: session.guestPort,
-      bindHost: '127.0.0.1',
-    });
+    const upstream = await fetch(`http://127.0.0.1:${session.localPort}/`);
+    const body = Buffer.from(await upstream.arrayBuffer());
+    reply.header('content-type', upstream.headers.get('content-type') ?? 'text/html');
+    return reply.code(upstream.status).send(body);
   });
 
   app.all('*', async (req) => {

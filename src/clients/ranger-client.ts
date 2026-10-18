@@ -676,6 +676,7 @@ export class RangerClient {
   "args"?: Array<string>;
   "cwd"?: string;
   "timeoutMs"?: number;
+  "background"?: boolean;
 } }): Promise<WorkspaceCommandResponse> {
     return this.request<WorkspaceCommandResponse>('POST', '/v1/projects/{projectId}/workspace/commands', args as OpArgs);
   }

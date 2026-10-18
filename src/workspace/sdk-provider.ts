@@ -26,7 +26,17 @@ function fromInfo(info: SandboxInfo, timeoutMs: number | null): ProviderMachine 
   };
 }
 
+/**
+ * Explicit key wins over a stale inherited INSTABOX_API_KEY. The key stays
+ * in this process; it is never copied into guest env or metadata.
+ */
+function connection(apiKey: string | undefined): { apiKey: string } | undefined {
+  return apiKey === undefined || apiKey.length === 0 ? undefined : { apiKey };
+}
+
 export class SdkInstaboxProvider implements InstaboxProvider {
+  constructor(private readonly apiKey?: string) {}
+
   async create(request: ProviderCreateRequest): Promise<ProviderMachine> {
     if (request.vault !== false) {
       throw new Error('Instabox create refused: vault must be false');
@@ -49,7 +59,7 @@ export class SdkInstaboxProvider implements InstaboxProvider {
   }
 
   async get(machineId: string): Promise<ProviderMachine | null> {
-    const listed = await Sandbox.list();
+    const listed = await Sandbox.list(connection(this.apiKey));
     const found = listed.find((item) => item.sandboxId === machineId);
     if (found === undefined) return null;
     const endAt = found.endAt?.getTime();
@@ -57,7 +67,7 @@ export class SdkInstaboxProvider implements InstaboxProvider {
   }
 
   async listByOperation(operationKey: string): Promise<ProviderMachine | null> {
-    const listed = await Sandbox.list({ metadata: { rangerOperation: operationKey } });
+    const listed = await Sandbox.list({ ...connection(this.apiKey), metadata: { rangerOperation: operationKey } });
     const found = listed[0];
     if (found === undefined) return null;
     const endAt = found.endAt?.getTime();
@@ -65,11 +75,11 @@ export class SdkInstaboxProvider implements InstaboxProvider {
   }
 
   async kill(machineId: string): Promise<boolean> {
-    return Sandbox.kill(machineId);
+    return Sandbox.kill(machineId, connection(this.apiKey));
   }
 
   async exec(request: ProviderCommandRequest): Promise<ProviderCommandResult> {
-    const sandbox = await Sandbox.connect(request.machineId, { resume: false });
+    const sandbox = await Sandbox.connect(request.machineId, { ...connection(this.apiKey), resume: false });
     if (request.background === true) {
       const handle = await sandbox.commands.run(request.command, {
         cwd: request.cwd,
@@ -108,13 +118,14 @@ export class SdkInstaboxProvider implements InstaboxProvider {
   }
 
   async signal(request: ProviderSignal): Promise<boolean> {
-    const sandbox = await Sandbox.connect(request.machineId, { resume: false });
-    const result = await sandbox.commands.exec(`kill -${request.signal} -${request.pid}`, { timeoutMs: 10_000 });
+    const sandbox = await Sandbox.connect(request.machineId, { ...connection(this.apiKey), resume: false });
+    const signal = request.signal === 'KILL' ? 'KILL' : 'TERM';
+    const result = await sandbox.commands.exec(`kill -${signal} -- -${request.pid}`, { timeoutMs: 10_000 });
     return result.exitCode === 0;
   }
 
   async livePids(machineId: string, leaderPid: number): Promise<number[]> {
-    const sandbox = await Sandbox.connect(machineId, { resume: false });
+    const sandbox = await Sandbox.connect(machineId, { ...connection(this.apiKey), resume: false });
     const result = await sandbox.commands.exec(`ps -o pid= -g ${leaderPid}`, { timeoutMs: 10_000 });
     if (result.exitCode !== 0) return [];
     return result.stdout
@@ -124,24 +135,24 @@ export class SdkInstaboxProvider implements InstaboxProvider {
   }
 
   async screenshot(machineId: string): Promise<Uint8Array> {
-    const sandbox = await Sandbox.connect(machineId, { resume: false });
+    const sandbox = await Sandbox.connect(machineId, { ...connection(this.apiKey), resume: false });
     return sandbox.desktop.screenshot();
   }
 
   async streamUrl(machineId: string, ttlSeconds: number): Promise<ProviderDesktopStream> {
-    const sandbox = await Sandbox.connect(machineId, { resume: false });
+    const sandbox = await Sandbox.connect(machineId, { ...connection(this.apiKey), resume: false });
     await sandbox.desktop.start();
     const stream = await sandbox.desktop.streamUrl({ viewOnly: true, ttlSeconds });
     return { url: stream.url, expiresAtMs: stream.expiresAt.getTime() };
   }
 
   async revokeStreams(machineId: string): Promise<void> {
-    const sandbox = await Sandbox.connect(machineId, { resume: false });
+    const sandbox = await Sandbox.connect(machineId, { ...connection(this.apiKey), resume: false });
     await sandbox.desktop.revokeStreamUrls();
   }
 
   async sshCredentials(machineId: string, publicKey: string, ttlSeconds: number): Promise<ProviderSshCredentials> {
-    const sandbox = await Sandbox.connect(machineId, { resume: false });
+    const sandbox = await Sandbox.connect(machineId, { ...connection(this.apiKey), resume: false });
     const creds = await sandbox.sshCredentials(publicKey, { ttlSeconds });
     return {
       host: creds.host,
