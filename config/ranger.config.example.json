@@ -1,0 +1,19 @@
+{
+  "$comment": "Optional Ranger config file passed via RANGER_CONFIG_FILE. Limits may be lowered but never exceed the documented ceilings.",
+  "limits": {
+    "maxConcurrentRuns": 1,
+    "maxWorkerJobs": 2,
+    "maxFrameBytes": 8388608,
+    "maxCaptureQueue": 32,
+    "maxVisionConcurrency": 2,
+    "jobLeaseMs": 300000,
+    "workerPollMs": 1000
+  },
+  "providers": {
+    "xaiVoiceModel": "grok-voice-3.0",
+    "xaiCodingModel": "grok-4.3",
+    "traceRoot": "/home/factory-user/repos/trace",
+    "tracePinnedCommit": "bd7f255339a45a5bf41bcdc2be650626c497e2b2",
+    "traceHome": "/home/factory-user/.cache/ranger-trace"
+  }
+}
