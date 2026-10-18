@@ -1,0 +1,6 @@
+{
+  "refundWindowDays": 30,
+  "humanConfirmationRequired": true,
+  "policyText": "Refunds are available within 30 days of purchase and are issued only after explicit human confirmation. An approved refund returns the full order total to the original payment method within 5 business days. Orders older than 30 days are not eligible for a refund; support may offer store credit instead.",
+  "greetingTemplate": "Hello {customerName}, regarding your order {orderId}: {resolution}"
+}

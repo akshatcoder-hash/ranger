@@ -1,0 +1,30 @@
+{
+  "comment": "Acme Support Co order table. ORD-503 is a known corrupted record: the order service always fails on it with a synthetic upstream fault. There is no order with id ORD-MISSING.",
+  "orders": {
+    "ORD-1": {
+      "orderId": "ORD-1",
+      "customerEmail": "jamie@example.test",
+      "total": 49.5,
+      "currency": "USD",
+      "status": "fulfilled",
+      "createdDaysAgo": 2
+    },
+    "ORD-LATE": {
+      "orderId": "ORD-LATE",
+      "customerEmail": "sam@example.test",
+      "total": 120.0,
+      "currency": "USD",
+      "status": "fulfilled",
+      "createdDaysAgo": 90
+    },
+    "ORD-503": {
+      "orderId": "ORD-503",
+      "customerEmail": "blocked@example.test",
+      "total": 75.0,
+      "currency": "USD",
+      "status": "corrupted-record",
+      "createdDaysAgo": 5,
+      "fault": "always_unavailable"
+    }
+  }
+}

@@ -501,6 +501,50 @@ describe('coding loop protocol and discipline (deterministic protocol mock)', ()
       expect(declaration['parameters']).toBeInstanceOf(Object);
     }
   });
+
+  it('reports search_code as a labeled unavailable state instead of failing the run', async () => {
+    // A missing index or a dead retrieval runtime is TRANSIENT (the index is
+    // built by a public reindex, possibly after the run started). It must
+    // reach the model as an honest unavailable payload — never fake results,
+    // and never a terminal tool_error that would waste a no-retry live run.
+    const search = codingTools({
+      projectId: h.projectId,
+      workspace: h.workspace,
+      // null retrieval = unconfigured in this process
+      retrieval: null,
+    }).find((tool) => tool.name === 'search_code')!;
+    const unconfigured = (await search.execute({ query: 'refundWindowDays' })) as Record<string, unknown>;
+    expect(unconfigured['provider']).toBe('unavailable');
+    expect(unconfigured['reason']).toBe('trace_unconfigured');
+    expect(unconfigured['results']).toEqual([]);
+
+    const notIndexed = codingTools({
+      projectId: h.projectId,
+      workspace: h.workspace,
+      retrieval: {
+        search: async () => {
+          throw Object.assign(new Error('Retrieval index does not exist for this project yet'), {
+            details: { reason: 'retrieval_not_indexed' },
+          });
+        },
+      } as never,
+    }).find((tool) => tool.name === 'search_code')!;
+    const missingIndex = (await notIndexed.execute({ query: 'orders' })) as Record<string, unknown>;
+    expect(missingIndex['provider']).toBe('unavailable');
+    expect(missingIndex['reason']).toBe('retrieval_not_indexed');
+
+    // An UNEXPECTED retrieval failure stays a real tool error (run fails).
+    const broken = codingTools({
+      projectId: h.projectId,
+      workspace: h.workspace,
+      retrieval: {
+        search: async () => {
+          throw Object.assign(new Error('mcp channel exploded'), { details: { reason: 'upstream_junk' } });
+        },
+      } as never,
+    }).find((tool) => tool.name === 'search_code')!;
+    await expect(broken.execute({ query: 'orders' })).rejects.toThrow(/mcp channel exploded/);
+  });
 });
 
 export type { CodingLoopResult };

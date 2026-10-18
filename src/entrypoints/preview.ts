@@ -141,7 +141,7 @@ export async function buildPreviewApp(config: RangerConfig) {
     }
   });
 
-  app.get('/v1/projects/:projectId/preview/sessions/:sessionId/app', async (req, reply) => {
+  const serveAppPreview = async (req: FastifyRequest, reply: FastifyReply, subpath: string) => {
     const params = req.params as { projectId: string; sessionId: string };
     const target = (req.query as { target?: string; url?: string }).target ?? (req.query as { url?: string }).url;
     if (target !== undefined) {
@@ -164,10 +164,25 @@ export async function buildPreviewApp(config: RangerConfig) {
         allowed: [...FIXED_PREVIEW_PORTS],
       });
     }
-    const upstream = await fetch(`http://127.0.0.1:${session.localPort}/`);
-    const body = Buffer.from(await upstream.arrayBuffer());
+    // Forward the app-relative subpath with the original method; the target
+    // stays the session's fixed guest port on loopback only.
+    const body = req.body === undefined || req.body === null ? undefined : JSON.stringify(req.body);
+    const upstream = await fetch(`http://127.0.0.1:${session.localPort}/${subpath}`, {
+      method: req.method,
+      ...(body === undefined ? {} : { body, headers: { 'content-type': req.headers['content-type'] ?? 'application/json' } }),
+    });
+    const payload = Buffer.from(await upstream.arrayBuffer());
     reply.header('content-type', upstream.headers.get('content-type') ?? 'text/html');
-    return reply.code(upstream.status).send(body);
+    return reply.code(upstream.status).send(payload);
+  };
+
+  app.get('/v1/projects/:projectId/preview/sessions/:sessionId/app', async (req, reply) => {
+    return serveAppPreview(req, reply, '');
+  });
+
+  app.all('/v1/projects/:projectId/preview/sessions/:sessionId/app/*', async (req, reply) => {
+    const wildcard = (req.params as { '*': string })['*'] ?? '';
+    return serveAppPreview(req, reply, wildcard);
   });
 
   app.all('*', async (req) => {

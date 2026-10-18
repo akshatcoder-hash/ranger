@@ -95,13 +95,27 @@ export function codingTools(options: CodingToolsOptions): CodingToolDef[] {
       },
       mutating: false,
       execute: async (args) => {
-        if (options.retrieval === undefined || options.retrieval === null) {
-          throw Errors.notConfigured('Trace retrieval is not configured for this process', { reason: 'trace_unconfigured' });
-        }
         const query = requireString(args, 'query');
         const limit = optionalPositiveInt(args, 'limit', 20) ?? 8;
-        const response = await options.retrieval.search(projectId, query, limit);
-        return { ...response };
+        if (options.retrieval === undefined || options.retrieval === null) {
+          // Transient/unconfigured retrieval is a bounded honest state, not a
+          // tool failure: a labeled unavailable payload keeps the run alive
+          // (inspect/list and real commands decide), never a fake result.
+          return { provider: 'unavailable', results: [], reason: 'trace_unconfigured' };
+        }
+        try {
+          const response = await options.retrieval.search(projectId, query, limit);
+          return { ...response };
+        } catch (cause) {
+          const details = (cause as { details?: { reason?: unknown } } | null)?.details;
+          const reason = typeof details?.reason === 'string' ? details.reason : null;
+          // A missing index or a dead runtime is transient state, not a tool
+          // failure; anything else (unexpected) still ends the run honestly.
+          if (reason === 'retrieval_not_indexed' || reason === 'trace_unavailable') {
+            return { provider: 'unavailable', results: [], reason };
+          }
+          throw cause;
+        }
       },
     },
     {

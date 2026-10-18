@@ -171,6 +171,17 @@ async function executeRun(deps: RunExecutorDeps, run: RunRow, claim: { workerId:
     // Real Trace retrieval when the sibling is configured (explicitly not a
     // fallback and never labeled Trace otherwise). Tests may inject null.
     const retrieval = deps.retrieval !== undefined ? deps.retrieval : traceConfigured(deps.config) ? new RetrievalService({ db, config: deps.config }) : null;
+    if (retrieval !== null) {
+      // Index the freshly seeded customer source BEFORE the coding loop, so
+      // the agent's retrieval searches see real citations. An unavailable
+      // Trace is an honest labeled state for the search tool (the run
+      // continues on inspect/list and real commands); it never fails the run.
+      try {
+        await retrieval.reindex(run.projectId);
+      } catch {
+        // search_code reports the unavailable state; never fake results.
+      }
+    }
 
     const tools = codingTools({ projectId: run.projectId, workspace, runId: run.id, retrieval });
     const runner = new CodingToolRunner();
