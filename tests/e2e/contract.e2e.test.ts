@@ -18,8 +18,6 @@ const PORT = 3903;
 const BASE = `http://127.0.0.1:${PORT}`;
 
 const NOT_CONFIGURED_FAMILY_SAMPLES: Record<string, (client: RangerClient) => Promise<unknown>> = {
-  'conversations-requirements': (client) => client.listConversations({ path: { projectId: PRJ } }),
-  events: (client) => client.replayProjectEvents({ path: { projectId: PRJ } }),
   voice: (client) =>
     client.startVoiceSession({
       path: { projectId: PRJ },
@@ -38,6 +36,8 @@ const IMPLEMENTED_FAMILY_SAMPLES: Record<string, (client: RangerClient) => Promi
   'credentials-sessions': (client) => client.createApiToken({ body: { name: 'probe' } }),
   'projects-memberships': (client) => client.createProject({ body: { name: 'probe' } }),
   repositories: (client) => client.getRepository({ path: { projectId: PRJ } }),
+  'conversations-requirements': (client) => client.listConversations({ path: { projectId: PRJ } }),
+  events: (client) => client.replayProjectEvents({ path: { projectId: PRJ } }),
 };
 
 let proc: ChildProcess;

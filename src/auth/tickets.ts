@@ -47,6 +47,18 @@ export interface TicketBinding {
   purpose: string;
 }
 
+/**
+ * The origin a ticket is bound to, or null when unbound or unknown.
+ * Callers pass this through to the upgrade-time origin check before
+ * consuming the ticket.
+ */
+export function lookupTicketOrigin(db: DatabaseSync, secret: string): string | null {
+  const row = mapRow<{ origin: string | null }>(
+    db.prepare('SELECT origin FROM connection_tickets WHERE secret_lookup = ?').get(lookupForSecret(secret)),
+  );
+  return row?.origin ?? null;
+}
+
 export interface CreateTicketInput {
   principalId: string;
   projectId: string;

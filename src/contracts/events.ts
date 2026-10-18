@@ -1,4 +1,4 @@
-import { int, nullable, obj, str, timestamp } from './schema.js';
+import { idField, int, nullable, obj, str, timestamp } from './schema.js';
 
 /**
  * Realtime project event contract.
@@ -29,9 +29,10 @@ export const EVENT_ENVELOPE_SCHEMA = obj(
 );
 
 /**
- * Event type enumeration for v1. Data payloads are refined (and schemas
- * tightened) by the features that implement each surface; changelog records
- * every change.
+ * Event type enumeration for v1. The central event append validates every
+ * `data` payload against its type's schema, so persisted events are always
+ * schema-valid. Each feature tightens the schemas of the event types it
+ * implements; changelog records every change.
  */
 export interface EventTypeDef {
   name: string;
@@ -40,15 +41,83 @@ export interface EventTypeDef {
 }
 
 export const EVENT_TYPES: EventTypeDef[] = [
-  { name: 'project.updated', description: 'Project or engineer display name changed', dataSchema: { type: 'object' } },
-  { name: 'membership.updated', description: 'Project membership added, changed or removed', dataSchema: { type: 'object' } },
-  { name: 'repository.connected', description: 'Repository reference connected or replaced', dataSchema: { type: 'object' } },
-  { name: 'conversation.created', description: 'Conversation created', dataSchema: { type: 'object' } },
-  { name: 'conversation.message.created', description: 'Message appended to a conversation', dataSchema: { type: 'object' } },
-  { name: 'conversation.question.created', description: 'Clarification question created', dataSchema: { type: 'object' } },
-  { name: 'conversation.answer.created', description: 'Answer recorded against a question', dataSchema: { type: 'object' } },
-  { name: 'requirement.version.created', description: 'New immutable requirement version', dataSchema: { type: 'object' } },
-  { name: 'decision.version.created', description: 'New immutable decision version', dataSchema: { type: 'object' } },
+  {
+    name: 'project.updated',
+    description: 'Project or engineer display name changed',
+    dataSchema: obj(['name', 'engineerDisplayName'], {
+      name: str({ maxLength: 300 }),
+      engineerDisplayName: str({ maxLength: 300 }),
+    }),
+  },
+  {
+    name: 'membership.updated',
+    description: 'Project membership added, changed or removed (role null on removal)',
+    dataSchema: obj(['principalId', 'role'], {
+      principalId: idField('prin'),
+      role: nullable(str({ enum: ['owner', 'member'] })),
+    }),
+  },
+  {
+    name: 'repository.connected',
+    description: 'Repository reference connected or replaced',
+    dataSchema: obj(['url', 'ref', 'commit', 'checkoutPath'], {
+      url: str({ maxLength: 2048 }),
+      ref: str({ maxLength: 256 }),
+      commit: str(),
+      checkoutPath: str({ maxLength: 512 }),
+    }),
+  },
+  {
+    name: 'conversation.created',
+    description: 'Conversation created',
+    dataSchema: obj(['conversationId', 'title'], {
+      conversationId: idField('cnv'),
+      title: str({ maxLength: 300 }),
+    }),
+  },
+  {
+    name: 'conversation.message.created',
+    description: 'Message appended to a conversation',
+    dataSchema: obj(['conversationId', 'messageId', 'role'], {
+      conversationId: idField('cnv'),
+      messageId: idField('msg'),
+      role: str({ enum: ['user', 'agent', 'system'] }),
+    }),
+  },
+  {
+    name: 'conversation.question.created',
+    description: 'Clarification question created',
+    dataSchema: obj(['conversationId', 'questionId', 'prompt'], {
+      conversationId: idField('cnv'),
+      questionId: idField('qst'),
+      prompt: str(),
+    }),
+  },
+  {
+    name: 'conversation.answer.created',
+    description: 'Answer recorded against a question',
+    dataSchema: obj(['conversationId', 'questionId', 'answerId'], {
+      conversationId: idField('cnv'),
+      questionId: idField('qst'),
+      answerId: idField('ans'),
+    }),
+  },
+  {
+    name: 'requirement.version.created',
+    description: 'New immutable requirement version',
+    dataSchema: obj(['requirementId', 'version'], {
+      requirementId: idField('rqm'),
+      version: int({ minimum: 1 }),
+    }),
+  },
+  {
+    name: 'decision.version.created',
+    description: 'New immutable decision version',
+    dataSchema: obj(['decisionId', 'version'], {
+      decisionId: idField('dcs'),
+      version: int({ minimum: 1 }),
+    }),
+  },
   { name: 'plan.version.created', description: 'New plan version generated', dataSchema: { type: 'object' } },
   { name: 'plan.approval.granted', description: 'Exact plan version approved with scope', dataSchema: { type: 'object' } },
   { name: 'plan.approval.invalidated', description: 'Approval invalidated by a material change', dataSchema: { type: 'object' } },

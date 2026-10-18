@@ -339,7 +339,7 @@ export class RangerClient {
   "conversationId": string;
 }; query?: {
   "cursor"?: string;
-  "limit"?: number;
+  "limit"?: string;
 } }): Promise<MessageListResponse> {
     return this.request<MessageListResponse>('GET', '/v1/projects/{projectId}/conversations/{conversationId}/messages', args as OpArgs);
   }
@@ -372,11 +372,12 @@ export class RangerClient {
     return this.request<RequirementListResponse>('GET', '/v1/projects/{projectId}/requirements', args as OpArgs);
   }
 
-  /** Append a new immutable requirement version */
+  /** Create a requirement thread or append a new immutable version to one */
   async createRequirementVersion(args: { path: {
   "projectId": string;
 }; body: {
   "content": string;
+  "requirementId"?: string;
 } }): Promise<RequirementResponse> {
     return this.request<RequirementResponse>('POST', '/v1/projects/{projectId}/requirements', args as OpArgs);
   }
@@ -388,11 +389,12 @@ export class RangerClient {
     return this.request<DecisionListResponse>('GET', '/v1/projects/{projectId}/decisions', args as OpArgs);
   }
 
-  /** Append a new immutable decision version */
+  /** Create a decision thread or append a new immutable version to one */
   async createDecisionVersion(args: { path: {
   "projectId": string;
 }; body: {
   "content": string;
+  "decisionId"?: string;
 } }): Promise<DecisionResponse> {
     return this.request<DecisionResponse>('POST', '/v1/projects/{projectId}/decisions', args as OpArgs);
   }
@@ -407,7 +409,7 @@ export class RangerClient {
   "projectId": string;
 }; query?: {
   "cursor"?: string;
-  "limit"?: number;
+  "limit"?: string;
 } }): Promise<EventReplayResponse> {
     return this.request<EventReplayResponse>('GET', '/v1/projects/{projectId}/events', args as OpArgs);
   }

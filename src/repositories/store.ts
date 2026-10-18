@@ -158,44 +158,75 @@ export async function connectRepository(
   principalId: string,
   input: RepositoryInput,
 ): Promise<RepositoryRecord> {
+  const prepared = await prepareRepositoryConnection(input);
+  return withTransaction(db, () => writeRepositoryRecord(db, projectId, principalId, prepared));
+}
+
+/**
+ * Validate the input and resolve the local snapshot (read-only git access).
+ * Runs OUTSIDE any transaction so handlers can wrap the write with events
+ * and idempotency records afterwards.
+ */
+export async function prepareRepositoryConnection(input: RepositoryInput): Promise<{
+  validated: { url: string; ref: string; checkoutPath: string; checkoutPolicy: CheckoutPolicy };
+  snapshot: LocalSnapshot | null;
+}> {
   const validated = validateRepositoryInput(input);
   const snapshot = await resolveLocalSnapshot(validated.url, validated.ref);
+  return { validated, snapshot };
+}
+
+/** The resolved local snapshot for a prepared connection (exported type alias). */
+export type LocalSnapshot = Awaited<ReturnType<typeof resolveLocalSnapshot>>;
+
+/**
+ * Write the connection row inside the caller's transaction. Returns the
+ * freshly read record.
+ */
+export function writeRepositoryRecord(
+  db: DatabaseSync,
+  projectId: string,
+  principalId: string,
+  prepared: {
+    validated: { url: string; ref: string; checkoutPath: string; checkoutPolicy: CheckoutPolicy };
+    snapshot: LocalSnapshot | null;
+  },
+): RepositoryRecord {
+  const { validated, snapshot } = prepared;
   const now = Date.now();
-  return withTransaction(db, () => {
-    db.prepare(
-      `INSERT INTO project_repositories
-         (project_id, url, ref, commit_sha, dirty, content_hash, checkout_path, checkout_policy, connected_by, connected_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(project_id) DO UPDATE SET
-         url = excluded.url,
-         ref = excluded.ref,
-         commit_sha = excluded.commit_sha,
-         dirty = excluded.dirty,
-         content_hash = excluded.content_hash,
-         checkout_path = excluded.checkout_path,
-         checkout_policy = excluded.checkout_policy,
-         connected_by = excluded.connected_by,
-         connected_at = excluded.connected_at,
-         updated_at = excluded.updated_at`,
-    ).run(
-      projectId,
-      validated.url,
-      validated.ref,
-      snapshot?.commit ?? '',
-      snapshot?.dirty === true ? 1 : 0,
-      snapshot?.contentHash ?? '',
-      validated.checkoutPath,
-      JSON.stringify(validated.checkoutPolicy),
-      principalId,
-      now,
-      now,
-    );
-    const row = mapRow<RepositorySqlRow>(
-      db.prepare('SELECT * FROM project_repositories WHERE project_id = ?').get(projectId),
-    );
-    if (row === undefined) throw Errors.internal('Repository record disappeared during write');
-    return mapRepositoryRow(row);
-  });
+  db.prepare(
+    `INSERT INTO project_repositories
+       (project_id, url, ref, commit_sha, dirty, content_hash, checkout_path, checkout_policy, connected_by, connected_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(project_id) DO UPDATE SET
+       url = excluded.url,
+       ref = excluded.ref,
+       commit_sha = excluded.commit_sha,
+       dirty = excluded.dirty,
+       content_hash = excluded.content_hash,
+       checkout_path = excluded.checkout_path,
+       checkout_policy = excluded.checkout_policy,
+       connected_by = excluded.connected_by,
+       connected_at = excluded.connected_at,
+       updated_at = excluded.updated_at`,
+  ).run(
+    projectId,
+    validated.url,
+    validated.ref,
+    snapshot?.commit ?? '',
+    snapshot?.dirty === true ? 1 : 0,
+    snapshot?.contentHash ?? '',
+    validated.checkoutPath,
+    JSON.stringify(validated.checkoutPolicy),
+    principalId,
+    now,
+    now,
+  );
+  const row = mapRow<RepositorySqlRow>(
+    db.prepare('SELECT * FROM project_repositories WHERE project_id = ?').get(projectId),
+  );
+  if (row === undefined) throw Errors.internal('Repository record disappeared during write');
+  return mapRepositoryRow(row);
 }
 
 export function getRepositoryRecord(db: DatabaseSync, projectId: string): RepositoryRecord | null {

@@ -40,6 +40,8 @@ export interface LimitsConfig {
   jobLeaseMs: number;
   /** Worker poll interval in milliseconds. */
   workerPollMs: number;
+  /** Replay window (ms): cursors older than this answer cursor_expired. */
+  eventReplayWindowMs: number;
 }
 
 export interface ProviderConfig {
@@ -86,6 +88,7 @@ export const LIMIT_CEILINGS: LimitsConfig = {
   maxVisionConcurrency: 2,
   jobLeaseMs: 5 * 60 * 1000,
   workerPollMs: 1000,
+  eventReplayWindowMs: 30 * 24 * 60 * 60 * 1000,
 };
 
 export const DEFAULT_PROVIDERS: ProviderConfig = {

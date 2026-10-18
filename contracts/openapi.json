@@ -4203,10 +4203,9 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 500,
-              "default": 100
+              "type": "string",
+              "pattern": "^[0-9]{1,4}$",
+              "description": "Page size between 1 and 500 (default 100)"
             }
           }
         ],
@@ -5014,11 +5013,11 @@
       },
       "post": {
         "operationId": "createRequirementVersion",
-        "summary": "Append a new immutable requirement version",
+        "summary": "Create a requirement thread or append a new immutable version to one",
         "tags": [
           "conversations-requirements"
         ],
-        "description": "Append a new immutable requirement version",
+        "description": "Create a requirement thread or append a new immutable version to one",
         "parameters": [
           {
             "name": "projectId",
@@ -5053,6 +5052,11 @@
                   "content": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "requirementId": {
+                    "type": "string",
+                    "pattern": "^rqm_[0-9a-fA-F-]+$",
+                    "description": "Prefixed rqm identifier"
                   }
                 },
                 "additionalProperties": false
@@ -5434,11 +5438,11 @@
       },
       "post": {
         "operationId": "createDecisionVersion",
-        "summary": "Append a new immutable decision version",
+        "summary": "Create a decision thread or append a new immutable version to one",
         "tags": [
           "conversations-requirements"
         ],
-        "description": "Append a new immutable decision version",
+        "description": "Create a decision thread or append a new immutable version to one",
         "parameters": [
           {
             "name": "projectId",
@@ -5473,6 +5477,11 @@
                   "content": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "decisionId": {
+                    "type": "string",
+                    "pattern": "^dcs_[0-9a-fA-F-]+$",
+                    "description": "Prefixed dcs identifier"
                   }
                 },
                 "additionalProperties": false
@@ -5687,7 +5696,27 @@
                     "eventTypes": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "type": "object",
+                        "required": [
+                          "name",
+                          "description",
+                          "dataSchema"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "dataSchema": {
+                            "type": "object",
+                            "required": [],
+                            "properties": {},
+                            "additionalProperties": true
+                          }
+                        },
+                        "additionalProperties": false
                       }
                     }
                   }
@@ -5821,10 +5850,9 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 500,
-              "default": 100
+              "type": "string",
+              "pattern": "^[0-9]{1,4}$",
+              "description": "Page size between 1 and 500 (default 100)"
             }
           }
         ],

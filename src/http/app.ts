@@ -9,7 +9,7 @@ import { SecretResolver } from '../secrets.js';
 import { getRegistry, type OperationDef } from '../contracts/registry.js';
 import { toFastifyPathFor } from '../contracts/openapi.js';
 import { mutationHeaders } from '../contracts/schema.js';
-import { buildHandlerMap, notConfiguredHandler, type HandlerContext, type OperationHandler } from './handlers.js';
+import { buildHandlerMaps, notConfiguredHandler, type HandlerContext, type OperationHandler, type WsOperationHandler } from './handlers.js';
 import { createPrincipalAuth } from './auth-middleware.js';
 
 /**
@@ -70,7 +70,7 @@ export async function buildApiServer(opts: ApiServerOptions): Promise<FastifyIns
     db: opts.db,
     secrets: new SecretResolver(opts.config.secretFile),
   };
-  const handlerMap = buildHandlerMap(context);
+  const { http: handlerMap, ws: wsHandlerMap } = buildHandlerMaps(context);
   if (opts.handlerOverrides !== undefined) {
     for (const [id, handler] of opts.handlerOverrides) handlerMap.set(id, handler);
   }
@@ -150,7 +150,13 @@ export async function buildApiServer(opts: ApiServerOptions): Promise<FastifyIns
   const registry = getRegistry();
   const principalAuth = createPrincipalAuth(opts.db);
   for (const op of registry) {
-    registerOperation(app, op, handlerMap.get(op.id) ?? notConfiguredHandler(op), principalAuth);
+    registerOperation(
+      app,
+      op,
+      handlerMap.get(op.id) ?? notConfiguredHandler(op),
+      principalAuth,
+      wsHandlerMap.get(op.id),
+    );
   }
 
   return app;
@@ -161,6 +167,7 @@ function registerOperation(
   op: OperationDef,
   handler: OperationHandler,
   principalAuth: (op: OperationDef) => (req: FastifyRequest, reply: FastifyReply) => Promise<void>,
+  wsHandler?: WsOperationHandler,
 ): void {
   const url = toFastifyPathFor(op);
   const schema: Record<string, unknown> = {
@@ -171,9 +178,10 @@ function registerOperation(
   };
 
   if (op.ws === true) {
+    // @fastify/websocket v11 passes the raw WebSocket as first argument.
+    const handle: (socket: WsWebSocket, req: FastifyRequest) => void = wsHandler ?? notConfiguredWs(op);
     app.get(url, { websocket: true, schema }, (socket, req) => {
-      // @fastify/websocket v11 passes the raw WebSocket as first argument.
-      notConfiguredWs(op)(socket, req);
+      handle(socket, req);
       void handler;
     });
     return;

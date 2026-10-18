@@ -2,12 +2,15 @@ import type { FastifyRequest } from 'fastify';
 import { Errors } from '../errors.js';
 import { requireMembership, requirePrincipalId } from '../auth/authorization.js';
 import {
-  connectRepository,
   disconnectRepository,
   getRepositoryRecord,
+  prepareRepositoryConnection,
+  writeRepositoryRecord,
   type RepositoryRecord,
 } from '../repositories/store.js';
+import { appendProjectEvent } from '../events/store.js';
 import { iso } from './serialize.js';
+import { runScopedMutation } from './idempotency.js';
 import type { HandlerContext, OperationHandler } from './handlers.js';
 
 /**
@@ -49,11 +52,29 @@ export function registerRepositoryHandlers(ctx: HandlerContext, handlers: Map<st
     if (typeof body.url !== 'string' || typeof body.ref !== 'string') {
       throw Errors.validation('url and ref are required');
     }
-    const record = await connectRepository(db, params.projectId, principalId, {
+    // Read-only snapshot resolution happens outside the transaction.
+    const prepared = await prepareRepositoryConnection({
       url: body.url,
       ref: body.ref,
       checkoutPath: body.checkoutPath,
       checkoutPolicy: body.checkoutPolicy,
+    });
+    const projectId = params.projectId;
+    const record = runScopedMutation(db, req, 'connectRepository', projectId, () => {
+      const written = writeRepositoryRecord(db, projectId, principalId, prepared);
+      // Same transaction as the connect: schema-valid event with the new values.
+      appendProjectEvent(db, {
+        projectId,
+        type: 'repository.connected',
+        data: {
+          url: written.url,
+          ref: written.ref,
+          commit: written.commit,
+          checkoutPath: written.checkoutPath,
+        },
+        requestId: req.id,
+      });
+      return written;
     });
     return { repository: repositoryPayload(record) };
   });

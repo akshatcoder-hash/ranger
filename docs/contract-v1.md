@@ -14,14 +14,17 @@ per operation below.
 provider is not implemented yet returns `501` with the central envelope and
 stable code `not_configured` — never a fake success payload.
 
-**Implemented families (identity milestone):** credentials-sessions,
-projects-memberships and repositories are live. Principal-auth routes accept
+**Implemented families (identity + conversations/events milestones):**
+credentials-sessions, projects-memberships, repositories,
+conversations-requirements and events are live. Principal-auth routes accept
 `Authorization: Bearer <api token or bootstrap credential>` or the revocable
 browser-session cookie (`ranger_session`, HttpOnly). Cookie-authenticated
 mutations require same-origin or CSRF protection (see the frontend guide).
 Unauthenticated requests to any principal-auth route return the standard
 `unauthorized` envelope; cross-project access returns `forbidden`; unknown
-resources return `not_found`.
+resources return `not_found`. Mutations accept a scoped `Idempotency-Key`:
+identical retries replay the stored result with no second side effect or
+duplicate event; key reuse with different input returns `conflict`.
 
 ### credentials-sessions
 Credentials and sessions (API tokens, browser sessions, connection tickets)
@@ -70,24 +73,43 @@ readable only by project members.
 ### conversations-requirements
 Conversations, messages, questions, answers and requirement/decision versions
 
+Conversations, messages (with stable per-conversation ordering), clarification
+questions and answers persist and survive API restarts. Every answer
+references the exact question it answers. Requirement and decision threads
+are versioned append-only: `createRequirementVersion`/`createDecisionVersion`
+create a thread when called without a thread id and append the next immutable
+version when called with `requirementId`/`decisionId`; prior versions stay
+readable and are never mutated in place. Each mutation commits together with
+exactly one schema-valid event (`conversation.created`,
+`conversation.message.created`, `conversation.question.created`,
+`conversation.answer.created`, `requirement.version.created`,
+`decision.version.created`).
+
 - `POST /v1/projects/{projectId}/conversations` — createConversation
 - `GET /v1/projects/{projectId}/conversations` — listConversations
 - `GET /v1/projects/{projectId}/conversations/{conversationId}` — getConversation
 - `POST /v1/projects/{projectId}/conversations/{conversationId}/messages` — postMessage
-- `GET /v1/projects/{projectId}/conversations/{conversationId}/messages` — listMessages
+- `GET /v1/projects/{projectId}/conversations/{conversationId}/messages` — listMessages (cursor paginated)
 - `POST /v1/projects/{projectId}/conversations/{conversationId}/questions` — createQuestion
 - `POST /v1/projects/{projectId}/conversations/{conversationId}/questions/{questionId}/answers` — answerQuestion
 - `GET /v1/projects/{projectId}/requirements` — listRequirements
-- `POST /v1/projects/{projectId}/requirements` — createRequirementVersion
+- `POST /v1/projects/{projectId}/requirements` — createRequirementVersion (optional `requirementId` appends)
 - `GET /v1/projects/{projectId}/decisions` — listDecisions
-- `POST /v1/projects/{projectId}/decisions` — createDecisionVersion
+- `POST /v1/projects/{projectId}/decisions` — createDecisionVersion (optional `decisionId` appends)
 
 ### events
 Project event subscription and cursor replay (HTTP plus WebSocket)
 
+Every project event carries `schemaVersion` (1), `eventId`, `projectId`,
+nullable `runId`/`sessionId`, ISO timestamp, per-project `sequence`,
+`requestId`, `type` and `data` validated at append time against the type's
+declared schema (`GET /v1/events/schemas`). State mutations and their events
+commit in the same transaction, so committed sequences are dense and replay
+never observes a half-applied mutation.
+
 - `GET /v1/events/schemas` — getEventSchemas
-- `GET /v1/projects/{projectId}/events` — replayProjectEvents
-- `GET /v1/projects/{projectId}/events/subscribe` — subscribeProjectEvents (WebSocket upgrade)
+- `GET /v1/projects/{projectId}/events` — replayProjectEvents (member-auth HTTP replay; `invalid_cursor` 400 / `cursor_expired` 410 on bad cursors; pure read — no tools, no state change)
+- `GET /v1/projects/{projectId}/events/subscribe` — subscribeProjectEvents (WebSocket upgrade; consumes a single-use `events` ticket with projectId and upgrade origin and enforces current membership BEFORE delivery; ordered replay then live delivery; closes `4400` invalid_cursor, `4410` cursor_expired, `4401` unauthorized, `4502` slow_consumer)
 
 ### voice
 Voice sessions and the secure xAI realtime relay

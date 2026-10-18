@@ -66,11 +66,11 @@ export const errorEnvelopeSchema = (): JSONSchema =>
     { additionalProperties: false },
   );
 
-/** Cursor pagination query for list/replay surfaces. */
+/** Cursor pagination query for list/replay surfaces. HTTP query values are strings. */
 export const cursorQuery = (): JSONSchema =>
   obj([], {
     cursor: str({ description: 'Opaque cursor from a previous page' }),
-    limit: int({ minimum: 1, maximum: 500, default: 100 }),
+    limit: str({ pattern: '^[0-9]{1,4}$', description: 'Page size between 1 and 500 (default 100)' }),
   });
 
 /** Standard headers accepted on mutating routes (permissive: HTTP always sends more). */

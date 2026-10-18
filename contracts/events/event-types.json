@@ -5,63 +5,246 @@
       "name": "project.updated",
       "description": "Project or engineer display name changed",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "name",
+          "engineerDisplayName"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "engineerDisplayName": {
+            "type": "string",
+            "maxLength": 300
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "membership.updated",
-      "description": "Project membership added, changed or removed",
+      "description": "Project membership added, changed or removed (role null on removal)",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "principalId",
+          "role"
+        ],
+        "properties": {
+          "principalId": {
+            "type": "string",
+            "pattern": "^prin_[0-9a-fA-F-]+$",
+            "description": "Prefixed prin identifier"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "owner",
+                  "member"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "repository.connected",
       "description": "Repository reference connected or replaced",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "url",
+          "ref",
+          "commit",
+          "checkoutPath"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "maxLength": 2048
+          },
+          "ref": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "commit": {
+            "type": "string"
+          },
+          "checkoutPath": {
+            "type": "string",
+            "maxLength": 512
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "conversation.created",
       "description": "Conversation created",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "conversationId",
+          "title"
+        ],
+        "properties": {
+          "conversationId": {
+            "type": "string",
+            "pattern": "^cnv_[0-9a-fA-F-]+$",
+            "description": "Prefixed cnv identifier"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 300
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "conversation.message.created",
       "description": "Message appended to a conversation",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "conversationId",
+          "messageId",
+          "role"
+        ],
+        "properties": {
+          "conversationId": {
+            "type": "string",
+            "pattern": "^cnv_[0-9a-fA-F-]+$",
+            "description": "Prefixed cnv identifier"
+          },
+          "messageId": {
+            "type": "string",
+            "pattern": "^msg_[0-9a-fA-F-]+$",
+            "description": "Prefixed msg identifier"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "agent",
+              "system"
+            ]
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "conversation.question.created",
       "description": "Clarification question created",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "conversationId",
+          "questionId",
+          "prompt"
+        ],
+        "properties": {
+          "conversationId": {
+            "type": "string",
+            "pattern": "^cnv_[0-9a-fA-F-]+$",
+            "description": "Prefixed cnv identifier"
+          },
+          "questionId": {
+            "type": "string",
+            "pattern": "^qst_[0-9a-fA-F-]+$",
+            "description": "Prefixed qst identifier"
+          },
+          "prompt": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "conversation.answer.created",
       "description": "Answer recorded against a question",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "conversationId",
+          "questionId",
+          "answerId"
+        ],
+        "properties": {
+          "conversationId": {
+            "type": "string",
+            "pattern": "^cnv_[0-9a-fA-F-]+$",
+            "description": "Prefixed cnv identifier"
+          },
+          "questionId": {
+            "type": "string",
+            "pattern": "^qst_[0-9a-fA-F-]+$",
+            "description": "Prefixed qst identifier"
+          },
+          "answerId": {
+            "type": "string",
+            "pattern": "^ans_[0-9a-fA-F-]+$",
+            "description": "Prefixed ans identifier"
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "requirement.version.created",
       "description": "New immutable requirement version",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "requirementId",
+          "version"
+        ],
+        "properties": {
+          "requirementId": {
+            "type": "string",
+            "pattern": "^rqm_[0-9a-fA-F-]+$",
+            "description": "Prefixed rqm identifier"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "decision.version.created",
       "description": "New immutable decision version",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "decisionId",
+          "version"
+        ],
+        "properties": {
+          "decisionId": {
+            "type": "string",
+            "pattern": "^dcs_[0-9a-fA-F-]+$",
+            "description": "Prefixed dcs identifier"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
       }
     },
     {

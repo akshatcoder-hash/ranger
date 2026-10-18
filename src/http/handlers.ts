@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import type { WebSocket as WsWebSocket } from 'ws';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { DatabaseSync } from 'node:sqlite';
 import type { RangerConfig } from '../config.js';
@@ -9,18 +10,24 @@ import type { SecretResolver } from '../secrets.js';
 import { registerIdentityHandlers } from './handlers-identity.js';
 import { registerProjectHandlers } from './handlers-projects.js';
 import { registerRepositoryHandlers } from './handlers-repositories.js';
+import { registerConversationHandlers } from './handlers-conversations.js';
+import { registerEventHandlers } from './handlers-events.js';
 
 /**
  * Operation handlers.
  *
  * Implemented families register their real handlers here (credentials,
- * projects, repositories plus the foundation health/capabilities/doc
- * routes). Every other declared route falls through to the explicit
- * notConfigured handler: the contract is fully enumerated, but unimplemented
- * providers report a stable capability error instead of pretending success.
+ * projects, repositories, conversations and events plus the foundation
+ * health/capabilities/doc routes). Every other declared route falls through
+ * to the explicit notConfigured handler: the contract is fully enumerated,
+ * but unimplemented providers report a stable capability error instead of
+ * pretending success.
  */
 
 export type OperationHandler = (req: FastifyRequest, reply: FastifyReply) => Promise<unknown> | unknown;
+
+/** Handler for a declared WebSocket route: receives the upgraded raw socket. */
+export type WsOperationHandler = (socket: WsWebSocket, req: FastifyRequest) => void;
 
 export interface HandlerContext {
   config: RangerConfig;
@@ -54,8 +61,20 @@ function notConfiguredHandler(op: { id: string; family: string }): OperationHand
   };
 }
 
-export function buildHandlerMap(context: HandlerContext): Map<string, OperationHandler> {
+export interface HandlerMaps {
+  /** HTTP operation handlers keyed by operationId. */
+  http: Map<string, OperationHandler>;
+  /** Handlers for declared WebSocket routes keyed by operationId. */
+  ws: Map<string, WsOperationHandler>;
+}
+
+/**
+ * All operation handlers. A ws operation without an entry in `ws` still
+ * closes 4501 not_configured (foundation fallback).
+ */
+export function buildHandlerMaps(context: HandlerContext): HandlerMaps {
   const handlers = new Map<string, OperationHandler>();
+  const wsHandlers = new Map<string, WsOperationHandler>();
 
   handlers.set('getHealth', async () => ({ status: 'ok' }));
 
@@ -103,12 +122,15 @@ export function buildHandlerMap(context: HandlerContext): Map<string, OperationH
 
   handlers.set('getOpenApiDocument', async () => buildOpenApiDocument());
 
-  // Implemented route families (identity, projects, repositories).
+  // Implemented route families (identity, projects, repositories,
+  // conversations, events).
   registerIdentityHandlers(context, handlers);
   registerProjectHandlers(context, handlers);
   registerRepositoryHandlers(context, handlers);
+  registerConversationHandlers(context, handlers);
+  registerEventHandlers(context, handlers, wsHandlers);
 
-  return handlers;
+  return { http: handlers, ws: wsHandlers };
 }
 
 export { notConfiguredHandler };

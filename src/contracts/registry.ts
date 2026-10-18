@@ -577,11 +577,11 @@ function conversationsFamily(): OperationDef[] {
       method: 'post',
       path: '/v1/projects/{projectId}/requirements',
       family: 'conversations-requirements',
-      summary: 'Append a new immutable requirement version',
+      summary: 'Create a requirement thread or append a new immutable version to one',
       auth: 'principal',
       mutating: true,
       params: projectParams(),
-      body: obj(['content'], { content: str({ minLength: 1 }) }),
+      body: obj(['content'], { content: str({ minLength: 1 }), requirementId: idField('rqm') }),
       response: okResponse(
         {
           requirement: obj(['requirementId', 'projectId', 'currentVersion', 'versions'], {
@@ -609,11 +609,11 @@ function conversationsFamily(): OperationDef[] {
       method: 'post',
       path: '/v1/projects/{projectId}/decisions',
       family: 'conversations-requirements',
-      summary: 'Append a new immutable decision version',
+      summary: 'Create a decision thread or append a new immutable version to one',
       auth: 'principal',
       mutating: true,
       params: projectParams(),
-      body: obj(['content'], { content: str({ minLength: 1 }) }),
+      body: obj(['content'], { content: str({ minLength: 1 }), decisionId: idField('dcs') }),
       response: okResponse(
         {
           decision: obj(['decisionId', 'projectId', 'currentVersion', 'versions'], {
@@ -645,7 +645,13 @@ function eventsFamily(): OperationDef[] {
         {
           schemaVersion: int(),
           envelope: obj([], {}, { additionalProperties: true }),
-          eventTypes: arr(str()),
+          eventTypes: arr(
+            obj(['name', 'description', 'dataSchema'], {
+              name: str(),
+              description: str(),
+              dataSchema: obj([], {}, { additionalProperties: true }),
+            }),
+          ),
         },
         ['schemaVersion', 'envelope', 'eventTypes'],
       ),

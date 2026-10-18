@@ -46,16 +46,36 @@ Ranger.
    `ticket` query parameter on WebSocket upgrades. Revoking the issuing API
    token or browser session immediately invalidates its outstanding tickets.
 
-## Events: subscribe and replay
+## Events: subscribe and replay (implemented: conversations/events milestone)
 
 - HTTP replay: `replayProjectEvents` with `cursor`/`limit`; response carries
-  ordered events, `nextCursor` and `hasMore`.
+  ordered events, `nextCursor` and `hasMore`. Replaying is a pure read: it
+  never invokes tools and changes no state.
 - Live: open the typed client's `openSubscribeProjectEvents` WebSocket with a
-  ticket and an optional `cursor`. Events arrive in strictly increasing
-  per-project `sequence`; on reconnect, replay from the last seen cursor.
-- An invalid or expired cursor returns the documented
-  `invalid_cursor`/`cursor_expired` error instead of a silent gap.
-- Replay never invokes tools or changes state.
+  ticket and an optional `cursor`. The upgrade consumes the ticket (purpose
+  `events`, the path projectId, and — for origin-bound tickets — the browser
+  `Origin` header) and enforces CURRENT membership at upgrade time; a
+  principal removed from the project is closed without any event delivery.
+- Events arrive in strictly increasing per-project `sequence` with no gaps or
+  duplicates. Keep the `sequence`/timestamp of the last event you processed;
+  on reconnect, subscribe again with a fresh ticket and that cursor (the
+  client's `cursor` query parameter accepts the opaque cursor from
+  `nextCursor`, or an encoded `{v:1,seq,ts}` position).
+- Explicit cursor errors, never silent gaps: a malformed or ahead-of-history
+  cursor closes the socket with code `4400` (`invalid_cursor`, also 400 on
+  HTTP replay); a cursor older than the 30-day replay window closes with
+  `4410` (`cursor_expired`, also 410 on HTTP replay). Recover by
+  resubscribing WITHOUT a cursor to replay full history.
+- Before any error frame the server sends one JSON message
+  `{kind:"error", requestId, error:{code, message, details}}`, then closes.
+- Close codes on this route: `4401` unauthorized (missing/invalid/reused
+  ticket, wrong purpose/project/origin, non-membership), `4400`
+  invalid_cursor, `4410` cursor_expired, `4502` slow_consumer (the outbound
+  buffer exceeded its bound — resume with your cursor), `4501`
+  not_configured (only while a declared realtime route is unimplemented).
+- Mutating conversations supports the scoped `Idempotency-Key` header: an
+  identical retry returns the stored result with no second side effect or
+  duplicate event; reusing a key with different input returns `conflict`.
 
 ## Voice (land later: interaction milestone)
 

@@ -40,23 +40,32 @@ export function createProjectRow(
   db: DatabaseSync,
   input: { name: string; engineerDisplayName: string; principalId: string },
 ): ProjectRow {
+  // Convenience wrapper for direct callers: one transaction around the
+  // project + creator-membership inserts. Handlers use createProjectRecord
+  // inside their own (idempotency/event) transaction.
+  return withTransaction(db, () => createProjectRecord(db, input));
+}
+
+/** Insert the project row plus the creator's owner membership. No transaction of its own. */
+export function createProjectRecord(
+  db: DatabaseSync,
+  input: { name: string; engineerDisplayName: string; principalId: string },
+): ProjectRow {
   const now = Date.now();
   const id = `prj_${randomUUID()}`;
-  return withTransaction(db, () => {
-    db.prepare(
-      'INSERT INTO projects (id, name, engineer_display_name, created_by, created_at) VALUES (?, ?, ?, ?, ?)',
-    ).run(id, input.name, input.engineerDisplayName, input.principalId, now);
-    db.prepare(
-      'INSERT INTO memberships (project_id, principal_id, role, created_at) VALUES (?, ?, ?, ?)',
-    ).run(id, input.principalId, 'owner', now);
-    return {
-      id,
-      name: input.name,
-      engineerDisplayName: input.engineerDisplayName,
-      createdAt: now,
-      createdBy: input.principalId,
-    };
-  });
+  db.prepare(
+    'INSERT INTO projects (id, name, engineer_display_name, created_by, created_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(id, input.name, input.engineerDisplayName, input.principalId, now);
+  db.prepare(
+    'INSERT INTO memberships (project_id, principal_id, role, created_at) VALUES (?, ?, ?, ?)',
+  ).run(id, input.principalId, 'owner', now);
+  return {
+    id,
+    name: input.name,
+    engineerDisplayName: input.engineerDisplayName,
+    createdAt: now,
+    createdBy: input.principalId,
+  };
 }
 
 export function listProjectsForPrincipal(db: DatabaseSync, principalId: string): ProjectRow[] {
@@ -144,29 +153,32 @@ export function listMembershipRows(db: DatabaseSync, projectId: string): Members
   return rows.map(mapMembership);
 }
 
+/**
+ * Remove one membership. Runs inside the caller's transaction (handlers own
+ * it); direct callers get per-statement autocommit. Guards the last owner
+ * so a project never becomes unmanageable.
+ */
 export function removeMembershipRow(db: DatabaseSync, projectId: string, principalId: string): void {
-  withTransaction(db, () => {
-    const role = mapRow<MembershipSqlRow>(
+  const role = mapRow<MembershipSqlRow>(
+    db
+      .prepare('SELECT role FROM memberships WHERE project_id = ? AND principal_id = ?')
+      .get(projectId, principalId),
+  );
+  if (role === undefined) {
+    throw Errors.notFound('Membership does not exist');
+  }
+  if (role.role === 'owner') {
+    const owners = mapRow<{ count: number }>(
       db
-        .prepare('SELECT role FROM memberships WHERE project_id = ? AND principal_id = ?')
-        .get(projectId, principalId),
+        .prepare("SELECT COUNT(*) AS count FROM memberships WHERE project_id = ? AND role = 'owner'")
+        .get(projectId),
     );
-    if (role === undefined) {
-      throw Errors.notFound('Membership does not exist');
+    if (owners !== undefined && owners.count <= 1) {
+      throw Errors.conflict('Cannot remove the last owner of a project');
     }
-    if (role.role === 'owner') {
-      const owners = mapRow<{ count: number }>(
-        db
-          .prepare("SELECT COUNT(*) AS count FROM memberships WHERE project_id = ? AND role = 'owner'")
-          .get(projectId),
-      );
-      if (owners !== undefined && owners.count <= 1) {
-        throw Errors.conflict('Cannot remove the last owner of a project');
-      }
-    }
-    db.prepare('DELETE FROM memberships WHERE project_id = ? AND principal_id = ?').run(
-      projectId,
-      principalId,
-    );
-  });
+  }
+  db.prepare('DELETE FROM memberships WHERE project_id = ? AND principal_id = ?').run(
+    projectId,
+    principalId,
+  );
 }

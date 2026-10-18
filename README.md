@@ -7,13 +7,17 @@ workspaces and pinned Trace retrieval. **Backend only** — there is no product
 frontend; see `docs/frontend-guide.md` for the contract a future frontend
 would use.
 
-This is the **foundation + identity milestone**: the project skeleton,
-migrations, config/error/schema foundations, the complete v1 contract
-(OpenAPI + realtime event schemas + generated typed client), the shared
-live-budget ledger, executable entrypoints, test harnesses, and the identity
-layer — bootstrap credentials, hashed API tokens, revocable browser sessions,
-connection tickets, project/membership/engineer-name CRUD and durable
-repository references. Route families not yet implemented return an explicit
+This is the **foundation + identity + conversations/events milestone**: the
+project skeleton, migrations, config/error/schema foundations, the complete
+v1 contract (OpenAPI + realtime event schemas + generated typed client), the
+shared live-budget ledger, executable entrypoints, test harnesses, the
+identity layer — bootstrap credentials, hashed API tokens, revocable browser
+sessions, connection tickets, project/membership/engineer-name CRUD and
+durable repository references — plus durable conversations (messages,
+questions/answers, versioned requirements/decisions), the central
+transactional event history with per-project sequences, scoped mutation
+idempotency, and ticket-authenticated cursor replay and live WebSocket event
+subscription. Route families not yet implemented return an explicit
 `501 not_configured` envelope — never fake success.
 
 ## Requirements
@@ -32,6 +36,8 @@ src/auth/                hashing, principals/credentials, sessions, tickets, aut
 src/identity/            bootstrap CLI core (initial principal + protected credential file)
 src/projects/            project + membership persistence
 src/repositories/        repository records + local snapshot resolution (read-only git)
+src/conversations/       conversations, messages, questions/answers, requirement/decision threads
+src/events/              central transactional event append, sequences, cursors, replay reads
 src/db/                  node:sqlite open (WAL, FK, busy timeout) + migrations
 src/budget/ledger.ts     shared live-test admission ledger (never resets)
 src/contracts/           route registry, event schemas, OpenAPI builder, examples
@@ -110,9 +116,25 @@ require a same-origin `Origin` header or the `x-ranger-csrf` token header.
 Realtime surfaces use `POST /v1/auth/connection-tickets` — single-use,
 60-second tickets bound to principal, project, purpose and origin; revoking
 the issuing token or session immediately invalidates its tickets. Projects,
-the customer-configurable engineer display name, memberships and repository
+the customer-configurable engineer display name, memberships, repository
 references (approved URL/ref, checkout path, checkout policy, resolved
-commit/dirty/hash for local repositories) all persist across API restarts.
+commit/dirty/hash for local repositories), conversations with their
+messages/questions/answers and the full event history all persist across API
+restarts.
+
+Mutating routes accept a scoped `Idempotency-Key` header: an identical retry
+returns the stored result with no second side effect or duplicate event;
+reusing a key with different input returns `409 conflict`. Project events
+are appended in the SAME transaction as the state mutation that caused them
+(schema-validated against the declared per-type data schemas), which is what
+makes replay exact: `GET /v1/projects/{id}/events` replays by opaque cursor
+(`invalid_cursor` 400 for malformed/ahead-of-history cursors,
+`cursor_expired` 410 past the replay window — default 30 days, configurable
+down), and `WS /v1/projects/{id}/events/subscribe` authenticates the upgrade
+with an `events` ticket (purpose + project + origin + current membership)
+before delivering ordered live events. Subscribe close codes: `4401`
+unauthorized, `4400` invalid_cursor, `4410` cursor_expired, `4502`
+slow_consumer. Replay never invokes tools or changes state.
 
 The API serves the contract at `http://127.0.0.1:3100/v1/openapi.json`,
 capabilities at `/v1/capabilities`, event schemas at `/v1/events/schemas`
@@ -189,12 +211,17 @@ required (no cloud accounts, no public ports).
   principal + protected credential file, hashed API tokens, revocable
   browser sessions with CSRF/origin checks, single-use connection tickets,
   project/membership/engineer-name CRUD, durable repository references with
-  real local snapshot resolution).
-- Not yet implemented (declared, return `not_configured`): conversations and
-  transactional events/cursor replay, voice relay, capture/frames/inspection,
-  plans/approvals, runs, workspace execution, desktop/preview gateway,
-  Trace retrieval. Trace bootstrap (pinned commit + model initialization)
-  arrives with the Trace milestone. The declared WebSocket routes still close
-  with `4501 not_configured` until their features wire ticket consumption.
+  real local snapshot resolution); conversations layer (durable
+  conversations/messages/questions/answers, append-only requirement and
+  decision versions, central transactional event append with per-project
+  sequences and append-time schema validation, scoped mutation idempotency,
+  member-authenticated HTTP cursor replay and ticket-gated live WebSocket
+  subscription with slow-consumer and invalid/expired-cursor policies).
+- Not yet implemented (declared, return `not_configured`): voice relay,
+  capture/frames/inspection, plans/approvals, runs, workspace execution,
+  desktop/preview gateway, Trace retrieval. Trace bootstrap (pinned commit +
+  model initialization) arrives with the Trace milestone. The remaining
+  declared WebSocket routes (voice relay, desktop stream) still close with
+  `4501 not_configured` until their features wire ticket consumption.
 - No physical microphone exists on this host; any browser media checks are
   synthetic and labeled as such.

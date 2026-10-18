@@ -20,6 +20,7 @@ import { ensureInitialPrincipal } from '../../src/identity/bootstrap.js';
 
 const PRJ = 'prj_00000000-1111-4c3d-9f4e-2b7c5d1a3f10';
 const CNV = 'cnv_00000000-2222-4c3d-9f4e-2b7c5d1a3f10';
+const VCS = 'vcs_00000000-3333-4c3d-9f4e-2b7c5d1a3f10';
 
 async function makeApp(env: Record<string, string>, existingDataDir?: string): Promise<{ app: FastifyInstance; config: RangerConfig; dataDir: string }> {
   const dataDir = existingDataDir ?? mkdtempSync(path.join(tmpdir(), 'ranger-api-int-'));
@@ -32,8 +33,6 @@ async function makeApp(env: Record<string, string>, existingDataDir?: string): P
 
 /** One sampled operation per family that must report an explicit capability error. */
 const FAMILY_SAMPLES: Record<string, { method: 'GET' | 'POST'; url: string; body?: Record<string, unknown> }> = {
-  'conversations-requirements': { method: 'GET', url: `/v1/projects/${PRJ}/conversations` },
-  events: { method: 'GET', url: `/v1/projects/${PRJ}/events` },
   voice: { method: 'POST', url: `/v1/projects/${PRJ}/voice/sessions`, body: { conversationId: CNV } },
   capture: { method: 'POST', url: `/v1/projects/${PRJ}/capture/sessions`, body: {} },
   'plans-approvals': { method: 'GET', url: `/v1/projects/${PRJ}/plans` },
@@ -48,6 +47,8 @@ const IMPLEMENTED_FAMILY_SAMPLES: Record<string, { method: 'GET' | 'POST'; url: 
   'credentials-sessions': { method: 'POST', url: '/v1/auth/api-tokens', body: { name: 'probe' } },
   'projects-memberships': { method: 'POST', url: '/v1/projects', body: { name: 'probe' } },
   repositories: { method: 'GET', url: `/v1/projects/${PRJ}/repository` },
+  'conversations-requirements': { method: 'GET', url: `/v1/projects/${PRJ}/conversations` },
+  events: { method: 'GET', url: `/v1/projects/${PRJ}/events` },
 };
 
 describe('api skeleton', () => {
@@ -182,11 +183,13 @@ describe('api skeleton', () => {
     expect(body.error.code).toBe('not_found');
   });
 
-  it('closes declared websocket routes with the stable not_configured code 4501', async () => {
+  it('closes declared websocket routes without handlers with the stable not_configured code 4501', async () => {
     await app.listen({ host: '127.0.0.1', port: 3905 });
     try {
+      // The events subscription is implemented (ticket-gated); the voice
+      // relay is still a declared-not-configured ws route.
       const closed = new Promise<{ code: number; reason: string }>((resolve) => {
-        const socket = new WebSocket(`ws://127.0.0.1:3905/v1/projects/${PRJ}/events/subscribe`);
+        const socket = new WebSocket(`ws://127.0.0.1:3905/v1/projects/${PRJ}/voice/sessions/${VCS}/relay`);
         socket.on('close', (code, reason) => resolve({ code, reason: reason.toString() }));
       });
       const result = await closed;

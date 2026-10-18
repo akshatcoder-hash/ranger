@@ -120,12 +120,12 @@ export const CONTRACT_EXAMPLES: ContractExample[] = [
   },
   {
     operationId: 'replayProjectEvents',
-    description: 'Cursor replay with ordered events',
+    description: 'Cursor replay with ordered events (cursor is opaque; decoded: {"v":1,"seq":7,"ts":1760000000000})',
     kind: 'response',
     payload: {
       requestId: 'req-1a2b3f',
       events: [EVENT_EXAMPLE],
-      nextCursor: '7',
+      nextCursor: 'eyJ2IjoxLCJzZXEiOjcsInRzIjoxNzYwMDAwMDAwMDAwfQ',
       hasMore: false,
     },
   },

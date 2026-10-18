@@ -40,11 +40,76 @@ Initial publication of the Ranger v1 contract.
 
 ### Reserved semantics (documented now, implemented by their features)
 
-- `invalid_cursor` / `cursor_expired`: replay cursor errors on event
-  subscription and voice session reconnect.
+- `invalid_cursor` / `cursor_expired`: implemented for event subscription
+  and HTTP replay (see the conversations/events amendment); reserved for the
+  voice session reconnect path until the interaction milestone.
 - `budget_exceeded`: xAI $5 total / $4 soft admission stop and the Instabox
   six-creation allowance, enforced by the shared ledger
   (`src/budget/ledger.ts`) before any paid call.
+
+### v1 amendment — conversations, transactional events and realtime subscription (2026-10-18)
+
+The contract version stays v1 (additive tightening); these families now
+return real behavior instead of `not_configured`:
+
+- **conversations-requirements**: conversations, messages, clarification
+  questions and answers persist per project and survive API restarts; every
+  answer references the exact question it answers; message lists paginate
+  with a stable per-conversation order. Requirement and decision threads are
+  append-only versioned — `createRequirementVersion`/`createDecisionVersion`
+  accept an optional `requirementId`/`decisionId` to append the next
+  immutable version (new schema fields; thread creation unchanged when
+  omitted). Prior versions stay readable and are never mutated in place.
+- **Transactional events**: a central event append (`src/events/store.ts`)
+  is the only writer of project events. It allocates the per-project
+  sequence and validates the `data` payload against the type's declared
+  schema INSIDE the caller's transaction, so state mutation and event commit
+  or roll back atomically — committed sequences are dense and replay never
+  observes a half-applied mutation. Data schemas for `project.updated`,
+  `membership.updated`, `repository.connected`, `conversation.created`,
+  `conversation.message.created`, `conversation.question.created`,
+  `conversation.answer.created`, `requirement.version.created` and
+  `decision.version.created` are now enforced (tightened from generic
+  objects); the other declared types keep permissive data payloads until
+  their features land.
+- **Existing mutations emit events**: `updateProject` appends
+  `project.updated` (carrying the new name and engineer display name),
+  `addMembership`/`removeMembership` append `membership.updated` (role is
+  null on removal; no event for an identical re-add), and
+  `connectRepository` appends `repository.connected` — each in the same
+  transaction as the mutation. Members see the engineer name through public
+  replay and live events.
+- **HTTP replay** (`replayProjectEvents`): member-authenticated cursor
+  replay with `limit` (1–500, default 100); responses carry ordered events,
+  `nextCursor` and `hasMore`. Replay is a pure read — it invokes no tools
+  and changes no state.
+- **WebSocket subscription** (`subscribeProjectEvents`) replaces the 4501
+  fallback for this route: the upgrade consumes a single-use `events`
+  connection ticket bound to purpose, the path projectId and the upgrade
+  Origin (origin-bound tickets refuse upgrades without a matching Origin),
+  and enforces CURRENT membership before any delivery. Delivery is ordered
+  by the persisted sequence with no gaps or duplicates; a reconnect with the
+  last cursor replays exactly the missed events. Documented close codes:
+  `4401` unauthorized (missing/invalid/reused/expired ticket, purpose,
+  project or origin mismatch, non-membership — one `kind:"error"` frame is
+  sent before closing), `4400` invalid_cursor, `4410` cursor_expired and
+  `4502` slow_consumer (the outbound buffer exceeded its bound; clients
+  recover by reconnecting with their cursor). Other declared realtime
+  routes still close `4501 not_configured` until their features land.
+- **Cursor policy**: cursors are opaque; malformed or ahead-of-history
+  cursors answer `invalid_cursor` (400) rather than silently resyncing, and
+  cursors older than the replay window answer `cursor_expired` (410) —
+  recover by resubscribing without a cursor. The window defaults to 30 days
+  and can only be lowered via `limits.eventReplayWindowMs` in the config
+  file.
+- **Scoped mutation idempotency**: mutating routes accept the
+  `Idempotency-Key` header. The first execution stores its successful
+  response in the same transaction as the mutation and its events;
+  identical retries replay the stored result with no second side effect or
+  duplicate event; reuse with different input returns `conflict`
+  (`details.reason: idempotency_key_reuse`). Implemented for
+  createProject/updateProject/addMembership/removeMembership/
+  connectRepository and all conversations-requirements mutations.
 
 ### v1 amendment — identity, projects and repositories (2026-10-18)
 

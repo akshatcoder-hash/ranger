@@ -3,6 +3,7 @@ import { Errors } from '../errors.js';
 import { getPrincipal } from '../auth/principals.js';
 import {
   getProjectRow,
+  membershipRole,
   requireMembership,
   requirePrincipalId,
   requireProjectOwner,
@@ -10,13 +11,15 @@ import {
 } from '../auth/authorization.js';
 import {
   addMembershipRow,
-  createProjectRow,
+  createProjectRecord,
   listMembershipRows,
   listProjectsForPrincipal,
   removeMembershipRow,
   updateProjectRow,
 } from '../projects/store.js';
+import { appendProjectEvent } from '../events/store.js';
 import { iso } from './serialize.js';
+import { runScopedMutation } from './idempotency.js';
 import type { HandlerContext, OperationHandler } from './handlers.js';
 
 /**
@@ -66,11 +69,16 @@ export function registerProjectHandlers(ctx: HandlerContext, handlers: Map<strin
     if (typeof body.name !== 'string' || typeof body.engineerDisplayName !== 'string') {
       throw Errors.validation('name and engineerDisplayName are required');
     }
-    const row = createProjectRow(db, {
-      name: body.name,
-      engineerDisplayName: body.engineerDisplayName,
-      principalId,
-    });
+    // Creating a project is scoped to no existing project id; the scope uses
+    // a fixed bucket. There is no declared project.created event type, so no
+    // event is appended here.
+    const row = runScopedMutation(db, req, 'createProject', '-', () =>
+      createProjectRecord(db, {
+        name: body.name!,
+        engineerDisplayName: body.engineerDisplayName!,
+        principalId,
+      }),
+    );
     return { project: projectPayload(row) };
   });
 
@@ -101,9 +109,20 @@ export function registerProjectHandlers(ctx: HandlerContext, handlers: Map<strin
     const params = req.params as { projectId: string };
     requireProjectOwner(db, params.projectId, principalId);
     const body = (req.body ?? {}) as UpdateProjectBody;
-    const row = updateProjectRow(db, params.projectId, {
-      name: body.name,
-      engineerDisplayName: body.engineerDisplayName,
+    const projectId = params.projectId;
+    const row = runScopedMutation(db, req, 'updateProject', projectId, () => {
+      const updated = updateProjectRow(db, projectId, {
+        name: body.name,
+        engineerDisplayName: body.engineerDisplayName,
+      });
+      // Same transaction as the rename: schema-valid, carries the new values.
+      appendProjectEvent(db, {
+        projectId,
+        type: 'project.updated',
+        data: { name: updated.name, engineerDisplayName: updated.engineerDisplayName },
+        requestId: req.id,
+      });
+      return updated;
     });
     return { project: projectPayload(row) };
   });
@@ -119,7 +138,24 @@ export function registerProjectHandlers(ctx: HandlerContext, handlers: Map<strin
     if (getPrincipal(db, body.principalId) === null) {
       throw Errors.notFound('Principal does not exist');
     }
-    const record = addMembershipRow(db, params.projectId, body.principalId, body.role);
+    const targetPrincipalId: string = body.principalId;
+    const role: 'owner' | 'member' = body.role;
+    const projectId = params.projectId;
+    const record = runScopedMutation(db, req, 'addMembership', projectId, () => {
+      const before = membershipRole(db, projectId, targetPrincipalId);
+      const added = addMembershipRow(db, projectId, targetPrincipalId, role);
+      // Event only when membership state actually changed (add or role
+      // change); re-adding an identical membership is a no-op.
+      if (before !== role) {
+        appendProjectEvent(db, {
+          projectId,
+          type: 'membership.updated',
+          data: { principalId: targetPrincipalId, role },
+          requestId: req.id,
+        });
+      }
+      return added;
+    });
     return {
       membership: {
         projectId: record.projectId,
@@ -149,7 +185,17 @@ export function registerProjectHandlers(ctx: HandlerContext, handlers: Map<strin
     const principalId = requirePrincipalId(req);
     const params = req.params as { projectId: string; principalId: string };
     requireProjectOwner(db, params.projectId, principalId);
-    removeMembershipRow(db, params.projectId, params.principalId);
+    const projectId = params.projectId;
+    runScopedMutation(db, req, 'removeMembership', projectId, () => {
+      removeMembershipRow(db, projectId, params.principalId);
+      appendProjectEvent(db, {
+        projectId,
+        type: 'membership.updated',
+        data: { principalId: params.principalId, role: null },
+        requestId: req.id,
+      });
+      return {};
+    });
     return {};
   });
 }
