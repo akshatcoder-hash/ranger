@@ -450,6 +450,49 @@ describe('coding loop protocol and discipline (deterministic protocol mock)', ()
     expect(stored.contentBase64.length).toBeGreaterThan(0);
   });
 
+  it('aborts an in-flight model request on cancellation and never dials again', async () => {
+    // The approved transport gap: create() had no way to receive an abort
+    // signal, so a public cancel could not stop an in-flight Responses
+    // request. The loop must pass the signal, map the abort to an honest
+    // cancelled status (not provider_error), and never retry the dial.
+    let capturedSignal: AbortSignal | null = null;
+    const controller = new AbortController();
+    const calls: ResponsesCall[] = [];
+    const transport = {
+      create: async (call: ResponsesCall, signal?: AbortSignal): Promise<ResponsesResult> => {
+        calls.push(call);
+        if (!(signal instanceof AbortSignal)) {
+          throw new Error('transport signal missing: cancel cannot reach an in-flight dial');
+        }
+        capturedSignal = signal;
+        return new Promise<ResponsesResult>((_, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('This operation was aborted')));
+        });
+      },
+    };
+    let cancelled = false;
+    setTimeout(() => {
+      cancelled = true;
+      controller.abort();
+    }, 50);
+    const result = await runCodingLoop({
+      projectId: h.projectId,
+      transport,
+      model: 'grok-4.3',
+      instructions: 'test',
+      input: [],
+      tools: codingTools({ projectId: h.projectId, workspace: h.workspace }),
+      runner: h.runner,
+      checker: ALWAYS_ALLOW,
+      budget: NO_BUDGET,
+      isCancelled: () => cancelled,
+      abortSignal: () => controller.signal,
+    });
+    expect(result.status).toBe('cancelled');
+    expect(capturedSignal).toBeInstanceOf(AbortSignal);
+    expect(calls).toHaveLength(1); // abort is not a retry trigger
+  });
+
   it('declares flat function tools for the provider protocol', () => {
     const declarations = functionToolDeclarations(codingTools({ projectId: h.projectId, workspace: h.workspace }));
     for (const declaration of declarations) {

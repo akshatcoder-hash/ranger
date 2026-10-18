@@ -109,10 +109,26 @@ export const LAUNCHER_ARGV0 = 'ranger-trusted-launcher';
  * untrusted payload. stdin flows through unchanged for payloads that need
  * it; the caller's environment is not inherited (`env -i` plus the explicit
  * workload identity). Nothing after the drop can re-elevate: the workload
- * never gains sudo or docker.
+ * never gains sudo or docker. The optional marker prefixes the payload as
+ * a fixed-charset shell assignment (see foregroundCommandMarker): it is
+ * cmdline-visible for supervision discovery, never part of the write
+ * protocol.
  */
-export function fencedWorkloadCommand(inner: string): string {
-  const payload = `cd -- ${shellQuote(WORKLOAD_PROJECT)} && ${inner}`;
+/**
+ * Fixed discovery marker for one supervised foreground command. It rides
+ * the fenced payload as a shell prefix, so every launcher-chain process
+ * carries it in its guest cmdline and `pgrep -f` can find the command's
+ * process group while the exec is in flight (the SDK foreground result
+ * carries no pid). The id is validated to its fixed generated shape: the
+ * marker can never smuggle shell syntax or path bytes.
+ */
+export function foregroundCommandMarker(commandId: string): string | null {
+  return /^cmd_[0-9a-f-]{36}$/.test(commandId) ? `RANGER_CCMD=${commandId}` : null;
+}
+
+/** Fence for one workload command; the marker only ever comes from above. */
+export function fencedWorkloadCommand(inner: string, marker?: string): string {
+  const payload = `${marker === undefined ? '' : `${marker}; `}cd -- ${shellQuote(WORKLOAD_PROJECT)} && ${inner}`;
   return [
     PINNED_ROOT_PATH,
     `exec sudo -n /bin/bash -c ${shellQuote(TRUSTED_LAUNCHER)} ${LAUNCHER_ARGV0} ${shellQuote(payload)}`,

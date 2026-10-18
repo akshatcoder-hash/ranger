@@ -5,6 +5,8 @@ import { appendProjectEvent } from '../events/store.js';
 import { confirmInstaboxCreation, recordInstaboxRelease, releaseInstaboxReservation } from '../budget/ledger.js';
 import { failStaleRun, getRunRow, type RunRow } from './store.js';
 import { listCommandsForRun, getWorkspace, markWorkspaceDestroyed } from '../workspace/store.js';
+import { terminateCommandRow } from '../workspace/terminate.js';
+import { closeRecordedSessions } from '../workspace/cleanup.js';
 import type { InstaboxProvider } from '../workspace/provider.js';
 
 /**
@@ -111,12 +113,15 @@ export async function reconcileInterruptedRuns(deps: ReconcileDeps): Promise<Rec
     }
 
     // 3. Cancel remaining command descendants and destroy the recorded
-    // workspace (owned resources only, never a new provider action).
+    // workspace (owned resources only, never a new provider action). Both
+    // background (recorded pid) and supervised foreground (discovery
+    // marker) commands are terminated with TERM then a liveness-checked
+    // KILL; recorded desktop/preview sessions close before the machine.
     const ws = getWorkspace(db, run.projectId);
     for (const command of listCommandsForRun(db, run.id)) {
-      if (command.state !== 'running' || ws?.machineId === null || ws === null || command.pid === null) continue;
+      if (command.state !== 'running' || ws?.machineId === null || ws === null) continue;
       try {
-        await provider.signal({ machineId: ws.machineId, pid: command.pid, signal: 'TERM' });
+        await terminateCommandRow(provider, ws.machineId, command);
         report.terminatedCommands += 1;
       } catch {
         // Best effort: the machine may already be gone.
@@ -124,6 +129,7 @@ export async function reconcileInterruptedRuns(deps: ReconcileDeps): Promise<Rec
     }
     if (ws !== null && ws.machineId !== null && ws.observedState !== 'destroyed' && !ws.uncertain) {
       try {
+        await closeRecordedSessions({ db, provider, projectId: run.projectId });
         await provider.kill(ws.machineId);
         if (ledgerFile !== null && ws.reservationId !== null) {
           recordInstaboxRelease(ledgerFile, ws.machineId);

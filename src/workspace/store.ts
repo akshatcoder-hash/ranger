@@ -177,8 +177,12 @@ export function listAllSourceFiles(db: DatabaseSync, projectId: string): Array<{
   return rows.map((row) => ({ path: row.relative_path, content: Buffer.from(row.content) }));
 }
 
-export function insertCommand(db: DatabaseSync, input: { projectId: string; argv: string[]; state: CommandRow['state']; pid: number | null; logs: string; exitCode: number | null; timedOut: boolean; runId?: string | null; isTest?: boolean }): CommandRow {
-  const id = `cmd_${randomUUID()}`;
+export function newCommandId(): string {
+  return `cmd_${randomUUID()}`;
+}
+
+export function insertCommand(db: DatabaseSync, input: { id?: string; projectId: string; argv: string[]; state: CommandRow['state']; pid: number | null; logs: string; exitCode: number | null; timedOut: boolean; runId?: string | null; isTest?: boolean }): CommandRow {
+  const id = input.id ?? newCommandId();
   const now = Date.now();
   const logs = input.logs.length > COMMAND_OUTPUT_CAP_BYTES ? input.logs.slice(0, COMMAND_OUTPUT_CAP_BYTES) : input.logs;
   const truncated = input.logs.length > COMMAND_OUTPUT_CAP_BYTES ? 1 : 0;
@@ -281,9 +285,39 @@ export function getCommand(db: DatabaseSync, projectId: string, commandId: strin
 }
 
 export function markCommandTerminated(db: DatabaseSync, projectId: string, commandId: string): void {
+  // Conditional on running: a command that finished naturally (a real exit
+  // code) is never regressed to terminated by a late or racing terminate.
   db.prepare(
-    `UPDATE workspace_commands SET state = 'terminated', finished_at = ? WHERE project_id = ? AND id = ?`,
+    `UPDATE workspace_commands SET state = 'terminated', finished_at = ? WHERE project_id = ? AND id = ? AND state = 'running'`,
   ).run(Date.now(), projectId, commandId);
+}
+
+/**
+ * Close one running command with its truthful outcome. If the row was
+ * marked terminated meanwhile (cancel won the race), only the truthful
+ * result fields attach: the terminated state and finish time stand, and no
+ * exit code is ever invented here — the values come from the provider
+ * result, which the workload cannot forge.
+ */
+export function completeCommand(
+  db: DatabaseSync,
+  input: { projectId: string; commandId: string; state: 'succeeded' | 'failed'; exitCode: number | null; timedOut: boolean; logs: string },
+): CommandRow | null {
+  const logs = input.logs.length > COMMAND_OUTPUT_CAP_BYTES ? input.logs.slice(0, COMMAND_OUTPUT_CAP_BYTES) : input.logs;
+  const truncated = input.logs.length > COMMAND_OUTPUT_CAP_BYTES ? 1 : 0;
+  const now = Date.now();
+  const finished = db
+    .prepare(
+      `UPDATE workspace_commands SET state = ?, exit_code = ?, timed_out = ?, logs = ?, log_bytes = ?, truncated = ?, finished_at = ?
+       WHERE project_id = ? AND id = ? AND state = 'running'`,
+    )
+    .run(input.state, input.exitCode, input.timedOut ? 1 : 0, logs, Buffer.byteLength(logs), truncated, now, input.projectId, input.commandId);
+  if (finished.changes === 0) {
+    db.prepare(
+      `UPDATE workspace_commands SET exit_code = ?, timed_out = ?, logs = ?, log_bytes = ?, truncated = ? WHERE project_id = ? AND id = ?`,
+    ).run(input.exitCode, input.timedOut ? 1 : 0, logs, Buffer.byteLength(logs), truncated, input.projectId, input.commandId);
+  }
+  return getCommand(db, input.projectId, input.commandId);
 }
 
 export function insertArtifact(db: DatabaseSync, projectId: string, name: string, content: Buffer): { id: string; sizeBytes: number; createdAt: number } {
@@ -359,4 +393,18 @@ export function stopPreviewSession(db: DatabaseSync, projectId: string, sessionI
 
 export function setPreviewLocalPort(db: DatabaseSync, projectId: string, sessionId: string, localPort: number): void {
   db.prepare('UPDATE preview_sessions SET local_port = ? WHERE project_id = ? AND id = ?').run(localPort, projectId, sessionId);
+}
+
+/** Still-open desktop sessions of one project (close targets for cleanup). */
+export function listOpenDesktopSessions(db: DatabaseSync, projectId: string): Array<{ id: string }> {
+  return mapRows<{ id: string }>(db.prepare("SELECT id FROM desktop_sessions WHERE project_id = ? AND state = 'active'").all(projectId)).map((row) => ({
+    id: row.id,
+  }));
+}
+
+/** Still-open preview sessions of one project (close targets for cleanup). */
+export function listOpenPreviewSessions(db: DatabaseSync, projectId: string): Array<{ id: string }> {
+  return mapRows<{ id: string }>(db.prepare("SELECT id FROM preview_sessions WHERE project_id = ? AND state = 'active'").all(projectId)).map((row) => ({
+    id: row.id,
+  }));
 }

@@ -51,6 +51,8 @@ export interface CodingLoopOptions {
   deadlineMs?: number;
   /** Checked before each provider call and each tool execution. */
   isCancelled?: () => boolean;
+  /** Signal for the current in-flight dial; run cancellation aborts it. */
+  abortSignal?: () => AbortSignal | null;
   /** Called once per tool outcome as it happens (durable progress records). */
   onToolOutcome?: (outcome: CodingToolOutcome) => void;
 }
@@ -163,16 +165,24 @@ export async function runCodingLoop(options: CodingLoopOptions): Promise<CodingL
 
     let result: ProviderCallResult;
     try {
-      const created = await options.transport.create({
-        model: options.model,
-        input,
-        tools: declarations,
-        instructions: options.instructions,
-      });
+      const created = await options.transport.create(
+        {
+          model: options.model,
+          input,
+          tools: declarations,
+          instructions: options.instructions,
+        },
+        options.abortSignal?.() ?? undefined,
+      );
       result = { output: created.output, usage: created.usage };
     } catch (cause) {
       if (reservationId !== null && options.budget !== null) {
         releaseXaiReservation(options.budget.ledgerFile, reservationId);
+      }
+      // An abort delivered by run cancellation is not a provider failure:
+      // no retry, no fallback, honest cancelled status.
+      if (cancelled()) {
+        return { status: 'cancelled', outputItems: input, toolOutcomes, turns, usage: currentUsage(), failure: null };
       }
       // Explicit provider failure: no retry, no fallback.
       return failure(input, toolOutcomes, turns, currentUsage(), 'provider_error', String(cause instanceof Error ? cause.message : cause).slice(0, 300));

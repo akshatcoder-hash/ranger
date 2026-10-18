@@ -21,6 +21,16 @@ interface FakeProcess {
   command: string;
 }
 
+/** Configuration for a hung foreground workload command (deterministic). */
+export interface HangConfig {
+  /** The group survives TERM (exit only via KILL), like `trap '' TERM`. */
+  ignoresTerm: boolean;
+  /** The group stays alive after release(), modeling agent-deadline survivors. */
+  keepAliveAfterRelease: boolean;
+  /** The exec never delivers a result, even when the group is killed. */
+  unreporting: boolean;
+}
+
 /**
  * Cwd values the template user can actually traverse. The project path is
  * owned by the workload identity, so a provider-level cwd there models the
@@ -40,6 +50,8 @@ export class FakeInstabox implements InstaboxProvider {
   readonly kills: string[] = [];
   readonly pauses: string[] = [];
   readonly resumes: string[] = [];
+  /** Ordered effect log: stream revocations versus machine kills. */
+  readonly order: string[] = [];
 
   private nextId = 1;
   private nextPid = 4000;
@@ -51,6 +63,39 @@ export class FakeInstabox implements InstaboxProvider {
   private failDefinite = false;
   private writeFailure: ProviderCommandResult | null = null;
   private operationToMachine = new Map<string, string>();
+  private pendingHang: HangConfig | null = null;
+  private activeHang: {
+    config: Required<HangConfig>;
+    group: FakeProcess;
+    commandId: string;
+    resolveExec: (result: ProviderCommandResult) => void;
+    resolved: boolean;
+  } | null = null;
+
+  /**
+   * Deterministic supervision seam: the next fenced FOREGROUND workload
+   * command (the run_command/run_tests wire, identified by its
+   * RANGER_CCMD marker) hangs until released or killed, modeling a blocked
+   * guest tool. TERM ends it (exit 143) unless the group ignores TERM;
+   * KILL ends it (exit 137).
+   */
+  hangNextForeground(config?: Partial<HangConfig>): { release(result?: Partial<ProviderCommandResult>): void; assertResolved(): void } {
+    this.pendingHang = { ignoresTerm: false, keepAliveAfterRelease: false, unreporting: false, ...config };
+    const hang = () => this.activeHang;
+    return {
+      release: (result) => {
+        const active = hang();
+        if (active === null || active.resolved) return;
+        active.resolved = true;
+        if (!active.config.keepAliveAfterRelease) active.group.alive = false;
+        active.resolveExec({ stdout: '', stderr: '', exitCode: 0, timedOut: false, truncated: false, ...result });
+      },
+      assertResolved: () => {
+        const active = hang();
+        if (active !== null && !active.resolved) throw new Error('fake: the hung foreground exec was never resolved');
+      },
+    };
+  }
 
   failNextCreateAmbiguous(machineId: string): void {
     this.failAmbiguous = machineId;
@@ -162,8 +207,15 @@ export class FakeInstabox implements InstaboxProvider {
 
   async kill(machineId: string): Promise<boolean> {
     this.kills.push(machineId);
+    this.order.push(`killed:${machineId}`);
     const existed = this.machines.delete(machineId);
     this.processes = this.processes.filter((item) => item.machineId !== machineId);
+    // A machine kill ends any hung foreground exec with an unknown outcome.
+    const hang = this.activeHang;
+    if (hang !== null && hang.group.machineId === machineId && !hang.resolved) {
+      hang.resolved = true;
+      hang.resolveExec({ stdout: '', stderr: '', exitCode: 137, timedOut: false, truncated: false });
+    }
     return existed;
   }
 
@@ -183,6 +235,20 @@ export class FakeInstabox implements InstaboxProvider {
     const cwdDenial = this.cwdDenial(request);
     if (cwdDenial !== null) return cwdDenial;
     const fenced = splitFencedCommand(request.command);
+    // Deterministic hang for the supervised foreground workload wire: the
+    // command carries the RANGER_CCMD marker (never the write protocol).
+    if (fenced !== null && this.pendingHang !== null && fenced.payload.includes('RANGER_CCMD=')) {
+      const config = this.pendingHang;
+      this.pendingHang = null;
+      const pid = this.nextPid;
+      this.nextPid += 1;
+      const group: FakeProcess = { pid, machineId: request.machineId, ignoresTerm: config.ignoresTerm, alive: true, command: request.command };
+      this.processes.push(group);
+      const commandId = /RANGER_CCMD=(cmd_[0-9a-f-]+)/.exec(fenced.payload)?.[1] ?? '';
+      return await new Promise<ProviderCommandResult>((resolve) => {
+        this.activeHang = { config, group, commandId, resolveExec: resolve, resolved: false };
+      });
+    }
     if (fenced !== null) return this.interpretWorkload(request, fenced.payload);
     return this.interpret(request);
   }
@@ -247,6 +313,28 @@ export class FakeInstabox implements InstaboxProvider {
     const machineId = request.machineId;
     const files = this.files.get(machineId) ?? new Map<string, string>();
     this.files.set(machineId, files);
+    // Supervision discovery wire: pgrep for the foreground marker, then the
+    // pgid lookup. Modeled against the hung group's real process state.
+    if (request.command.startsWith('pgrep -f')) {
+      const hang = this.activeHang;
+      const wanted = /RANGER_CCMD=(cmd_[0-9a-f-]+)/.exec(request.command)?.[1] ?? null;
+      if (wanted !== null && hang !== null && hang.group.alive && hang.commandId === wanted) {
+        return { stdout: `${hang.group.pid}\n`, stderr: '', exitCode: 0, timedOut: false, truncated: false };
+      }
+      return { stdout: '', stderr: '', exitCode: 1, timedOut: false, truncated: false };
+    }
+    if (request.command.startsWith('ps -o pid=,pgid= -p')) {
+      const hang = this.activeHang;
+      const wanted = request.command
+        .slice('ps -o pid=,pgid= -p '.length)
+        .split(',')
+        .map((value) => Number.parseInt(value.trim(), 10))
+        .filter((pid) => Number.isInteger(pid) && pid > 0);
+      if (hang !== null && hang.group.alive && wanted.includes(hang.group.pid)) {
+        return { stdout: `${hang.group.pid} ${hang.group.pid}\n`, stderr: '', exitCode: 0, timedOut: false, truncated: false };
+      }
+      return { stdout: '', stderr: '', exitCode: 1, timedOut: false, truncated: false };
+    }
     if (request.command.includes('useradd') || request.command.includes('bootstrap-complete')) {
       return { stdout: 'bootstrap-complete\n', stderr: '', exitCode: 0, timedOut: false, truncated: false };
     }
@@ -311,6 +399,14 @@ export class FakeInstabox implements InstaboxProvider {
     if (proc === undefined || !proc.alive) return false;
     if (request.signal === 'TERM' && proc.ignoresTerm) return true;
     proc.alive = false;
+    // A signal that ends the hung foreground group resolves its exec with
+    // the truthful signal-death result (143 TERM / 137 KILL, bash
+    // convention) — unless the hang models an unreporting exec.
+    const hang = this.activeHang;
+    if (hang !== null && !hang.resolved && hang.group === proc && !hang.config.unreporting) {
+      hang.resolved = true;
+      hang.resolveExec({ stdout: '', stderr: '', exitCode: request.signal === 'KILL' ? 137 : 143, timedOut: false, truncated: false });
+    }
     return true;
   }
 
@@ -333,6 +429,7 @@ export class FakeInstabox implements InstaboxProvider {
   }
 
   async revokeStreams(_machineId: string): Promise<void> {
+    this.order.push('streams-revoked');
     return;
   }
 

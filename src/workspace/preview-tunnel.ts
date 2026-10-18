@@ -153,3 +153,26 @@ function waitForForward(child: ChildProcess, localPort: number): Promise<void> {
     }, 200);
   });
 }
+
+/**
+ * Active preview tunnels by session id (process memory only, like the
+ * desktop stream handles). Cleanup paths stop tunnels through this
+ * registry: a destroyed workspace must leave no live forward behind.
+ */
+const activeTunnels = new Map<string, TunnelHandle>();
+
+export function registerPreviewTunnel(sessionId: string, tunnel: TunnelHandle): void {
+  activeTunnels.set(sessionId, tunnel);
+}
+
+export function takePreviewTunnel(sessionId: string): TunnelHandle | undefined {
+  const tunnel = activeTunnels.get(sessionId);
+  activeTunnels.delete(sessionId);
+  return tunnel;
+}
+
+/** Stop and forget one tunnel when this process owns it. */
+export async function stopPreviewTunnel(sessionId: string): Promise<void> {
+  const tunnel = takePreviewTunnel(sessionId);
+  if (tunnel !== undefined) await tunnel.stop();
+}

@@ -513,6 +513,150 @@ describe('approved run workflow (deterministic providers, public API)', () => {
     }
   });
 
+  it('cancels a run blocked on a foreground command: the run-owned row is visible, the group is terminated and recorded sessions close before destroy', async () => {
+    const h = await openHarness();
+    try {
+      setPlanningTransportForTests(() => {
+        throw new Error('no planning in this test');
+      });
+      await seedConversation(h, 'Long running foreground task');
+      const plan = await h.app.inject({
+        method: 'POST',
+        url: `/v1/projects/${h.projectId}/plans`,
+        headers: h.bearer,
+        payload: { items: ['work'], acceptanceCriteria: ['done'], permittedScope: ['edit:src/', 'command', 'launch', 'evidence'] },
+      });
+      const planId = (plan.json() as { plan: { planId: string } }).plan.planId;
+      const approved = await h.app.inject({
+        method: 'POST',
+        url: `/v1/projects/${h.projectId}/plans/${planId}/approvals`,
+        headers: h.bearer,
+        payload: { permittedScope: ['edit:src/', 'command', 'launch', 'evidence'] },
+      });
+      const approvalId = (approved.json() as { approval: { approvalId: string } }).approval.approvalId;
+      const started = await h.app.inject({
+        method: 'POST',
+        url: `/v1/projects/${h.projectId}/runs`,
+        headers: h.bearer,
+        payload: { conversationId: h.conversationId, approvalId },
+      });
+      const runId = (started.json() as { run: { runId: string } }).run.runId;
+
+      // Turn 1 runs a real FOREGROUND command (run_command) whose guest exec
+      // hangs until the fake releases it; the hang models a blocked tool.
+      const hang = h.provider.hangNextForeground({ ignoresTerm: true });
+      const coding = {
+        transport: {
+          create: async (call: ResponsesCall): Promise<ResponsesResult> => {
+            coding.calls.push(call);
+            return {
+              output: [functionCallItem('run_command', { command: 'sleep', args: ['300'], timeoutMs: 60_000 }, 'call_fg')],
+              usage: { inputTokens: 1000, outputTokens: 500, totalTokens: 1500 },
+              responseId: 'resp_1',
+            };
+          },
+        },
+        calls: [] as ResponsesCall[],
+      };
+      const { engineeringRunHandler } = await import('../../src/runs/executor.js');
+      const { WorkerLoop } = await import('../../src/worker/loop.js');
+      const handler = engineeringRunHandler({ db: h.db, config: h.config, retrieval: null, transportFactory: () => coding.transport });
+      const loop = new WorkerLoop(h.db, new Map([['engineering_run', handler]]), {
+        pollMs: 25,
+        leaseMs: 60_000,
+        workerId: 'worker-fg-cancel-test',
+        logger: { info: () => undefined, error: () => undefined },
+      });
+      loop.start();
+
+      // THE defect regression: while the foreground exec is in flight, a
+      // run-owned RUNNING command row must already exist for public cancel.
+      const rowDeadline = Date.now() + 20_000;
+      let inFlight: { id: string; state: string } | undefined;
+      for (;;) {
+        inFlight = h.db.prepare("SELECT id, state FROM workspace_commands WHERE run_id = ? AND state = 'running'").get(runId) as
+          | { id: string; state: string }
+          | undefined;
+        if (inFlight !== undefined) break;
+        if (Date.now() > rowDeadline) throw new Error('foreground command row never became visible while in flight');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+
+      // Recorded desktop and preview sessions exist while the run is active.
+      const desktop = await h.app.inject({
+        method: 'POST',
+        url: `/v1/projects/${h.projectId}/desktop/sessions`,
+        headers: h.bearer,
+        payload: { ttlSeconds: 30 },
+      });
+      expect(desktop.statusCode, desktop.body).toBe(200);
+      const preview = await h.app.inject({
+        method: 'POST',
+        url: `/v1/projects/${h.projectId}/preview/sessions`,
+        headers: h.bearer,
+        payload: { guestPort: 4173 },
+      });
+      expect(preview.statusCode, preview.body).toBe(200);
+
+      const cancelled = await h.app.inject({ method: 'POST', url: `/v1/projects/${h.projectId}/runs/${runId}/cancel`, headers: h.bearer });
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
+
+      const deadline = Date.now() + 20_000;
+      for (;;) {
+        const row = h.db.prepare('SELECT state FROM runs WHERE id = ?').get(runId) as { state: string } | undefined;
+        if (row?.state === 'cancelled') break;
+        if (Date.now() > deadline) throw new Error(`run never cancelled: ${JSON.stringify(row)}`);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      await loop.stop();
+      hang.assertResolved();
+
+      // The blocked foreground command was terminated for real: TERM then a
+      // liveness-checked KILL reached the fake guest process group.
+      expect(h.provider.signals.map((s) => s.signal)).toEqual(['TERM', 'KILL']);
+      const commandRow = h.db.prepare('SELECT state, exit_code FROM workspace_commands WHERE id = ?').get(inFlight!.id) as {
+        state: string;
+        exit_code: number | null;
+      };
+      expect(commandRow.state).toBe('terminated');
+
+      // The tool outcome is truthful: no forged pass, no further model work.
+      expect(coding.calls).toHaveLength(1);
+      const outcomes = h.db.prepare("SELECT name, status, result_json FROM run_tool_outcomes WHERE run_id = ?").all(runId) as Array<{
+        name: string;
+        status: string;
+        result_json: string | null;
+      }>;
+      expect(outcomes.some((o) => o.name === 'run_command' && o.status === 'ok' && (JSON.parse(o.result_json ?? '{}') as { state?: string }).state === 'terminated')).toBe(true);
+      expect(JSON.stringify(outcomes)).not.toContain('"passed":true');
+
+      // Recorded streams and tunnels closed BEFORE the workspace destroy,
+      // with observable persisted close state.
+      const closed = h.db
+        .prepare(
+          `SELECT
+             (SELECT revoked_at FROM desktop_sessions WHERE project_id = ? AND state = 'revoked' LIMIT 1) AS desktop_revoked_at,
+             (SELECT stopped_at FROM preview_sessions WHERE project_id = ? AND state = 'stopped' LIMIT 1) AS preview_stopped_at,
+             (SELECT destroyed_at FROM workspaces WHERE project_id = ?) AS destroyed_at`,
+        )
+        .get(h.projectId, h.projectId, h.projectId) as { desktop_revoked_at: number | null; preview_stopped_at: number | null; destroyed_at: number | null };
+      expect(closed.desktop_revoked_at).not.toBeNull();
+      expect(closed.preview_stopped_at).not.toBeNull();
+      expect(closed.destroyed_at).not.toBeNull();
+      expect(closed.desktop_revoked_at!).toBeLessThanOrEqual(closed.destroyed_at!);
+      expect(closed.preview_stopped_at!).toBeLessThanOrEqual(closed.destroyed_at!);
+      expect(h.provider.order).toContain('streams-revoked');
+      const killedAt = h.provider.order.findIndex((entry) => entry.startsWith('killed:'));
+      expect(killedAt).toBeGreaterThanOrEqual(0);
+      expect(h.provider.order.indexOf('streams-revoked')).toBeLessThan(killedAt);
+      const workspaceRow = h.db.prepare('SELECT observed_state FROM workspaces WHERE project_id = ?').get(h.projectId) as { observed_state: string };
+      expect(workspaceRow.observed_state).toBe('destroyed');
+    } finally {
+      h.close();
+      rmSync(h.dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('marks an interrupted run failed with cleanup, rejects the stale worker and never resumes', async () => {
     const h = await openHarness();
     try {

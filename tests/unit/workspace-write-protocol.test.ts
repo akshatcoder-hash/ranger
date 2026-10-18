@@ -167,7 +167,12 @@ describe('workload cwd and privilege ordering (deterministic, not live)', () => 
     expect(cgroupAt).toBeGreaterThanOrEqual(0);
     expect(dropAt).toBeGreaterThan(cgroupAt);
     // chdir and the user fragment run only after the drop, as the $1 payload.
-    expect(fenced?.payload.startsWith(`cd -- '${WORKLOAD_PROJECT}' && `)).toBe(true);
+    // Foreground commands prefix the payload with the fixed supervision
+    // marker (fixed charset, cmdline-visible): no customer bytes move.
+    const payload = fenced?.payload ?? '';
+    const marker = /^RANGER_CCMD=cmd_[0-9a-f-]{36}; /.exec(payload)?.[0] ?? null;
+    expect(marker).not.toBeNull();
+    expect(payload.slice(marker!.length).startsWith(`cd -- '${WORKLOAD_PROJECT}' && `)).toBe(true);
     expect(fenced?.payload).toContain("'echo' 'ready'");
     await h.app.close();
   });

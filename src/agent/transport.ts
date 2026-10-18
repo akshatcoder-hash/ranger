@@ -38,7 +38,13 @@ export interface ResponsesResult {
 }
 
 export interface ResponsesTransport {
-  create(call: ResponsesCall): Promise<ResponsesResult>;
+  /**
+   * Dial one Responses call. The optional signal aborts the IN-FLIGHT
+   * request (public run cancellation) — verified transport gap at
+   * c2135f8: without it, cancel could not reach a hanging dial. Aborting
+   * is never a retry trigger.
+   */
+  create(call: ResponsesCall, signal?: AbortSignal): Promise<ResponsesResult>;
 }
 
 export class OpenAiResponsesTransport implements ResponsesTransport {
@@ -48,15 +54,18 @@ export class OpenAiResponsesTransport implements ResponsesTransport {
     this.client = new OpenAI({ apiKey, baseURL: baseUrl, maxRetries: SDK_MAX_RETRIES, timeout: SDK_TIMEOUT_MS });
   }
 
-  async create(call: ResponsesCall): Promise<ResponsesResult> {
-    const response = await this.client.responses.create({
-      model: call.model,
-      input: call.input as OpenAI.Responses.ResponseInput,
-      tools: call.tools as never,
-      store: false,
-      ...(call.instructions !== undefined ? { instructions: call.instructions } : {}),
-      ...(call.maxOutputTokens !== undefined ? { max_output_tokens: call.maxOutputTokens } : {}),
-    });
+  async create(call: ResponsesCall, signal?: AbortSignal): Promise<ResponsesResult> {
+    const response = await this.client.responses.create(
+      {
+        model: call.model,
+        input: call.input as OpenAI.Responses.ResponseInput,
+        tools: call.tools as never,
+        store: false,
+        ...(call.instructions !== undefined ? { instructions: call.instructions } : {}),
+        ...(call.maxOutputTokens !== undefined ? { max_output_tokens: call.maxOutputTokens } : {}),
+      },
+      signal === undefined ? undefined : { signal },
+    );
     return {
       output: (response.output ?? []) as unknown as Array<Record<string, unknown>>,
       usage: response.usage

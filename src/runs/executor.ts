@@ -82,10 +82,19 @@ async function executeRun(deps: RunExecutorDeps, run: RunRow, claim: { workerId:
   // does. Cancel observation is a DIRECT durable read at every check point
   // (provider dial and tool execution), so a public cancel stops provider
   // work within one loop step rather than waiting for a timer tick.
+  const dialAbort = new AbortController();
   const watcher = setInterval(() => {
     try {
       const renewed = renewRunLease(db, run.id, claim.workerId, claim.claimEpoch, leaseMs);
-      if (!renewed) leaseLost = true;
+      if (!renewed) {
+        leaseLost = true;
+        dialAbort.abort();
+        return;
+      }
+      // Verified transport gap at c2135f8: without the abort signal, a
+      // public cancel could not reach an in-flight Responses request.
+      const current = getRunRow(db, run.id);
+      if (current !== null && current.cancelRequested) dialAbort.abort();
     } catch {
       // A transient read failure retries on the next tick.
     }
@@ -202,6 +211,7 @@ async function executeRun(deps: RunExecutorDeps, run: RunRow, claim: { workerId:
           ? null
           : { ledgerFile: deps.config.liveBudgetFile, feature: RUN_FEATURE, estimateUsdPerCall: ESTIMATE_USD_PER_CALL },
       isCancelled,
+      abortSignal: () => dialAbort.signal,
       onToolOutcome,
       deadlineMs: runDeadlineMs(db, run.projectId),
     });

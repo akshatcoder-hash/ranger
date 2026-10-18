@@ -7,7 +7,6 @@ import {
   confirmInstaboxCreation,
   releaseInstaboxReservation,
   reserveInstaboxCreation,
-  recordInstaboxRelease,
 } from '../budget/ledger.js';
 import { withTransaction } from '../db/db.js';
 import {
@@ -17,6 +16,7 @@ import {
   VM_KILL_TIMEOUT_MS,
   WORKLOAD_USER,
   fencedWorkloadCommand,
+  foregroundCommandMarker,
   isFixedPreviewPort,
 } from './limits.js';
 import { guestWriteCommand } from './guest-write.js';
@@ -25,9 +25,10 @@ import { bootstrapWorkload } from './bootstrap.js';
 import { armWorkspaceWatchdog, destroyFailedBootstrap, destroyRecordedWorkspace } from './cleanup.js';
 import { SdkInstaboxProvider } from './sdk-provider.js';
 import { rememberDesktopStream, forgetDesktopStream } from './viewing.js';
-import { mintPreviewKeypair, openPreviewTunnel, type TunnelHandle } from './preview-tunnel.js';
+import { mintPreviewKeypair, openPreviewTunnel, registerPreviewTunnel, stopPreviewTunnel, type TunnelHandle } from './preview-tunnel.js';
+import { terminateCommandRow, terminateForegroundGroups } from './terminate.js';
 import { workspaceProviderForTests } from './runtime.js';
-import type { InstaboxProvider, ProviderCreateRequest } from './provider.js';
+import type { InstaboxProvider, ProviderCommandResult, ProviderCreateRequest } from './provider.js';
 import {
   getArtifact,
   getCommand,
@@ -41,8 +42,9 @@ import {
   listArtifacts,
   listSourceFiles,
   listTestCommandRows,
+  completeCommand,
+  newCommandId,
   markCommandTerminated,
-  markWorkspaceDestroyed,
   markWorkspaceRunning,
   markWorkspaceUncertain,
   readSourceFile,
@@ -55,7 +57,6 @@ import {
 } from './store.js';
 
 const FEATURE = 'lean-instabox-workspace-viewing';
-const previewTunnels = new Map<string, TunnelHandle>();
 
 export interface WorkspaceServiceOptions {
   db: DatabaseSync;
@@ -89,8 +90,8 @@ function assertSafeRelative(relativePath: string): void {
   }
 }
 
-function workloadShell(argv: string[]): string {
-  return fencedWorkloadCommand(argv.map(shellQuote).join(' '));
+function workloadShell(argv: string[], marker?: string): string {
+  return fencedWorkloadCommand(argv.map(shellQuote).join(' '), marker);
 }
 
 export class WorkspaceService {
@@ -269,25 +270,118 @@ export class WorkspaceService {
     attribution?: { runId?: string; isTest?: boolean },
   ): Promise<CommandRow> {
     const workspace = this.requireRunning(projectId);
-    const result = await providerFor(this.options).exec({
-      machineId: workspace.machineId!,
-      command: workloadShell(argv),
-      user: WORKLOAD_USER,
-      timeoutMs,
-      background,
-    });
-    const logs = (result.stdout + result.stderr).slice(0, COMMAND_OUTPUT_CAP_BYTES);
-    return insertCommand(this.options.db, {
+    const runId = attribution?.runId ?? null;
+    if (background) {
+      // Background launch: the SDK returns the process-group pid directly.
+      const result = await providerFor(this.options).exec({
+        machineId: workspace.machineId!,
+        command: workloadShell(argv),
+        user: WORKLOAD_USER,
+        timeoutMs,
+        background: true,
+      });
+      return insertCommand(this.options.db, {
+        projectId,
+        argv,
+        state: 'running',
+        pid: result.pid ?? null,
+        logs: '',
+        exitCode: null,
+        timedOut: false,
+        runId,
+        isTest: attribution?.isTest === true,
+      });
+    }
+    // Foreground supervision. The approved c2135f8 defect: awaiting the
+    // exec before any row existed made a run-owned foreground command
+    // invisible to public cancel and unkillable (the SDK foreground result
+    // carries no pid). The row is now durable (state running) BEFORE the
+    // wait, and killability comes from the fixed RANGER_CCMD discovery
+    // marker instead of a pid. The outcome is only ever the provider
+    // result — never a workload-writable completion value — so a pass
+    // cannot be forged.
+    const commandId = newCommandId();
+    const command = workloadShell(argv, foregroundCommandMarker(commandId) ?? undefined);
+    insertCommand(this.options.db, {
+      id: commandId,
       projectId,
       argv,
-      state: background ? 'running' : result.exitCode === 0 ? 'succeeded' : 'failed',
-      pid: result.pid ?? null,
-      logs,
-      exitCode: background ? null : result.exitCode,
-      timedOut: result.timedOut,
-      runId: attribution?.runId ?? null,
+      state: 'running',
+      pid: null,
+      logs: '',
+      exitCode: null,
+      timedOut: false,
+      runId,
       isTest: attribution?.isTest === true,
     });
+    try {
+      const result = await this.supervisedForeground(workspace.machineId!, command, commandId, timeoutMs);
+      return (
+        completeCommand(this.options.db, {
+          projectId,
+          commandId,
+          state: result.exitCode === 0 && !result.timedOut ? 'succeeded' : 'failed',
+          exitCode: result.exitCode,
+          timedOut: result.timedOut,
+          logs: (result.stdout + result.stderr).slice(0, COMMAND_OUTPUT_CAP_BYTES),
+        }) ?? this.command(projectId, commandId)
+      );
+    } catch (cause) {
+      // No result arrived: record the honest unknown outcome, never a
+      // fabricated exit code or pass.
+      completeCommand(this.options.db, { projectId, commandId, state: 'failed', exitCode: null, timedOut: false, logs: '' });
+      throw cause;
+    }
+  }
+
+  /**
+   * Await one foreground exec under bounded supervision. The guest agent
+   * enforces the command deadline (its timedOut result is authoritative);
+   * the guard bounds the wait itself, terminates surviving group members
+   * on the deadline or after a timed-out result (TERM, then a
+   * liveness-checked KILL), and fails honestly when no result ever
+   * arrives.
+   */
+  private async supervisedForeground(machineId: string, command: string, commandId: string, timeoutMs: number): Promise<ProviderCommandResult> {
+    const provider = providerFor(this.options);
+    const graceMs = Math.min(10_000, Math.max(250, timeoutMs));
+    const execP = provider.exec({ machineId, command, user: WORKLOAD_USER, timeoutMs });
+    let fireGuard: (() => void) | null = null;
+    const guardP = new Promise<null>((resolve) => {
+      fireGuard = () => resolve(null);
+    });
+    const timer = setTimeout(() => fireGuard?.(), timeoutMs + graceMs);
+    timer.unref?.();
+    try {
+      let result = await Promise.race([execP, guardP]);
+      if (result === null) {
+        // The agent did not report by the supervised deadline: terminate
+        // the discovered group, then give the exec one short window to
+        // deliver the truthful (signaled) result.
+        await terminateForegroundGroups(provider, machineId, commandId);
+        result = await Promise.race([
+          execP,
+          new Promise<null>((resolve) => {
+            const late = setTimeout(() => resolve(null), graceMs);
+            late.unref?.();
+          }),
+        ]);
+        if (result === null) {
+          throw new AppError('conflict', 'Foreground command did not report after supervision kill', {
+            details: { reason: 'command_outcome_unknown' },
+          });
+        }
+        return result;
+      }
+      if (result.timedOut) {
+        // The agent's own deadline kill may leave group members alive:
+        // sweep them so the tree cannot outlive its deadline.
+        await terminateForegroundGroups(provider, machineId, commandId);
+      }
+      return result;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** Persisted test-outcome commands (real exit codes) for the tests read. */
@@ -311,13 +405,10 @@ export class WorkspaceService {
   async terminate(projectId: string, commandId: string): Promise<CommandRow> {
     const workspace = this.requireRunning(projectId);
     const row = this.command(projectId, commandId);
-    if (row.pid !== null) {
-      await providerFor(this.options).signal({ machineId: workspace.machineId!, pid: row.pid, signal: 'TERM' });
-      const live = await providerFor(this.options).livePids(workspace.machineId!, row.pid);
-      if (live.length > 0) {
-        await providerFor(this.options).signal({ machineId: workspace.machineId!, pid: row.pid, signal: 'KILL' });
-      }
-    }
+    // Truthful idempotence: a command that finished with a real outcome is
+    // never regressed to terminated by a late terminate.
+    if (row.state !== 'running') return row;
+    await terminateCommandRow(providerFor(this.options), workspace.machineId!, row);
     markCommandTerminated(this.options.db, projectId, commandId);
     return this.command(projectId, commandId);
   }
@@ -352,14 +443,14 @@ export class WorkspaceService {
   }
 
   async destroy(projectId: string): Promise<WorkspaceRow> {
-    const workspace = this.requireKnown(projectId);
-    if (workspace.machineId !== null && workspace.observedState !== 'destroyed') {
-      await providerFor(this.options).kill(workspace.machineId);
-      if (this.options.config.liveBudgetFile !== null) {
-        recordInstaboxRelease(this.options.config.liveBudgetFile, workspace.machineId);
-      }
-    }
-    markWorkspaceDestroyed(this.options.db, projectId);
+    // The shared destroy path closes every recorded desktop/preview stream
+    // and tunnel BEFORE the machine dies, then records the release.
+    await destroyRecordedWorkspace({
+      db: this.options.db,
+      provider: providerFor(this.options),
+      ledgerFile: this.options.config.liveBudgetFile,
+      projectId,
+    });
     return this.status(projectId);
   }
 
@@ -396,7 +487,7 @@ export class WorkspaceService {
     const session = insertPreviewSession(this.options.db, projectId, guestPort, 60_000);
     if (workspaceProviderForTests() === null && workspace.machineId !== null) {
       const tunnel = await this.openFixedTunnel(workspace.machineId, guestPort);
-      previewTunnels.set(session.id, tunnel);
+      registerPreviewTunnel(session.id, tunnel);
       setPreviewLocalPort(this.options.db, projectId, session.id, tunnel.localPort);
     }
     return {
@@ -408,11 +499,7 @@ export class WorkspaceService {
 
   async stopPreview(projectId: string, sessionId: string): Promise<void> {
     this.requireKnown(projectId);
-    const tunnel = previewTunnels.get(sessionId);
-    if (tunnel !== undefined) {
-      previewTunnels.delete(sessionId);
-      await tunnel.stop();
-    }
+    await stopPreviewTunnel(sessionId);
     stopPreviewSession(this.options.db, projectId, sessionId);
   }
 

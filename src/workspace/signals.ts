@@ -26,3 +26,29 @@ export function processListCommand(pid: number): string | null {
   if (!validPid(pid)) return null;
   return `ps -o pid= -g ${pid}`;
 }
+
+/** Fixed generated command id: the only shape the discovery marker accepts. */
+function validCommandId(commandId: string): boolean {
+  return /^cmd_[0-9a-f-]{36}$/.test(commandId);
+}
+
+/**
+ * Fixed pgrep for one supervised foreground command's marker. Found pids
+ * are the launcher-chain processes of that command; their process groups
+ * are resolved next (processGroupIdsCommand). Null for an invalid id.
+ */
+export function foregroundPidsCommand(commandId: string): string | null {
+  if (!validCommandId(commandId)) return null;
+  return `pgrep -f -- ${foregroundMarkerPattern(commandId)}`;
+}
+
+/** Read-only pgid listing for validated pids, or null for any invalid pid. */
+export function processGroupIdsCommand(pids: number[]): string | null {
+  if (pids.length === 0 || !pids.every(validPid)) return null;
+  return `ps -o pid=,pgid= -p ${pids.join(',')}`;
+}
+
+/** Marker match pattern — the id is fixed-charset, so it is literal-safe. */
+function foregroundMarkerPattern(commandId: string): string {
+  return `'RANGER_CCMD=${commandId}'`;
+}
