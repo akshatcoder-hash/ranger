@@ -11,9 +11,14 @@ import { AppError, Errors } from '../errors.js';
  *   plus a conservative estimate stays at or below the $4 soft admission stop.
  *   The remaining $1 is reserve for in-flight/accounting uncertainty.
  * - Instabox: at most six additional VM creations, one at a time, each with a
- *   server-side kill timeout of at most 600 s and early cleanup.
+ *   server-side kill timeout of at most 600 s and early cleanup. Outstanding
+ *   (pending) reservations count against both the concurrency and total caps
+ *   until they are confirmed or released, and the requested kill timeout is
+ *   validated at reserve time, before any provider create can be attempted.
  * - The ledger is consumed, never reset: writes preserve unknown fields and
  *   append to the operation history. Refusals write nothing.
+ * - Ledger-configured limits may only lower the approved ceilings; missing,
+ *   negative, non-finite or inflated limits fail closed (refuse admission).
  * - When accounting is uncertain, refuse: stop paid work and report.
  *
  * All mutations happen under an exclusive lock file next to the ledger so
@@ -48,6 +53,15 @@ export interface LedgerMachine {
   purpose?: string;
 }
 
+export interface InstaboxPendingReservation {
+  reservationId: string;
+  ts: number;
+  feature: string;
+  purpose?: string;
+  /** Validated at reserve time; the sandbox must be created with this value. */
+  killTimeoutMs: number;
+}
+
 export interface BudgetLedgerData {
   version: number;
   xai: {
@@ -63,6 +77,8 @@ export interface BudgetLedgerData {
     maxLifetimeSeconds: number;
     additionalCreations: number;
     machines: LedgerMachine[];
+    /** Optional for backward compatibility with ledgers written before it existed. */
+    pendingReservations?: InstaboxPendingReservation[];
   };
   [key: string]: unknown;
 }
@@ -169,22 +185,72 @@ export function writeLedger(ledgerFile: string, data: BudgetLedgerData): void {
   renameSync(tmp, ledgerFile);
 }
 
+function isFinitePositive(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+/**
+ * Ledger-configured limits may be LOWERED by the file's operator but never
+ * raised above the approved mission ceilings. Missing, negative, non-finite
+ * or inflated values fail closed: admission refuses rather than guessing.
+ */
 function requireXai(data: BudgetLedgerData): BudgetLedgerData['xai'] {
-  if (
-    data.xai === undefined ||
-    typeof data.xai.observedUsd !== 'number' ||
-    typeof data.xai.reservedUsd !== 'number'
-  ) {
-    throw new BudgetLedgerError('Ledger xai section is malformed', { ledger: 'malformed' });
+  if (data.xai === undefined) {
+    throw new BudgetLedgerError('Ledger xai section is malformed', { ledger: 'malformed', section: 'xai' });
   }
-  return data.xai;
+  const xai = data.xai;
+  const malformed =
+    !isFinitePositive(xai.limitUsd) ||
+    xai.limitUsd > XAI_TOTAL_LIMIT_USD ||
+    !isFinitePositive(xai.softAdmissionUsd) ||
+    xai.softAdmissionUsd > XAI_SOFT_ADMISSION_USD ||
+    xai.softAdmissionUsd > xai.limitUsd ||
+    typeof xai.observedUsd !== 'number' ||
+    !Number.isFinite(xai.observedUsd) ||
+    xai.observedUsd < 0 ||
+    typeof xai.reservedUsd !== 'number' ||
+    !Number.isFinite(xai.reservedUsd) ||
+    xai.reservedUsd < 0 ||
+    !Array.isArray(xai.operations);
+  if (malformed) {
+    throw new BudgetLedgerError(
+      'Ledger xai section is malformed or exceeds approved limits; admission refuses rather than guesses',
+      { ledger: 'malformed', section: 'xai' },
+    );
+  }
+  return xai;
 }
 
 function requireInstabox(data: BudgetLedgerData): BudgetLedgerData['instabox'] {
-  if (data.instabox === undefined || typeof data.instabox.additionalCreations !== 'number') {
-    throw new BudgetLedgerError('Ledger instabox section is malformed', { ledger: 'malformed' });
+  if (data.instabox === undefined) {
+    throw new BudgetLedgerError('Ledger instabox section is malformed', { ledger: 'malformed', section: 'instabox' });
   }
-  return data.instabox;
+  const instabox = data.instabox;
+  const malformed =
+    !isNonNegativeInteger(instabox.maxAdditionalCreations) ||
+    instabox.maxAdditionalCreations > INSTABOX_MAX_ADDITIONAL_CREATIONS ||
+    !isNonNegativeInteger(instabox.maxConcurrent) ||
+    instabox.maxConcurrent > INSTABOX_MAX_CONCURRENT ||
+    !isFinitePositive(instabox.maxLifetimeSeconds) ||
+    instabox.maxLifetimeSeconds > INSTABOX_MAX_LIFETIME_SECONDS ||
+    !isNonNegativeInteger(instabox.additionalCreations) ||
+    !Array.isArray(instabox.machines) ||
+    (instabox.pendingReservations !== undefined && !Array.isArray(instabox.pendingReservations));
+  if (malformed) {
+    throw new BudgetLedgerError(
+      'Ledger instabox section is malformed or exceeds approved limits; admission refuses rather than guesses',
+      { ledger: 'malformed', section: 'instabox' },
+    );
+  }
+  return instabox;
+}
+
+function pendingReservations(instabox: BudgetLedgerData['instabox']): InstaboxPendingReservation[] {
+  return instabox.pendingReservations ?? [];
 }
 
 export interface XaiAdmission {
@@ -297,86 +363,152 @@ export function releaseXaiReservation(ledgerFile: string, reservationId: string)
 
 export interface InstaboxCreationReservation {
   reservationId: string;
+  /** Validated requested kill timeout; create the sandbox with exactly this value. */
+  killTimeoutMs: number;
 }
 
 /**
  * Reserve an Instabox VM creation slot against the mission allowance
- * (max additional creations, one concurrent machine).
+ * (max additional creations, one concurrent machine). The requested kill
+ * timeout is validated HERE, before any provider create can be attempted
+ * against this reservation, and outstanding reservations count against both
+ * caps until they are confirmed or released.
  */
 export function reserveInstaboxCreation(
   ledgerFile: string,
-  input: { feature: string; purpose?: string },
+  input: { feature: string; purpose?: string; killTimeoutMs: number },
 ): InstaboxCreationReservation {
   return withLedgerLock(ledgerFile, () => {
     const data = readLedger(ledgerFile);
     const instabox = requireInstabox(data);
-    const active = instabox.machines.filter((m) => m.releasedAt === undefined || m.releasedAt === null);
-    if (active.length >= instabox.maxConcurrent) {
-      throw new BudgetLedgerError('An Instabox machine is already active; one at a time', {
-        maxConcurrent: instabox.maxConcurrent,
-        activeMachines: active.length,
+    const { killTimeoutMs } = input;
+    if (typeof killTimeoutMs !== 'number' || !Number.isInteger(killTimeoutMs) || killTimeoutMs <= 0) {
+      throw new BudgetLedgerError('Requested kill timeout must be a positive whole number of milliseconds', {
+        killTimeoutMs: null,
       });
     }
-    if (instabox.additionalCreations >= instabox.maxAdditionalCreations) {
+    if (killTimeoutMs > instabox.maxLifetimeSeconds * 1000) {
+      throw new BudgetLedgerError('Requested kill timeout exceeds the approved maximum', {
+        killTimeoutMs: null,
+        maxLifetimeSeconds: instabox.maxLifetimeSeconds,
+      });
+    }
+    const pending = pendingReservations(instabox);
+    const activeMachines = instabox.machines.filter(
+      (m) => m.releasedAt === undefined || m.releasedAt === null,
+    );
+    if (activeMachines.length + pending.length >= instabox.maxConcurrent) {
+      throw new BudgetLedgerError('An Instabox machine is already active or reserved; one at a time', {
+        maxConcurrent: instabox.maxConcurrent,
+        activeMachines: activeMachines.length,
+        pendingReservations: pending.length,
+      });
+    }
+    if (instabox.additionalCreations + pending.length >= instabox.maxAdditionalCreations) {
       throw new BudgetLedgerError(
         'Instabox additional creation allowance is exhausted; stop and report',
         {
           maxAdditionalCreations: instabox.maxAdditionalCreations,
           additionalCreations: instabox.additionalCreations,
+          pendingReservations: pending.length,
         },
       );
     }
     const reservationId = `ibx-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    instabox.pendingReservations = [
+      ...pending,
+      {
+        reservationId,
+        ts: Date.now(),
+        feature: input.feature,
+        purpose: input.purpose,
+        killTimeoutMs,
+      },
+    ];
     recordOperation(data, {
       id: reservationId,
       provider: 'instabox',
       kind: 'reserve',
       feature: input.feature,
+      killTimeoutMs,
       note: input.purpose,
     });
     writeLedger(ledgerFile, data);
-    return { reservationId };
+    return { reservationId, killTimeoutMs };
   });
 }
 
-/** Confirm a creation actually happened: consumes allowance and records the machine. */
+/**
+ * Confirm a creation actually happened: consumes allowance and records the
+ * machine. Requires an outstanding reservation, so unknown, already-confirmed
+ * or released reservations can never fabricate or double count a creation.
+ * The recorded kill timeout is the one validated at reserve time, so a
+ * timeout violation can no longer throw here after the machine exists: the
+ * machine record, counter increment and pending removal commit atomically in
+ * one ledger write. If the write fails transiently the reservation stays
+ * pending and confirmation can be retried — the real machine is never hidden.
+ */
 export function confirmInstaboxCreation(
   ledgerFile: string,
-  input: { reservationId: string; machineId: string; killTimeoutMs: number; purpose?: string },
+  input: { reservationId: string; machineId: string; purpose?: string },
 ): BudgetLedgerData['instabox'] {
   return withLedgerLock(ledgerFile, () => {
     const data = readLedger(ledgerFile);
     const instabox = requireInstabox(data);
-    if (input.killTimeoutMs > instabox.maxLifetimeSeconds * 1000) {
-      throw new BudgetLedgerError('Machine kill timeout exceeds the documented maximum', {
-        killTimeoutMs: input.killTimeoutMs,
-        maxLifetimeSeconds: instabox.maxLifetimeSeconds,
+    const pending = pendingReservations(instabox);
+    const index = pending.findIndex((r) => r.reservationId === input.reservationId);
+    if (index === -1) {
+      throw new BudgetLedgerError(
+        'Instabox confirmation requires an outstanding reservation; unknown or already-settled reservations cannot record a creation',
+        { reservationId: 'unknown' },
+      );
+    }
+    const reservation = pending[index];
+    if (reservation === undefined) {
+      throw new BudgetLedgerError('Instabox confirmation requires an outstanding reservation', {
+        reservationId: 'unknown',
       });
     }
+    if (typeof input.machineId !== 'string' || input.machineId.length === 0) {
+      throw new BudgetLedgerError('Confirmed machine id must be a non-empty string', { machineId: 'invalid' });
+    }
+    pending.splice(index, 1);
+    instabox.pendingReservations = pending;
     instabox.additionalCreations += 1;
     instabox.machines.push({
       machineId: input.machineId,
       createdAt: Date.now(),
-      killTimeoutMs: input.killTimeoutMs,
-      purpose: input.purpose,
+      killTimeoutMs: reservation.killTimeoutMs,
+      purpose: input.purpose ?? reservation.purpose,
     });
     recordOperation(data, {
       id: input.reservationId,
       provider: 'instabox',
       kind: 'creation',
-      feature: 'instabox',
+      feature: reservation.feature,
       machineId: input.machineId,
-      killTimeoutMs: input.killTimeoutMs,
+      killTimeoutMs: reservation.killTimeoutMs,
+      note: input.purpose,
     });
     writeLedger(ledgerFile, data);
     return instabox;
   });
 }
 
-/** Release a creation reservation that did NOT result in a machine. */
+/**
+ * Release a creation reservation that did NOT result in a machine, freeing
+ * its concurrency and allowance slot. Unknown or already-settled
+ * reservations are a no-op (nothing was reserved, so nothing is written).
+ */
 export function releaseInstaboxReservation(ledgerFile: string, reservationId: string): void {
   withLedgerLock(ledgerFile, () => {
     const data = readLedger(ledgerFile);
+    const instabox = requireInstabox(data);
+    const pending = pendingReservations(instabox);
+    const index = pending.findIndex((r) => r.reservationId === reservationId);
+    if (index === -1) return;
+    pending.splice(index, 1);
+    instabox.pendingReservations = pending;
     recordOperation(data, {
       id: reservationId,
       provider: 'instabox',
