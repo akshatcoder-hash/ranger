@@ -1,0 +1,75 @@
+{
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "projectId",
+    "runId",
+    "sessionId",
+    "timestamp",
+    "sequence",
+    "requestId",
+    "type",
+    "data"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "enum": [
+        1
+      ]
+    },
+    "eventId": {
+      "type": "string",
+      "pattern": "^evt_[0-9a-fA-F-]+$"
+    },
+    "projectId": {
+      "type": "string",
+      "pattern": "^prj_[0-9a-fA-F-]+$"
+    },
+    "runId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sessionId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Strictly increasing per-project sequence"
+    },
+    "requestId": {
+      "type": "string",
+      "description": "Request id that produced the event (replay: originating request)"
+    },
+    "type": {
+      "type": "string",
+      "description": "Stable event type name"
+    },
+    "data": {
+      "type": "object",
+      "required": [],
+      "properties": {},
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}
