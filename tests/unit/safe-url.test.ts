@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { redactRequestUrl, safeRequestLogFields } from '../../src/http/safe-url.js';
+import { redactRequestUrl, redactTopLevelUrlFields, safeRequestLogFields } from '../../src/http/safe-url.js';
 
 const TICKET = 'tkt_unit-secret-value-must-not-appear';
 const CURSOR = 'eyJ2IjoxLCJzZXEiOjF9';
@@ -42,5 +42,22 @@ describe('safe request URL serialization', () => {
     expect(redactRequestUrl(message)).toContain('/missing');
     expect(redactRequestUrl('/health')).toBe('/health');
     expect(redactRequestUrl('/v1/projects?limit=10')).toBe('/v1/projects?limit=10');
+  });
+
+  it('redacts top-level path and url fields without touching unrelated bindings', () => {
+    const raw = `/health?ticket=${TICKET}&cursor=${CURSOR}`;
+    const merging = [{ path: raw, url: raw, reqId: 'keep', nested: { path: raw } }, 'closed incoming websocket connection'];
+    const redacted = redactTopLevelUrlFields(merging);
+    const fields = redacted[0] as { path: string; url: string; reqId: string; nested: { path: string } };
+    expect(fields.path).toContain('/health');
+    expect(fields.path).toContain('ticket=%5Bredacted%5D');
+    expect(fields.path).toContain(`cursor=${encodeURIComponent(CURSOR)}`);
+    expect(fields.url).toBe(fields.path);
+    expect(fields.reqId).toBe('keep');
+    expect(fields.nested.path).toBe(raw);
+    expect(redacted[1]).toBe(merging[1]);
+    expect(JSON.stringify(redacted).includes(TICKET)).toBe(true);
+    expect(fields.path.includes(TICKET)).toBe(false);
+    expect(fields.url.includes(TICKET)).toBe(false);
   });
 });

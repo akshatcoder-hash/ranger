@@ -2,10 +2,11 @@
  * Safe serialization of request URLs for logs and error payloads.
  *
  * Connection tickets are short-lived secrets carried as a query parameter
- * on WebSocket upgrades. Fastify's default request serializer copies
- * `req.url` verbatim, and header redaction does not touch that string.
- * Both the API and the preview gateway must share this helper so a ticket
- * never appears in an info log or an unknown-route body.
+ * on WebSocket upgrades. Fastify's request serializer covers fields logged
+ * as `req`, but framework and plugin calls also put the raw URL on the log
+ * object itself (`path`, `url`) or inside a message. Header redaction does
+ * not touch those strings. Both the API and the preview gateway share this
+ * helper so a ticket never appears in an info log or an unknown-route body.
  */
 
 const REDACTED_QUERY_VALUE = '[redacted]';
@@ -51,6 +52,38 @@ export function redactRequestUrl(url: string): string {
   return redacted.replace(/([?&]ticket=)[^&#\s]*/gi, `$1${encodeURIComponent(REDACTED_QUERY_VALUE)}`);
 }
 
+/**
+ * Copy a log merging object and redact only its top-level `path` and `url`.
+ *
+ * @fastify/websocket `noHandle` logs `{ path: rawRequest.url }` on the parent
+ * logger, which never runs the `req` serializer. Fastify's own 404 and reply
+ * warnings also interpolate `request.url` / `raw.url` into the message.
+ * Nested objects stay untouched so the `req` serializer and header redaction
+ * remain the only writers of those fields.
+ */
+export function redactTopLevelUrlFields(args: unknown[]): unknown[] {
+  const head = args[0];
+  if (head === null || typeof head !== 'object' || Array.isArray(head)) return args;
+  const record = head as Record<string, unknown>;
+  let next: Record<string, unknown> | undefined;
+  for (const key of ['path', 'url'] as const) {
+    const value = record[key];
+    if (typeof value !== 'string' || !value.includes('?')) continue;
+    const redacted = redactRequestUrl(value);
+    if (redacted === value) continue;
+    next ??= { ...record };
+    next[key] = redacted;
+  }
+  if (next === undefined) return args;
+  return [next, ...args.slice(1)];
+}
+
+/** Redact ticket assignments that a log message interpolated from a raw URL. */
+export function redactLogMessage(message: unknown): unknown {
+  if (typeof message !== 'string' || !message.toLowerCase().includes('ticket=')) return message;
+  return redactRequestUrl(message);
+}
+
 /** Structural request fields the serializer actually reads. */
 export interface SafeRequestLogInput {
   method?: string;
@@ -84,6 +117,8 @@ export function safeRequestLogFields(req: SafeRequestLogInput): {
 /**
  * Logger options shared by the API and the preview gateway.
  * The serializer accepts Fastify's request object; only url/method/host are read.
+ * The log hook also redacts top-level path/url fields and ticket assignments
+ * in messages, which the req serializer never sees. Header redaction stays.
  */
 export function secretSafeLoggerOptions(level: string): {
   level: string;
@@ -97,6 +132,9 @@ export function secretSafeLoggerOptions(level: string): {
       headers?: Record<string, unknown>;
       socket?: { remotePort?: number };
     }) => ReturnType<typeof safeRequestLogFields>;
+  };
+  hooks: {
+    logMethod: (args: unknown[], method: (...methodArgs: unknown[]) => void) => void;
   };
 } {
   return {
@@ -112,6 +150,12 @@ export function secretSafeLoggerOptions(level: string): {
     },
     serializers: {
       req: (req) => safeRequestLogFields(req),
+    },
+    hooks: {
+      logMethod(args, method) {
+        const [merging, message, ...rest] = redactTopLevelUrlFields(args);
+        method.apply(this, [merging, redactLogMessage(message), ...rest]);
+      },
     },
   };
 }

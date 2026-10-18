@@ -123,7 +123,9 @@ one-time `csrfToken` is returned. Each session is revoked on its own;
 revoking the API token does not revoke sessions already created from it.
 Cookie-authenticated mutations require a same-origin `Origin` header or the
 `x-ranger-csrf` token header. Request logs redact connection-ticket query
-values; unknown-route errors do not echo them.
+values, including the top-level `path`/`url` a websocket plugin logs when
+an upgrade hits an ordinary HTTP route. Unknown-route errors do not echo
+them. Header redaction is unchanged.
 Realtime surfaces use `POST /v1/auth/connection-tickets` — single-use,
 60-second tickets bound to principal, project, purpose and origin; revoking
 the issuing token or session immediately invalidates its tickets. Projects,

@@ -12,8 +12,12 @@ new revocation policy.
 
 - Request logs redact connection-ticket query values on WebSocket upgrades
   (accepted and rejected) while keeping method, path and non-secret query
-  parameters. Unknown-route and preview error payloads do not echo a
-  `ticket` query. Header redaction is unchanged.
+  parameters. The shared logger also redacts top-level `path` and `url`
+  fields, so a ticketed upgrade to an ordinary HTTP route (logged by the
+  websocket plugin as `{ path: rawUrl }`, outside the request serializer)
+  keeps the plugin diagnostic and the path, with the ticket value replaced.
+  Unknown-route and preview error payloads do not echo a `ticket` query.
+  Header redaction is unchanged.
 - `createBrowserSession` already requires principal authentication (bearer
   or an existing session cookie) in addition to the body `apiToken`. The
   guide and operation summary now say so. A browser session remains an

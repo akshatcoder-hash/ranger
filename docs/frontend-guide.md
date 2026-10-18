@@ -56,8 +56,9 @@ Ranger.
    purpose (`events`, `voice-relay`, `desktop-stream`, `app-preview`) and
    origin. Tickets are short-lived (60 s) and single-use; pass them as the
    `ticket` query parameter on WebSocket upgrades. The server redacts that
-   query value from request logs and from unknown-route error payloads; do
-   not log it in the browser either. Revoking the issuing API token or
+   query value from request logs (including the top-level path logged when
+   an upgrade hits an ordinary HTTP route) and from unknown-route error
+   payloads; do not log it in the browser either. Revoking the issuing API token or
    browser session immediately invalidates its outstanding tickets. It does
    not revoke other sessions that happen to have been created while that
    token was still valid.

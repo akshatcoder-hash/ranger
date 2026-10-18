@@ -13,9 +13,12 @@ import { RangerClient } from '../../src/clients/ranger-client.js';
  *   creating a file, and still writes a mode-0600 credential outside;
  * - an info-level API process redacts ticket query values on both a
  *   successful events upgrade and a rejected one, and unknown-route bodies
- *   do not echo the ticket.
+ *   do not echo the ticket;
+ * - ticketed upgrades to ordinary HTTP routes still emit the websocket
+ *   plugin diagnostic, with the ticket absent from the top-level path field.
  *
  * Secrets are compared in-process and never written into assertions.
+ * Absence checks are booleans so a failure cannot print the credential.
  */
 
 const REPO = process.cwd();
@@ -122,12 +125,18 @@ describe('compiled bootstrap credential containment', () => {
 describe('info-level request logs redact connection tickets', () => {
   const port = 3908;
   const base = `http://127.0.0.1:${port}`;
-  let api: ChildProcess;
+  let api: ChildProcess | undefined;
   let logs = '';
   let client: RangerClient;
+  let bearer = '';
   let projectId = '';
 
   async function start(): Promise<void> {
+    if (api !== undefined && api.exitCode === null) {
+      api.kill('SIGKILL');
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    logs = '';
     const dataDir = mkdtempSync(path.join(tmpdir(), 'ranger-log-api-'));
     writeFileSync(path.join(dataDir, '.keep'), '');
     api = spawn('node', ['dist/src/entrypoints/api.js'], {
@@ -155,7 +164,8 @@ describe('info-level request logs redact connection tickets', () => {
     );
     expect(boot.code, boot.stderr).toBe(0);
     const secret = readFileSync(path.join(dataDir, 'bootstrap-credential.txt'), 'utf8').trim().split('=')[1]!;
-    client = new RangerClient({ baseUrl: base, headers: { authorization: `Bearer ${secret}` } });
+    bearer = `Bearer ${secret}`;
+    client = new RangerClient({ baseUrl: base, headers: { authorization: bearer } });
     const project = await client.createProject({ body: { name: 'Log Project', engineerDisplayName: 'Ranger' } });
     projectId = project.project.projectId;
   }
@@ -240,8 +250,51 @@ describe('info-level request logs redact connection tickets', () => {
     expect(logs).toContain('incoming request');
     expect(logs).toContain('/v1/projects/');
     expect(logs).toContain('events/subscribe');
-    expect(logs).not.toContain(ticket);
-    expect(logs).not.toContain(rejectedTicket);
+    expect(logs.includes(ticket)).toBe(false);
+    expect(logs.includes(rejectedTicket)).toBe(false);
     expect(logs).toContain('ticket=%5Bredacted%5D');
+  });
+
+  it('redacts top-level path on ticketed upgrades to ordinary HTTP routes', async () => {
+    await start();
+    const issued = await client.createConnectionTicket({ body: { projectId, purpose: 'events' } });
+    const ticket = issued.ticket;
+    expect(ticket.startsWith('tkt_')).toBe(true);
+
+    const targets = [
+      `/health?ticket=${encodeURIComponent(ticket)}`,
+      `/v1/openapi.json?ticket=${encodeURIComponent(ticket)}&limit=1`,
+      `/v1/projects/${projectId}?ticket=${encodeURIComponent(ticket)}`,
+    ];
+    for (const target of targets) {
+      const socket = new WebSocket(`ws://127.0.0.1:${port}${target}`);
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => resolve(), 8000);
+        const done = (): void => {
+          clearTimeout(timer);
+          resolve();
+        };
+        socket.once('close', done);
+        socket.once('error', done);
+      });
+    }
+
+    const authed = await client.getProject({ path: { projectId } });
+    expect(authed.project.projectId).toBe(projectId);
+    expect(bearer.startsWith('Bearer ')).toBe(true);
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(logs).toContain('closed incoming websocket connection for path with no websocket handler');
+    expect(logs).toContain('/health');
+    expect(logs).toContain('/v1/openapi.json');
+    expect(logs).toContain(`/v1/projects/${projectId}`);
+    expect(logs).toContain('ticket=%5Bredacted%5D');
+    expect(logs).toContain('limit=1');
+    expect(logs.includes(ticket)).toBe(false);
+    // Header redaction still censors the bearer on the ordinary authenticated GET.
+    // Fastify omits absent headers, so the censor string is not required on the
+    // req object; the URL censor is percent-encoded by the shared serializer.
+    expect(logs.includes(bearer)).toBe(false);
+    expect(logs.includes('%5Bredacted%5D')).toBe(true);
   });
 });
