@@ -35,8 +35,6 @@ async function makeApp(env: Record<string, string>, existingDataDir?: string): P
 const FAMILY_SAMPLES: Record<string, { method: 'GET' | 'POST'; url: string; body?: Record<string, unknown> }> = {
   voice: { method: 'POST', url: `/v1/projects/${PRJ}/voice/sessions`, body: { conversationId: CNV } },
   capture: { method: 'POST', url: `/v1/projects/${PRJ}/capture/sessions`, body: {} },
-  'plans-approvals': { method: 'GET', url: `/v1/projects/${PRJ}/plans` },
-  runs: { method: 'GET', url: `/v1/projects/${PRJ}/runs` },
 };
 
 /** Families with real handlers now: unauthenticated requests get unauthorized, not not_configured. */
@@ -47,6 +45,8 @@ const IMPLEMENTED_FAMILY_SAMPLES: Record<string, { method: 'GET' | 'POST'; url: 
   'conversations-requirements': { method: 'GET', url: `/v1/projects/${PRJ}/conversations` },
   events: { method: 'GET', url: `/v1/projects/${PRJ}/events` },
   workspace: { method: 'GET', url: `/v1/projects/${PRJ}/workspace/status` },
+  'plans-approvals': { method: 'GET', url: `/v1/projects/${PRJ}/plans` },
+  runs: { method: 'GET', url: `/v1/projects/${PRJ}/runs` },
   'desktop-preview': { method: 'POST', url: `/v1/projects/${PRJ}/desktop/sessions`, body: {} },
   retrieval: { method: 'GET', url: `/v1/projects/${PRJ}/retrieval/status` },
 };

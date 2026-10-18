@@ -177,14 +177,14 @@ export function listAllSourceFiles(db: DatabaseSync, projectId: string): Array<{
   return rows.map((row) => ({ path: row.relative_path, content: Buffer.from(row.content) }));
 }
 
-export function insertCommand(db: DatabaseSync, input: { projectId: string; argv: string[]; state: CommandRow['state']; pid: number | null; logs: string; exitCode: number | null; timedOut: boolean }): CommandRow {
+export function insertCommand(db: DatabaseSync, input: { projectId: string; argv: string[]; state: CommandRow['state']; pid: number | null; logs: string; exitCode: number | null; timedOut: boolean; runId?: string | null; isTest?: boolean }): CommandRow {
   const id = `cmd_${randomUUID()}`;
   const now = Date.now();
   const logs = input.logs.length > COMMAND_OUTPUT_CAP_BYTES ? input.logs.slice(0, COMMAND_OUTPUT_CAP_BYTES) : input.logs;
   const truncated = input.logs.length > COMMAND_OUTPUT_CAP_BYTES ? 1 : 0;
   db.prepare(
-    `INSERT INTO workspace_commands (id, project_id, argv_json, state, exit_code, timed_out, pid, logs, log_bytes, truncated, started_at, finished_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO workspace_commands (id, project_id, argv_json, state, exit_code, timed_out, pid, logs, log_bytes, truncated, started_at, finished_at, run_id, is_test)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.projectId,
@@ -198,10 +198,54 @@ export function insertCommand(db: DatabaseSync, input: { projectId: string; argv
     truncated,
     now,
     input.state === 'running' ? null : now,
+    input.runId ?? null,
+    input.isTest === true ? 1 : 0,
   );
   const created = getCommand(db, input.projectId, id);
   if (created === null) throw Errors.internal('Command insert did not persist');
   return created;
+}
+
+/** Commands attributed to one run (real logs and exit codes). */
+export function listCommandsForRun(db: DatabaseSync, runId: string): CommandRow[] {
+  const rows = mapRows<{ id: string; project_id: string; argv_json: string; state: string; exit_code: number | null; timed_out: number; pid: number | null; logs: string; log_bytes: number; truncated: number; started_at: number; finished_at: number | null }>(
+    db.prepare('SELECT * FROM workspace_commands WHERE run_id = ? ORDER BY started_at, id').all(runId),
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    projectId: row.project_id,
+    argv: JSON.parse(row.argv_json) as string[],
+    state: row.state as CommandRow['state'],
+    exitCode: row.exit_code,
+    timedOut: row.timed_out === 1,
+    pid: row.pid,
+    logs: row.logs,
+    logBytes: row.log_bytes,
+    truncated: row.truncated === 1,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+  }));
+}
+
+/** Persisted test-outcome rows (run_tests commands) for the tests read. */
+export function listTestCommandRows(db: DatabaseSync, projectId: string): CommandRow[] {
+  const rows = mapRows<{ id: string; project_id: string; argv_json: string; state: string; exit_code: number | null; timed_out: number; pid: number | null; logs: string; log_bytes: number; truncated: number; started_at: number; finished_at: number | null }>(
+    db.prepare('SELECT * FROM workspace_commands WHERE project_id = ? AND is_test = 1 ORDER BY started_at DESC, id DESC LIMIT 100').all(projectId),
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    projectId: row.project_id,
+    argv: JSON.parse(row.argv_json) as string[],
+    state: row.state as CommandRow['state'],
+    exitCode: row.exit_code,
+    timedOut: row.timed_out === 1,
+    pid: row.pid,
+    logs: row.logs,
+    logBytes: row.log_bytes,
+    truncated: row.truncated === 1,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+  }));
 }
 
 export function getCommand(db: DatabaseSync, projectId: string, commandId: string): CommandRow | null {

@@ -51,6 +51,8 @@ export interface CodingLoopOptions {
   deadlineMs?: number;
   /** Checked before each provider call and each tool execution. */
   isCancelled?: () => boolean;
+  /** Called once per tool outcome as it happens (durable progress records). */
+  onToolOutcome?: (outcome: CodingToolOutcome) => void;
 }
 
 export interface CodingToolOutcome {
@@ -251,19 +253,25 @@ export async function runCodingLoop(options: CodingLoopOptions): Promise<CodingL
         await options.checker({ projectId: options.projectId, tool: name, args });
       } catch (cause) {
         const denialReason = String(cause instanceof Error ? cause.message : cause).slice(0, 200);
-        toolOutcomes.push({ callId, name, args, status: 'denied', denialReason });
+        const outcome: CodingToolOutcome = { callId, name, args, status: 'denied', denialReason };
+        toolOutcomes.push(outcome);
+        options.onToolOutcome?.(outcome);
         input = [...input, functionOutputItem(callId, { status: 'denied', reason: denialReason })];
         continue;
       }
 
       try {
         const outcome = await options.runner.run(() => tool.execute(args));
-        toolOutcomes.push({ callId, name, args, status: 'ok', result: outcome });
+        const okOutcome: CodingToolOutcome = { callId, name, args, status: 'ok', result: outcome };
+        toolOutcomes.push(okOutcome);
+        options.onToolOutcome?.(okOutcome);
         input = [...input, functionOutputItem(callId, { status: 'ok', ...outcome })];
       } catch (cause) {
         // A real tool failure ends the run explicitly: no retry engine.
         const message = String(cause instanceof Error ? cause.message : cause).slice(0, 300);
-        toolOutcomes.push({ callId, name, args, status: 'error', errorMessage: message });
+        const errorOutcome: CodingToolOutcome = { callId, name, args, status: 'error', errorMessage: message };
+        toolOutcomes.push(errorOutcome);
+        options.onToolOutcome?.(errorOutcome);
         input = [...input, functionOutputItem(callId, { status: 'error', error: message })];
         return failure(input, toolOutcomes, turns, usage, 'tool_error', message);
       }

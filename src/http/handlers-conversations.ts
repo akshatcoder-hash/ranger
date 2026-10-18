@@ -11,6 +11,7 @@ import {
   encodeMessageCursor,
   getConversationRow,
   getQuestionRow,
+  listAnswerRows,
   listConversationRows,
   listMessageRows,
   listVersionedThreads,
@@ -223,6 +224,26 @@ export function registerConversationHandlers(ctx: HandlerContext, handlers: Map<
       });
       return { question: questionPayload(row) };
     });
+  });
+
+  handlers.set('listQuestions', async (req: FastifyRequest) => {
+    const principalId = requirePrincipalId(req);
+    const params = req.params as { projectId: string; conversationId: string };
+    requireMembership(db, params.projectId, principalId);
+    requireConversation(db, params.projectId, params.conversationId);
+    const rows = db
+      .prepare('SELECT id, conversation_id, prompt, created_at FROM questions WHERE conversation_id = ? ORDER BY created_at, id')
+      .all(params.conversationId) as Array<{ id: string; conversation_id: string; prompt: string; created_at: number }>;
+    return {
+      questions: rows.map((row) => ({
+        questionId: row.id,
+        conversationId: row.conversation_id,
+        prompt: row.prompt,
+        createdAt: iso(row.created_at),
+        answers: listAnswerRows(db, row.id).map((answer) => answerPayload(answer)),
+      })),
+      nextCursor: null,
+    };
   });
 
   handlers.set('answerQuestion', async (req: FastifyRequest) => {

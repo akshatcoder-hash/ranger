@@ -97,7 +97,26 @@ export function registerRepositoryHandlers(ctx: HandlerContext, handlers: Map<st
     const principalId = requirePrincipalId(req);
     const params = req.params as { projectId: string };
     requireMembership(db, params.projectId, principalId);
-    disconnectRepository(db, params.projectId);
+    // Idempotent, and the removal + its event commit atomically: a retry
+    // replays with no second event, and the record fields are captured
+    // before the delete inside the same transaction.
+    runScopedMutation(db, req, 'disconnectRepository', params.projectId, () => {
+      const record = getRepositoryRecord(db, params.projectId);
+      if (record === null) return {};
+      disconnectRepository(db, params.projectId);
+      appendProjectEvent(db, {
+        projectId: params.projectId,
+        type: 'repository.disconnected',
+        data: {
+          url: record.url,
+          ref: record.ref,
+          commit: record.commit,
+          checkoutPath: record.checkoutPath,
+        },
+        requestId: req.id,
+      });
+      return {};
+    });
     return {};
   });
 }

@@ -151,8 +151,19 @@ export function registerWorkspaceHandlers(ctx: HandlerContext, handlers: Map<str
   });
 
   handlers.set('listTestResults', async (req) => {
-    authorize(req);
-    return { testResults: [], nextCursor: null };
+    const projectId = authorize(req);
+    // Real persisted test-outcome commands (run_tests executions): the exit
+    // code is the actual command exit, never a model claim.
+    return {
+      testResults: service.testResults(projectId).map((row) => ({
+        testResultId: row.id,
+        suite: row.argv.join(' '),
+        state: row.state,
+        exitCode: row.exitCode ?? -1,
+        ranAt: iso(row.startedAt),
+      })),
+      nextCursor: null,
+    };
   });
 
   handlers.set('captureWorkspaceScreenshot', async (req) => {

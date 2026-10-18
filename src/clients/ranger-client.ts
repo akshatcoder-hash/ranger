@@ -18,6 +18,7 @@ import type {
   BrowserSessionListResponse,
   CapabilitiesResponse,
   CaptureSessionResponse,
+  ClarificationResponse,
   ConnectionTicketResponse,
   ConversationListResponse,
   ConversationResponse,
@@ -41,6 +42,7 @@ import type {
   PrincipalResponse,
   ProjectListResponse,
   ProjectResponse,
+  QuestionListResponse,
   QuestionResponse,
   RangerProjectEvent,
   RepositoryResponse,
@@ -53,6 +55,7 @@ import type {
   RetrievalStatusResponse,
   RunListResponse,
   RunResponse,
+  RunToolsResponse,
   TestResultsResponse,
   VoiceSessionResponse,
   VoiceSessionUsageResponse,
@@ -366,6 +369,14 @@ export class RangerClient {
     return this.request<AnswerResponse>('POST', '/v1/projects/{projectId}/conversations/{conversationId}/questions/{questionId}/answers', args as OpArgs);
   }
 
+  /** Read clarification questions with their recorded answers (each answer references its question) */
+  async listQuestions(args: { path: {
+  "projectId": string;
+  "conversationId": string;
+} }): Promise<QuestionListResponse> {
+    return this.request<QuestionListResponse>('GET', '/v1/projects/{projectId}/conversations/{conversationId}/questions', args as OpArgs);
+  }
+
   /** List requirement threads with their version history */
   async listRequirements(args: { path: {
   "projectId": string;
@@ -524,7 +535,7 @@ export class RangerClient {
     return this.request<PlanListResponse>('GET', '/v1/projects/{projectId}/plans', args as OpArgs);
   }
 
-  /** Create the next immutable plan version with concrete items and criteria */
+  /** Create the next immutable plan version with concrete items and criteria (invalidates prior approvals) */
   async createPlanVersion(args: { path: {
   "projectId": string;
 }; body: {
@@ -532,8 +543,27 @@ export class RangerClient {
   "acceptanceCriteria": Array<string>;
   "permittedScope": Array<string>;
   "repositoryCommit"?: string;
+  "impactedPaths"?: Array<string>;
+  "impactedTests"?: Array<string>;
 } }): Promise<PlanResponse> {
     return this.request<PlanResponse>('POST', '/v1/projects/{projectId}/plans', args as OpArgs);
+  }
+
+  /** Generate bounded clarifying questions for a conversation with the real configured model */
+  async generateClarification(args: { path: {
+  "projectId": string;
+  "conversationId": string;
+}; body: Record<string, unknown> }): Promise<ClarificationResponse> {
+    return this.request<ClarificationResponse>('POST', '/v1/projects/{projectId}/conversations/{conversationId}/clarification', args as OpArgs);
+  }
+
+  /** Generate the next concrete plan version from the recorded answers with the real configured model */
+  async generatePlan(args: { path: {
+  "projectId": string;
+}; body: {
+  "conversationId": string;
+} }): Promise<PlanResponse> {
+    return this.request<PlanResponse>('POST', '/v1/projects/{projectId}/plans/generate', args as OpArgs);
   }
 
   /** Read one immutable plan version */
@@ -544,7 +574,7 @@ export class RangerClient {
     return this.request<PlanResponse>('GET', '/v1/projects/{projectId}/plans/{planId}', args as OpArgs);
   }
 
-  /** Approve an exact plan version with a permitted action scope */
+  /** Approve an exact plan version with a permitted sandbox scope */
   async approvePlan(args: { path: {
   "projectId": string;
   "planId": string;
@@ -561,24 +591,24 @@ export class RangerClient {
     return this.request<ApprovalListResponse>('GET', '/v1/projects/{projectId}/approvals', args as OpArgs);
   }
 
-  /** Start an engineering run from an approved plan (durable, async) */
+  /** Start an engineering run from an approved plan version (durable, asynchronous, prompt return) */
   async startRun(args: { path: {
   "projectId": string;
 }; body: {
   "conversationId": string;
-  "approvalId"?: string;
+  "approvalId": string;
 } }): Promise<RunResponse> {
     return this.request<RunResponse>('POST', '/v1/projects/{projectId}/runs', args as OpArgs);
   }
 
-  /** List runs including failed ones */
+  /** List runs including failed and cancelled ones */
   async listRuns(args: { path: {
   "projectId": string;
 } }): Promise<RunListResponse> {
     return this.request<RunListResponse>('GET', '/v1/projects/{projectId}/runs', args as OpArgs);
   }
 
-  /** Read a run record */
+  /** Read a run record (state, failure reason, observed usage) */
   async getRun(args: { path: {
   "projectId": string;
   "runId": string;
@@ -586,7 +616,15 @@ export class RangerClient {
     return this.request<RunResponse>('GET', '/v1/projects/{projectId}/runs/{runId}', args as OpArgs);
   }
 
-  /** Unsupported: VM and run pause are not delivered capabilities */
+  /** List the durable tool records of a run (bounded results, real statuses) */
+  async listRunTools(args: { path: {
+  "projectId": string;
+  "runId": string;
+} }): Promise<RunToolsResponse> {
+    return this.request<RunToolsResponse>('GET', '/v1/projects/{projectId}/runs/{runId}/tools', args as OpArgs);
+  }
+
+  /** Unsupported: run pause is not a delivered capability and is rejected */
   async pauseRun(args: { path: {
   "projectId": string;
   "runId": string;
@@ -594,7 +632,7 @@ export class RangerClient {
     return this.request<RunResponse>('POST', '/v1/projects/{projectId}/runs/{runId}/pause', args as OpArgs);
   }
 
-  /** Unsupported: VM and run resume are not delivered capabilities */
+  /** Unsupported: run resume is not a delivered capability and is rejected */
   async resumeRun(args: { path: {
   "projectId": string;
   "runId": string;
@@ -602,7 +640,7 @@ export class RangerClient {
     return this.request<RunResponse>('POST', '/v1/projects/{projectId}/runs/{runId}/resume', args as OpArgs);
   }
 
-  /** Cancel a run and terminate its process tree and streams */
+  /** Cancel a run: terminate its real command descendants and provider work, then confirm the cancelled state */
   async cancelRun(args: { path: {
   "projectId": string;
   "runId": string;

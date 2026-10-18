@@ -4588,6 +4588,230 @@
             }
           }
         }
+      },
+      "get": {
+        "operationId": "listQuestions",
+        "summary": "Read clarification questions with their recorded answers (each answer references its question)",
+        "tags": [
+          "conversations-requirements"
+        ],
+        "description": "Read clarification questions with their recorded answers (each answer references its question)",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^prj_[0-9a-fA-F-]+$",
+              "description": "Prefixed prj identifier"
+            }
+          },
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^cnv_[0-9a-fA-F-]+$",
+              "description": "Prefixed cnv identifier"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerApiToken": []
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success (envelope carries requestId)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "requestId",
+                    "questions"
+                  ],
+                  "properties": {
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "questions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "questionId",
+                          "conversationId",
+                          "prompt",
+                          "createdAt",
+                          "answers"
+                        ],
+                        "properties": {
+                          "questionId": {
+                            "type": "string",
+                            "pattern": "^qst_[0-9a-fA-F-]+$",
+                            "description": "Prefixed qst identifier"
+                          },
+                          "conversationId": {
+                            "type": "string",
+                            "pattern": "^cnv_[0-9a-fA-F-]+$",
+                            "description": "Prefixed cnv identifier"
+                          },
+                          "prompt": {
+                            "type": "string"
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "answers": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "answerId",
+                                "questionId",
+                                "content",
+                                "createdAt"
+                              ],
+                              "properties": {
+                                "answerId": {
+                                  "type": "string",
+                                  "pattern": "^ans_[0-9a-fA-F-]+$",
+                                  "description": "Prefixed ans identifier"
+                                },
+                                "questionId": {
+                                  "type": "string",
+                                  "pattern": "^qst_[0-9a-fA-F-]+$",
+                                  "description": "Prefixed qst identifier"
+                                },
+                                "content": {
+                                  "type": "string"
+                                },
+                                "createdAt": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "nextCursor": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed or invalid cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Budget admission stop",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict (including idempotency conflict)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not configured / not yet implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/projects/{projectId}/conversations/{conversationId}/questions/{questionId}/answers": {
@@ -8797,6 +9021,21 @@
                               "type": "string"
                             }
                           },
+                          "impactedPaths": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "impactedTests": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "repositoryCommit": {
+                            "type": "string"
+                          },
                           "createdAt": {
                             "type": "string",
                             "format": "date-time"
@@ -8914,11 +9153,11 @@
       },
       "post": {
         "operationId": "createPlanVersion",
-        "summary": "Create the next immutable plan version with concrete items and criteria",
+        "summary": "Create the next immutable plan version with concrete items and criteria (invalidates prior approvals)",
         "tags": [
           "plans-approvals"
         ],
-        "description": "Create the next immutable plan version with concrete items and criteria",
+        "description": "Create the next immutable plan version with concrete items and criteria (invalidates prior approvals)",
         "parameters": [
           {
             "name": "projectId",
@@ -8975,6 +9214,18 @@
                   },
                   "repositoryCommit": {
                     "type": "string"
+                  },
+                  "impactedPaths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "impactedTests": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
                   }
                 },
                 "additionalProperties": false
@@ -9058,6 +9309,500 @@
                           "items": {
                             "type": "string"
                           }
+                        },
+                        "impactedPaths": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "impactedTests": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "repositoryCommit": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed or invalid cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Budget admission stop",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict (including idempotency conflict)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not configured / not yet implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{projectId}/conversations/{conversationId}/clarification": {
+      "post": {
+        "operationId": "generateClarification",
+        "summary": "Generate bounded clarifying questions for a conversation with the real configured model",
+        "tags": [
+          "plans-approvals"
+        ],
+        "description": "Generate bounded clarifying questions for a conversation with the real configured model",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^prj_[0-9a-fA-F-]+$",
+              "description": "Prefixed prj identifier"
+            }
+          },
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^cnv_[0-9a-fA-F-]+$",
+              "description": "Prefixed cnv identifier"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Scoped idempotency key: identical retries return the stored result; reuse with different input conflicts."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [],
+                "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerApiToken": []
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success (envelope carries requestId)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "requestId",
+                    "questions"
+                  ],
+                  "properties": {
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "questions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "questionId",
+                          "conversationId",
+                          "prompt",
+                          "createdAt"
+                        ],
+                        "properties": {
+                          "questionId": {
+                            "type": "string",
+                            "pattern": "^qst_[0-9a-fA-F-]+$",
+                            "description": "Prefixed qst identifier"
+                          },
+                          "conversationId": {
+                            "type": "string",
+                            "pattern": "^cnv_[0-9a-fA-F-]+$",
+                            "description": "Prefixed cnv identifier"
+                          },
+                          "prompt": {
+                            "type": "string"
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "usage": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "required": [
+                            "inputTokens",
+                            "outputTokens",
+                            "costUsd"
+                          ],
+                          "properties": {
+                            "inputTokens": {
+                              "type": "integer"
+                            },
+                            "outputTokens": {
+                              "type": "integer"
+                            },
+                            "costUsd": {
+                              "type": "number"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed or invalid cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Budget admission stop",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict (including idempotency conflict)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not configured / not yet implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{projectId}/plans/generate": {
+      "post": {
+        "operationId": "generatePlan",
+        "summary": "Generate the next concrete plan version from the recorded answers with the real configured model",
+        "tags": [
+          "plans-approvals"
+        ],
+        "description": "Generate the next concrete plan version from the recorded answers with the real configured model",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^prj_[0-9a-fA-F-]+$",
+              "description": "Prefixed prj identifier"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Scoped idempotency key: identical retries return the stored result; reuse with different input conflicts."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "conversationId"
+                ],
+                "properties": {
+                  "conversationId": {
+                    "type": "string",
+                    "pattern": "^cnv_[0-9a-fA-F-]+$",
+                    "description": "Prefixed cnv identifier"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerApiToken": []
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success (envelope carries requestId)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "requestId",
+                    "plan"
+                  ],
+                  "properties": {
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "plan": {
+                      "type": "object",
+                      "required": [
+                        "planId",
+                        "projectId",
+                        "version",
+                        "status",
+                        "items",
+                        "acceptanceCriteria",
+                        "permittedScope",
+                        "createdAt"
+                      ],
+                      "properties": {
+                        "planId": {
+                          "type": "string",
+                          "pattern": "^pln_[0-9a-fA-F-]+$",
+                          "description": "Prefixed pln identifier"
+                        },
+                        "projectId": {
+                          "type": "string",
+                          "pattern": "^prj_[0-9a-fA-F-]+$",
+                          "description": "Prefixed prj identifier"
+                        },
+                        "version": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "draft",
+                            "approved",
+                            "superseded",
+                            "invalidated"
+                          ]
+                        },
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "acceptanceCriteria": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "permittedScope": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "impactedPaths": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "impactedTests": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "repositoryCommit": {
+                          "type": "string"
                         },
                         "createdAt": {
                           "type": "string",
@@ -9271,6 +10016,21 @@
                             "type": "string"
                           }
                         },
+                        "impactedPaths": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "impactedTests": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "repositoryCommit": {
+                          "type": "string"
+                        },
                         "createdAt": {
                           "type": "string",
                           "format": "date-time"
@@ -9379,11 +10139,11 @@
     "/v1/projects/{projectId}/plans/{planId}/approvals": {
       "post": {
         "operationId": "approvePlan",
-        "summary": "Approve an exact plan version with a permitted action scope",
+        "summary": "Approve an exact plan version with a permitted sandbox scope",
         "tags": [
           "plans-approvals"
         ],
-        "description": "Approve an exact plan version with a permitted action scope",
+        "description": "Approve an exact plan version with a permitted sandbox scope",
         "parameters": [
           {
             "name": "projectId",
@@ -9794,11 +10554,11 @@
     "/v1/projects/{projectId}/runs": {
       "post": {
         "operationId": "startRun",
-        "summary": "Start an engineering run from an approved plan (durable, async)",
+        "summary": "Start an engineering run from an approved plan version (durable, asynchronous, prompt return)",
         "tags": [
           "runs"
         ],
-        "description": "Start an engineering run from an approved plan (durable, async)",
+        "description": "Start an engineering run from an approved plan version (durable, asynchronous, prompt return)",
         "parameters": [
           {
             "name": "projectId",
@@ -9827,7 +10587,8 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "conversationId"
+                  "conversationId",
+                  "approvalId"
                 ],
                 "properties": {
                   "conversationId": {
@@ -9875,8 +10636,11 @@
                         "runId",
                         "projectId",
                         "conversationId",
-                        "state",
+                        "planId",
+                        "planVersion",
                         "approvalId",
+                        "state",
+                        "cancelRequested",
                         "createdAt",
                         "updatedAt"
                       ],
@@ -9896,28 +10660,68 @@
                           "pattern": "^cnv_[0-9a-fA-F-]+$",
                           "description": "Prefixed cnv identifier"
                         },
+                        "planId": {
+                          "type": "string",
+                          "pattern": "^pln_[0-9a-fA-F-]+$",
+                          "description": "Prefixed pln identifier"
+                        },
+                        "planVersion": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "approvalId": {
+                          "type": "string",
+                          "pattern": "^apr_[0-9a-fA-F-]+$",
+                          "description": "Prefixed apr identifier"
+                        },
                         "state": {
                           "type": "string",
                           "enum": [
                             "queued",
                             "running",
-                            "paused",
                             "succeeded",
                             "failed",
                             "cancelled"
                           ]
                         },
-                        "approvalId": {
+                        "failureCode": {
+                          "type": "string"
+                        },
+                        "failureMessage": {
+                          "type": "string"
+                        },
+                        "usage": {
                           "anyOf": [
                             {
-                              "type": "string",
-                              "pattern": "^apr_[0-9a-fA-F-]+$",
-                              "description": "Prefixed apr identifier"
+                              "type": "object",
+                              "required": [
+                                "inputTokens",
+                                "outputTokens",
+                                "costUsd"
+                              ],
+                              "properties": {
+                                "inputTokens": {
+                                  "type": "integer"
+                                },
+                                "outputTokens": {
+                                  "type": "integer"
+                                },
+                                "costUsd": {
+                                  "type": "number"
+                                }
+                              },
+                              "additionalProperties": false
                             },
                             {
                               "type": "null"
                             }
                           ]
+                        },
+                        "turns": {
+                          "type": "integer"
+                        },
+                        "cancelRequested": {
+                          "type": "boolean"
                         },
                         "createdAt": {
                           "type": "string",
@@ -9926,6 +10730,28 @@
                         "updatedAt": {
                           "type": "string",
                           "format": "date-time"
+                        },
+                        "startedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "finishedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "additionalProperties": false
@@ -10029,11 +10855,11 @@
       },
       "get": {
         "operationId": "listRuns",
-        "summary": "List runs including failed ones",
+        "summary": "List runs including failed and cancelled ones",
         "tags": [
           "runs"
         ],
-        "description": "List runs including failed ones",
+        "description": "List runs including failed and cancelled ones",
         "parameters": [
           {
             "name": "projectId",
@@ -10077,8 +10903,11 @@
                           "runId",
                           "projectId",
                           "conversationId",
-                          "state",
+                          "planId",
+                          "planVersion",
                           "approvalId",
+                          "state",
+                          "cancelRequested",
                           "createdAt",
                           "updatedAt"
                         ],
@@ -10098,28 +10927,68 @@
                             "pattern": "^cnv_[0-9a-fA-F-]+$",
                             "description": "Prefixed cnv identifier"
                           },
+                          "planId": {
+                            "type": "string",
+                            "pattern": "^pln_[0-9a-fA-F-]+$",
+                            "description": "Prefixed pln identifier"
+                          },
+                          "planVersion": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "approvalId": {
+                            "type": "string",
+                            "pattern": "^apr_[0-9a-fA-F-]+$",
+                            "description": "Prefixed apr identifier"
+                          },
                           "state": {
                             "type": "string",
                             "enum": [
                               "queued",
                               "running",
-                              "paused",
                               "succeeded",
                               "failed",
                               "cancelled"
                             ]
                           },
-                          "approvalId": {
+                          "failureCode": {
+                            "type": "string"
+                          },
+                          "failureMessage": {
+                            "type": "string"
+                          },
+                          "usage": {
                             "anyOf": [
                               {
-                                "type": "string",
-                                "pattern": "^apr_[0-9a-fA-F-]+$",
-                                "description": "Prefixed apr identifier"
+                                "type": "object",
+                                "required": [
+                                  "inputTokens",
+                                  "outputTokens",
+                                  "costUsd"
+                                ],
+                                "properties": {
+                                  "inputTokens": {
+                                    "type": "integer"
+                                  },
+                                  "outputTokens": {
+                                    "type": "integer"
+                                  },
+                                  "costUsd": {
+                                    "type": "number"
+                                  }
+                                },
+                                "additionalProperties": false
                               },
                               {
                                 "type": "null"
                               }
                             ]
+                          },
+                          "turns": {
+                            "type": "integer"
+                          },
+                          "cancelRequested": {
+                            "type": "boolean"
                           },
                           "createdAt": {
                             "type": "string",
@@ -10128,6 +10997,28 @@
                           "updatedAt": {
                             "type": "string",
                             "format": "date-time"
+                          },
+                          "startedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "finishedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           }
                         },
                         "additionalProperties": false
@@ -10244,11 +11135,11 @@
     "/v1/projects/{projectId}/runs/{runId}": {
       "get": {
         "operationId": "getRun",
-        "summary": "Read a run record",
+        "summary": "Read a run record (state, failure reason, observed usage)",
         "tags": [
           "runs"
         ],
-        "description": "Read a run record",
+        "description": "Read a run record (state, failure reason, observed usage)",
         "parameters": [
           {
             "name": "projectId",
@@ -10300,8 +11191,11 @@
                         "runId",
                         "projectId",
                         "conversationId",
-                        "state",
+                        "planId",
+                        "planVersion",
                         "approvalId",
+                        "state",
+                        "cancelRequested",
                         "createdAt",
                         "updatedAt"
                       ],
@@ -10321,28 +11215,68 @@
                           "pattern": "^cnv_[0-9a-fA-F-]+$",
                           "description": "Prefixed cnv identifier"
                         },
+                        "planId": {
+                          "type": "string",
+                          "pattern": "^pln_[0-9a-fA-F-]+$",
+                          "description": "Prefixed pln identifier"
+                        },
+                        "planVersion": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "approvalId": {
+                          "type": "string",
+                          "pattern": "^apr_[0-9a-fA-F-]+$",
+                          "description": "Prefixed apr identifier"
+                        },
                         "state": {
                           "type": "string",
                           "enum": [
                             "queued",
                             "running",
-                            "paused",
                             "succeeded",
                             "failed",
                             "cancelled"
                           ]
                         },
-                        "approvalId": {
+                        "failureCode": {
+                          "type": "string"
+                        },
+                        "failureMessage": {
+                          "type": "string"
+                        },
+                        "usage": {
                           "anyOf": [
                             {
-                              "type": "string",
-                              "pattern": "^apr_[0-9a-fA-F-]+$",
-                              "description": "Prefixed apr identifier"
+                              "type": "object",
+                              "required": [
+                                "inputTokens",
+                                "outputTokens",
+                                "costUsd"
+                              ],
+                              "properties": {
+                                "inputTokens": {
+                                  "type": "integer"
+                                },
+                                "outputTokens": {
+                                  "type": "integer"
+                                },
+                                "costUsd": {
+                                  "type": "number"
+                                }
+                              },
+                              "additionalProperties": false
                             },
                             {
                               "type": "null"
                             }
                           ]
+                        },
+                        "turns": {
+                          "type": "integer"
+                        },
+                        "cancelRequested": {
+                          "type": "boolean"
                         },
                         "createdAt": {
                           "type": "string",
@@ -10351,6 +11285,28 @@
                         "updatedAt": {
                           "type": "string",
                           "format": "date-time"
+                        },
+                        "startedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "finishedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "additionalProperties": false
@@ -10453,14 +11409,217 @@
         }
       }
     },
-    "/v1/projects/{projectId}/runs/{runId}/pause": {
-      "post": {
-        "operationId": "pauseRun",
-        "summary": "Unsupported: VM and run pause are not delivered capabilities",
+    "/v1/projects/{projectId}/runs/{runId}/tools": {
+      "get": {
+        "operationId": "listRunTools",
+        "summary": "List the durable tool records of a run (bounded results, real statuses)",
         "tags": [
           "runs"
         ],
-        "description": "Unsupported: VM and run pause are not delivered capabilities",
+        "description": "List the durable tool records of a run (bounded results, real statuses)",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^prj_[0-9a-fA-F-]+$",
+              "description": "Prefixed prj identifier"
+            }
+          },
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^run_[0-9a-fA-F-]+$",
+              "description": "Prefixed run identifier"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerApiToken": []
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success (envelope carries requestId)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "requestId",
+                    "tools"
+                  ],
+                  "properties": {
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "tools": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "callId",
+                          "name",
+                          "status",
+                          "createdAt"
+                        ],
+                        "properties": {
+                          "callId": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "ok",
+                              "denied",
+                              "error"
+                            ]
+                          },
+                          "result": {
+                            "type": "object",
+                            "required": [],
+                            "properties": {},
+                            "additionalProperties": true
+                          },
+                          "error": {
+                            "type": "string"
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "nextCursor": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed or invalid cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Budget admission stop",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict (including idempotency conflict)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not configured / not yet implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{projectId}/runs/{runId}/pause": {
+      "post": {
+        "operationId": "pauseRun",
+        "summary": "Unsupported: run pause is not a delivered capability and is rejected",
+        "tags": [
+          "runs"
+        ],
+        "description": "Unsupported: run pause is not a delivered capability and is rejected",
         "parameters": [
           {
             "name": "projectId",
@@ -10521,8 +11680,11 @@
                         "runId",
                         "projectId",
                         "conversationId",
-                        "state",
+                        "planId",
+                        "planVersion",
                         "approvalId",
+                        "state",
+                        "cancelRequested",
                         "createdAt",
                         "updatedAt"
                       ],
@@ -10542,28 +11704,68 @@
                           "pattern": "^cnv_[0-9a-fA-F-]+$",
                           "description": "Prefixed cnv identifier"
                         },
+                        "planId": {
+                          "type": "string",
+                          "pattern": "^pln_[0-9a-fA-F-]+$",
+                          "description": "Prefixed pln identifier"
+                        },
+                        "planVersion": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "approvalId": {
+                          "type": "string",
+                          "pattern": "^apr_[0-9a-fA-F-]+$",
+                          "description": "Prefixed apr identifier"
+                        },
                         "state": {
                           "type": "string",
                           "enum": [
                             "queued",
                             "running",
-                            "paused",
                             "succeeded",
                             "failed",
                             "cancelled"
                           ]
                         },
-                        "approvalId": {
+                        "failureCode": {
+                          "type": "string"
+                        },
+                        "failureMessage": {
+                          "type": "string"
+                        },
+                        "usage": {
                           "anyOf": [
                             {
-                              "type": "string",
-                              "pattern": "^apr_[0-9a-fA-F-]+$",
-                              "description": "Prefixed apr identifier"
+                              "type": "object",
+                              "required": [
+                                "inputTokens",
+                                "outputTokens",
+                                "costUsd"
+                              ],
+                              "properties": {
+                                "inputTokens": {
+                                  "type": "integer"
+                                },
+                                "outputTokens": {
+                                  "type": "integer"
+                                },
+                                "costUsd": {
+                                  "type": "number"
+                                }
+                              },
+                              "additionalProperties": false
                             },
                             {
                               "type": "null"
                             }
                           ]
+                        },
+                        "turns": {
+                          "type": "integer"
+                        },
+                        "cancelRequested": {
+                          "type": "boolean"
                         },
                         "createdAt": {
                           "type": "string",
@@ -10572,6 +11774,28 @@
                         "updatedAt": {
                           "type": "string",
                           "format": "date-time"
+                        },
+                        "startedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "finishedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "additionalProperties": false
@@ -10677,11 +11901,11 @@
     "/v1/projects/{projectId}/runs/{runId}/resume": {
       "post": {
         "operationId": "resumeRun",
-        "summary": "Unsupported: VM and run resume are not delivered capabilities",
+        "summary": "Unsupported: run resume is not a delivered capability and is rejected",
         "tags": [
           "runs"
         ],
-        "description": "Unsupported: VM and run resume are not delivered capabilities",
+        "description": "Unsupported: run resume is not a delivered capability and is rejected",
         "parameters": [
           {
             "name": "projectId",
@@ -10742,8 +11966,11 @@
                         "runId",
                         "projectId",
                         "conversationId",
-                        "state",
+                        "planId",
+                        "planVersion",
                         "approvalId",
+                        "state",
+                        "cancelRequested",
                         "createdAt",
                         "updatedAt"
                       ],
@@ -10763,28 +11990,68 @@
                           "pattern": "^cnv_[0-9a-fA-F-]+$",
                           "description": "Prefixed cnv identifier"
                         },
+                        "planId": {
+                          "type": "string",
+                          "pattern": "^pln_[0-9a-fA-F-]+$",
+                          "description": "Prefixed pln identifier"
+                        },
+                        "planVersion": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "approvalId": {
+                          "type": "string",
+                          "pattern": "^apr_[0-9a-fA-F-]+$",
+                          "description": "Prefixed apr identifier"
+                        },
                         "state": {
                           "type": "string",
                           "enum": [
                             "queued",
                             "running",
-                            "paused",
                             "succeeded",
                             "failed",
                             "cancelled"
                           ]
                         },
-                        "approvalId": {
+                        "failureCode": {
+                          "type": "string"
+                        },
+                        "failureMessage": {
+                          "type": "string"
+                        },
+                        "usage": {
                           "anyOf": [
                             {
-                              "type": "string",
-                              "pattern": "^apr_[0-9a-fA-F-]+$",
-                              "description": "Prefixed apr identifier"
+                              "type": "object",
+                              "required": [
+                                "inputTokens",
+                                "outputTokens",
+                                "costUsd"
+                              ],
+                              "properties": {
+                                "inputTokens": {
+                                  "type": "integer"
+                                },
+                                "outputTokens": {
+                                  "type": "integer"
+                                },
+                                "costUsd": {
+                                  "type": "number"
+                                }
+                              },
+                              "additionalProperties": false
                             },
                             {
                               "type": "null"
                             }
                           ]
+                        },
+                        "turns": {
+                          "type": "integer"
+                        },
+                        "cancelRequested": {
+                          "type": "boolean"
                         },
                         "createdAt": {
                           "type": "string",
@@ -10793,6 +12060,28 @@
                         "updatedAt": {
                           "type": "string",
                           "format": "date-time"
+                        },
+                        "startedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "finishedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "additionalProperties": false
@@ -10898,11 +12187,11 @@
     "/v1/projects/{projectId}/runs/{runId}/cancel": {
       "post": {
         "operationId": "cancelRun",
-        "summary": "Cancel a run and terminate its process tree and streams",
+        "summary": "Cancel a run: terminate its real command descendants and provider work, then confirm the cancelled state",
         "tags": [
           "runs"
         ],
-        "description": "Cancel a run and terminate its process tree and streams",
+        "description": "Cancel a run: terminate its real command descendants and provider work, then confirm the cancelled state",
         "parameters": [
           {
             "name": "projectId",
@@ -10963,8 +12252,11 @@
                         "runId",
                         "projectId",
                         "conversationId",
-                        "state",
+                        "planId",
+                        "planVersion",
                         "approvalId",
+                        "state",
+                        "cancelRequested",
                         "createdAt",
                         "updatedAt"
                       ],
@@ -10984,28 +12276,68 @@
                           "pattern": "^cnv_[0-9a-fA-F-]+$",
                           "description": "Prefixed cnv identifier"
                         },
+                        "planId": {
+                          "type": "string",
+                          "pattern": "^pln_[0-9a-fA-F-]+$",
+                          "description": "Prefixed pln identifier"
+                        },
+                        "planVersion": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "approvalId": {
+                          "type": "string",
+                          "pattern": "^apr_[0-9a-fA-F-]+$",
+                          "description": "Prefixed apr identifier"
+                        },
                         "state": {
                           "type": "string",
                           "enum": [
                             "queued",
                             "running",
-                            "paused",
                             "succeeded",
                             "failed",
                             "cancelled"
                           ]
                         },
-                        "approvalId": {
+                        "failureCode": {
+                          "type": "string"
+                        },
+                        "failureMessage": {
+                          "type": "string"
+                        },
+                        "usage": {
                           "anyOf": [
                             {
-                              "type": "string",
-                              "pattern": "^apr_[0-9a-fA-F-]+$",
-                              "description": "Prefixed apr identifier"
+                              "type": "object",
+                              "required": [
+                                "inputTokens",
+                                "outputTokens",
+                                "costUsd"
+                              ],
+                              "properties": {
+                                "inputTokens": {
+                                  "type": "integer"
+                                },
+                                "outputTokens": {
+                                  "type": "integer"
+                                },
+                                "costUsd": {
+                                  "type": "number"
+                                }
+                              },
+                              "additionalProperties": false
                             },
                             {
                               "type": "null"
                             }
                           ]
+                        },
+                        "turns": {
+                          "type": "integer"
+                        },
+                        "cancelRequested": {
+                          "type": "boolean"
                         },
                         "createdAt": {
                           "type": "string",
@@ -11014,6 +12346,28 @@
                         "updatedAt": {
                           "type": "string",
                           "format": "date-time"
+                        },
+                        "startedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "finishedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "additionalProperties": false

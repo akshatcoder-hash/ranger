@@ -302,3 +302,67 @@ these families now return real behavior instead of `not_configured`:
   the real commit, dirty flag (including untracked files) and a
   deterministic content hash at connect time; everything persists across
   restarts and stays private to the project.
+
+### v1 amendment — approved run workflow: plans, exact-version approvals and durable runs (2026-10-18)
+
+The contract version stays v1 (additive tightening before any consumer).
+Plans/approvals and runs now deliver real behavior on top of the persisted
+conversation, requirement and event records — no orchestration framework,
+only SQLite state, transactional events, the durable job loop and the real
+xAI/Trace/Instabox tool loop:
+
+- **clarification + plan generation (`generateClarification`, `generatePlan`)**:
+  the configured xAI model produces bounded clarifying questions and the next
+  concrete plan version (items, acceptance criteria, permitted sandbox scope;
+  for revisions `impactedPaths`/`impactedTests`). The paid dial happens
+  OUTSIDE any transaction, is budgeted against the shared ledger (reserve
+  before dial, settle exactly once with observed usage, never retried) and is
+  idempotent per scoped key: an exact retry replays the stored response with
+  no second dial. Unconfigured providers return the explicit capability
+  error. Conversation/repository content is untrusted data: planning
+  instructions state that no content text can widen scope or lift policy.
+- **plan versions and exact-version approvals**: new versions are immutable
+  and supersede prior ones; creating a revision invalidates prior approvals
+  and records `plan.approval.invalidated` naming the impacted files and
+  tests. `approvePlan` approves one exact version with a scope that must be a
+  subset of the plan's proposal against the safe scope grammar
+  (`edit:<relative-prefix>`, `command`, `launch`, `evidence`); prohibited
+  categories (deployment, purchases, access expansion, external
+  communication, destructive actions) are rejected at plan AND approval time,
+  so no persisted record or approval route can enable them.
+- **run start (`startRun`)**: validates the persisted exact-version approval,
+  allows one active run at a time and enqueues ONE durable job, returning
+  promptly. Idempotent retries replay the stored run with no duplicate run,
+  job or provider work. There are no pause/resume claims: those operations
+  stay `unsupported_operation`.
+- **run execution**: the worker executes the run outside any API request on
+  one ephemeral Instabox VM seeded with the previous run's saved source. The
+  mandatory injected checker re-verifies project binding, run state, cancel
+  flag, approval validity, exact plan version and scope before EVERY tool
+  execution; out-of-scope attempts emit `run.scope.violation` with no side
+  effect and prohibited commands are refused even when command scope was
+  granted. Usage settles against the budget ledger; per-tool outcomes and
+  `run.tool.progress` events persist transactionally as they happen.
+- **cancellation**: the durable cancel flag commits first (the checker stops
+  tool work at the next check), then real command descendants are TERM/KILLed
+  through the workspace terminate primitive. The worker confirms the
+  `cancelled` state. Cancelling a terminal run is truthful and effectless.
+- **interruption**: the reconciliation controller (worker startup + sweep)
+  fails runs whose claim lease expired with
+  `control_worker_lease_expired`, terminates their running commands, destroys
+  their recorded workspaces (releasing the creation budget) and resolves
+  uncertain workspace creates; it NEVER resumes model/tool work or retries.
+  A stale worker completion is rejected by fencing (`completeRunFromWorker`
+  binds worker id + claim epoch). Durable tool records are kept as evidence.
+- **durable records + public reads**: runs (with failure code/message,
+  observed usage, turns, start/finish timestamps) and per-tool outcomes
+  survive restarts; `listRunTools`, `listTestResults` (real exit codes) and
+  `listQuestions` (questions with their answers) are authorized public reads.
+- **repository disconnect**: `disconnectRepository` is now scoped-idempotent
+  and commits the removal and its `repository.disconnected` event atomically;
+  disconnecting twice records the event exactly once.
+- **event schema tightening**: `plan.version.created`,
+  `plan.approval.granted`, `plan.approval.invalidated`, `run.state.changed`,
+  `run.tool.progress` and `run.scope.violation` now declare full data
+  schemas; `repository.disconnected` is added. Run state enumerations drop
+  `paused`.

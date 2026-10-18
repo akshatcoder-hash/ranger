@@ -230,6 +230,11 @@ export interface QuestionResponse extends OkResponse {
   question: Question;
 }
 
+export interface ClarificationResponse extends OkResponse {
+  questions: Question[];
+  usage?: { inputTokens: number; outputTokens: number; costUsd: number } | null;
+}
+
 export interface Answer {
   answerId: string;
   questionId: string;
@@ -370,6 +375,9 @@ export interface Plan {
   items: string[];
   acceptanceCriteria: string[];
   permittedScope: string[];
+  impactedPaths: string[];
+  impactedTests: string[];
+  repositoryCommit?: string;
   createdAt: string;
 }
 
@@ -401,16 +409,44 @@ export interface ApprovalListResponse extends OkResponse {
   nextCursor: string | null;
 }
 
+export interface QuestionWithAnswers {
+  questionId: string;
+  conversationId: string;
+  prompt: string;
+  createdAt: string;
+  answers: Answer[];
+}
+
+export interface QuestionListResponse extends OkResponse {
+  questions: QuestionWithAnswers[];
+  nextCursor: string | null;
+}
+
 // --- runs -----------------------------------------------------------------------------
+
+export interface RunUsage {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+}
 
 export interface Run {
   runId: string;
   projectId: string;
   conversationId: string;
-  state: 'queued' | 'running' | 'paused' | 'succeeded' | 'failed' | 'cancelled';
-  approvalId: string | null;
+  planId: string;
+  planVersion: number;
+  approvalId: string;
+  state: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+  failureCode?: string;
+  failureMessage?: string;
+  usage?: RunUsage | null;
+  turns?: number;
+  cancelRequested: boolean;
   createdAt: string;
   updatedAt: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
 }
 
 export interface RunResponse extends OkResponse {
@@ -419,6 +455,20 @@ export interface RunResponse extends OkResponse {
 
 export interface RunListResponse extends OkResponse {
   runs: Run[];
+  nextCursor: string | null;
+}
+
+export interface RunToolRecord {
+  callId: string;
+  name: string;
+  status: 'ok' | 'denied' | 'error';
+  result?: unknown;
+  error?: string;
+  createdAt: string;
+}
+
+export interface RunToolsResponse extends OkResponse {
+  tools: RunToolRecord[];
   nextCursor: string | null;
 }
 

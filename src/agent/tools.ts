@@ -1,4 +1,5 @@
 import type { WorkspaceService } from '../workspace/service.js';
+import type { RetrievalService } from '../retrieval/service.js';
 import { Errors } from '../errors.js';
 
 /**
@@ -71,12 +72,38 @@ function capText(text: string, cap = TOOL_LOG_CAP_CHARS): { text: string; trunca
 export interface CodingToolsOptions {
   projectId: string;
   workspace: WorkspaceService;
+  /** Run attribution: commands and outcomes record which run executed them. */
+  runId?: string;
+  /** Real pinned-Trace retrieval when the sibling is configured. */
+  retrieval?: RetrievalService | null;
 }
 
 /** The concrete tool set bound to one project's workspace. */
 export function codingTools(options: CodingToolsOptions): CodingToolDef[] {
-  const { projectId, workspace } = options;
-  return [
+  const { projectId, workspace, runId } = options;
+  const attribution = runId === undefined ? undefined : { runId };
+  const tools: CodingToolDef[] = [
+    {
+      name: 'search_code',
+      description:
+        'Search the project code with real pinned Trace retrieval. Results carry file path, 1-based line range, snapshot id, score and citations.',
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string' }, limit: { type: 'integer' } },
+        required: ['query'],
+        additionalProperties: false,
+      },
+      mutating: false,
+      execute: async (args) => {
+        if (options.retrieval === undefined || options.retrieval === null) {
+          throw Errors.notConfigured('Trace retrieval is not configured for this process', { reason: 'trace_unconfigured' });
+        }
+        const query = requireString(args, 'query');
+        const limit = optionalPositiveInt(args, 'limit', 20) ?? 8;
+        const response = await options.retrieval.search(projectId, query, limit);
+        return { ...response };
+      },
+    },
     {
       name: 'inspect_file',
       description: 'Read a constrained workspace file (text). Paths are project-relative.',
@@ -129,7 +156,7 @@ export function codingTools(options: CodingToolsOptions): CodingToolDef[] {
       mutating: true,
       execute: async (args) => {
         const argv = [requireString(args, 'command'), ...(optionalStringArray(args, 'args') ?? [])];
-        const row = await workspace.runCommand(projectId, argv, optionalPositiveInt(args, 'timeoutMs', 300_000) ?? 60_000, false);
+        const row = await workspace.runCommand(projectId, argv, optionalPositiveInt(args, 'timeoutMs', 300_000) ?? 60_000, false, attribution);
         const logs = capText(row.logs);
         return { commandId: row.id, state: row.state, exitCode: row.exitCode, timedOut: row.timedOut, logs: logs.text, logsTruncated: logs.truncated };
       },
@@ -146,7 +173,10 @@ export function codingTools(options: CodingToolsOptions): CodingToolDef[] {
       mutating: true,
       execute: async (args) => {
         const argv = [requireString(args, 'command'), ...(optionalStringArray(args, 'args') ?? [])];
-        const row = await workspace.runCommand(projectId, argv, optionalPositiveInt(args, 'timeoutMs', 300_000) ?? 120_000, false);
+        const row = await workspace.runCommand(projectId, argv, optionalPositiveInt(args, 'timeoutMs', 300_000) ?? 120_000, false, {
+          ...attribution,
+          isTest: true,
+        });
         const logs = capText(row.logs);
         return {
           commandId: row.id,
@@ -171,7 +201,7 @@ export function codingTools(options: CodingToolsOptions): CodingToolDef[] {
       mutating: true,
       execute: async (args) => {
         const argv = [requireString(args, 'command'), ...(optionalStringArray(args, 'args') ?? [])];
-        const row = await workspace.runCommand(projectId, argv, 60_000, true);
+        const row = await workspace.runCommand(projectId, argv, 60_000, true, attribution);
         return { commandId: row.id, state: row.state, pid: row.pid };
       },
     },
@@ -186,6 +216,7 @@ export function codingTools(options: CodingToolsOptions): CodingToolDef[] {
       },
     },
   ];
+  return tools;
 }
 
 /** Flat function-tool declarations for the Responses API. */

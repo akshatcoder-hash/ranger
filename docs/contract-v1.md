@@ -91,6 +91,7 @@ exactly one schema-valid event (`conversation.created`,
 - `POST /v1/projects/{projectId}/conversations/{conversationId}/messages` — postMessage
 - `GET /v1/projects/{projectId}/conversations/{conversationId}/messages` — listMessages (cursor paginated)
 - `POST /v1/projects/{projectId}/conversations/{conversationId}/questions` — createQuestion
+- `GET /v1/projects/{projectId}/conversations/{conversationId}/questions` — listQuestions (public member read of questions with their answers)
 - `POST /v1/projects/{projectId}/conversations/{conversationId}/questions/{questionId}/answers` — answerQuestion
 - `GET /v1/projects/{projectId}/requirements` — listRequirements
 - `POST /v1/projects/{projectId}/requirements` — createRequirementVersion (optional `requirementId` appends)
@@ -136,19 +137,22 @@ Plan versions, revisions and approvals
 
 - `GET /v1/projects/{projectId}/plans` — listPlans
 - `POST /v1/projects/{projectId}/plans` — createPlanVersion
+- `POST /v1/projects/{projectId}/conversations/{conversationId}/clarification` — generateClarification (real configured xAI model; bounded questions persisted as records with events; the dial happens outside any transaction and is never retried; unconfigured provider returns the capability error)
+- `POST /v1/projects/{projectId}/plans/generate` — generatePlan (real configured xAI model; requires the request plus recorded answers or requirement versions; produces the next immutable plan version with items, acceptance criteria, permitted sandbox scope and, for revisions, impactedPaths/impactedTests; creating a new version invalidates prior approvals with `plan.approval.invalidated`)
 - `GET /v1/projects/{projectId}/plans/{planId}` — getPlan
-- `POST /v1/projects/{projectId}/plans/{planId}/approvals` — approvePlan
+- `POST /v1/projects/{projectId}/plans/{planId}/approvals` — approvePlan (exact plan version, scope must be a subset of the plan's proposed scope)
 - `GET /v1/projects/{projectId}/approvals` — listApprovals
 
 ### runs
-Engineering runs: start, status and cancel. Pause and resume are rejected as unsupported (`unsupported_operation`, not success).
+Engineering runs: durable start, status and cancel. Pause and resume are rejected as unsupported (`unsupported_operation`, not success).
 
-- `POST /v1/projects/{projectId}/runs` — startRun
-- `GET /v1/projects/{projectId}/runs` — listRuns
-- `GET /v1/projects/{projectId}/runs/{runId}` — getRun
+- `POST /v1/projects/{projectId}/runs` — startRun (validates the exact-version approval, enqueues ONE durable job and returns promptly; idempotent by scoped key so a retry never duplicates the run or its job; one run active at a time)
+- `GET /v1/projects/{projectId}/runs` — listRuns (includes failed and cancelled runs)
+- `GET /v1/projects/{projectId}/runs/{runId}` — getRun (state, failure code/message, observed usage, turns)
+- `GET /v1/projects/{projectId}/runs/{runId}/tools` — listRunTools (durable per-tool outcome records: ok/denied/error with real results)
 - `POST /v1/projects/{projectId}/runs/{runId}/pause` — pauseRun (unsupported)
 - `POST /v1/projects/{projectId}/runs/{runId}/resume` — resumeRun (unsupported)
-- `POST /v1/projects/{projectId}/runs/{runId}/cancel` — cancelRun
+- `POST /v1/projects/{projectId}/runs/{runId}/cancel` — cancelRun (durable cancel flag first; real command descendants are TERM/KILLed through the workspace primitive; terminal runs answer truthfully with no effect)
 
 ### workspace
 Ephemeral Instabox workspace: create, files, commands, screenshot, cleanup. No container adapter and no persistent VM.

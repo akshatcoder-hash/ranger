@@ -88,6 +88,37 @@
       }
     },
     {
+      "name": "repository.disconnected",
+      "description": "Repository reference disconnected (recorded atomically with the removal)",
+      "dataSchema": {
+        "type": "object",
+        "required": [
+          "url",
+          "ref",
+          "commit",
+          "checkoutPath"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "maxLength": 2048
+          },
+          "ref": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "commit": {
+            "type": "string"
+          },
+          "checkoutPath": {
+            "type": "string",
+            "maxLength": 512
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "conversation.created",
       "description": "Conversation created",
       "dataSchema": {
@@ -249,44 +280,247 @@
     },
     {
       "name": "plan.version.created",
-      "description": "New plan version generated",
+      "description": "New plan version generated (names impacted files/tests and invalidated approvals on a revision)",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "planId",
+          "version"
+        ],
+        "properties": {
+          "planId": {
+            "type": "string",
+            "pattern": "^pln_[0-9a-fA-F-]+$",
+            "description": "Prefixed pln identifier"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "invalidatedApprovalIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "impactedPaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "impactedTests": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "plan.approval.granted",
-      "description": "Exact plan version approved with scope",
+      "description": "Exact plan version approved with the permitted sandbox scope",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "approvalId",
+          "planId",
+          "version"
+        ],
+        "properties": {
+          "approvalId": {
+            "type": "string",
+            "pattern": "^apr_[0-9a-fA-F-]+$",
+            "description": "Prefixed apr identifier"
+          },
+          "planId": {
+            "type": "string",
+            "pattern": "^pln_[0-9a-fA-F-]+$",
+            "description": "Prefixed pln identifier"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "permittedScope": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "approvedBy": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "plan.approval.invalidated",
-      "description": "Approval invalidated by a material change",
+      "description": "Approval invalidated by a material requirement change; names impacted files and tests",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "approvalId",
+          "planId",
+          "version",
+          "reason"
+        ],
+        "properties": {
+          "approvalId": {
+            "type": "string",
+            "pattern": "^apr_[0-9a-fA-F-]+$",
+            "description": "Prefixed apr identifier"
+          },
+          "planId": {
+            "type": "string",
+            "pattern": "^pln_[0-9a-fA-F-]+$",
+            "description": "Prefixed pln identifier"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "impactedPaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "impactedTests": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "run.state.changed",
-      "description": "Run state transition",
+      "description": "Run state transition (queued/running then terminal; pause/resume do not exist)",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "runId",
+          "from",
+          "to"
+        ],
+        "properties": {
+          "runId": {
+            "type": "string",
+            "description": "Run identifier"
+          },
+          "from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "running",
+                  "succeeded",
+                  "failed",
+                  "cancelled"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "to": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "run.tool.progress",
-      "description": "Durable tool/step progress within a run",
+      "description": "Durable tool/step progress within a run (bounded; full results stay in run records)",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "runId",
+          "callId",
+          "tool",
+          "status"
+        ],
+        "properties": {
+          "runId": {
+            "type": "string",
+            "description": "Run identifier"
+          },
+          "callId": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "tool": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "denied",
+              "error"
+            ]
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "run.scope.violation",
-      "description": "Action outside approved scope was blocked",
+      "description": "Action outside approved scope (or after invalidation) was blocked by the tool layer",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "runId",
+          "tool",
+          "reason"
+        ],
+        "properties": {
+          "runId": {
+            "type": "string",
+            "description": "Run identifier"
+          },
+          "tool": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 300
+          }
+        },
+        "additionalProperties": false
       }
     },
     {

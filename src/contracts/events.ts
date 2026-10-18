@@ -1,4 +1,4 @@
-import { idField, int, nullable, obj, str, timestamp } from './schema.js';
+import { arr, idField, int, nullable, obj, str, timestamp } from './schema.js';
 
 /**
  * Realtime project event contract.
@@ -68,6 +68,16 @@ export const EVENT_TYPES: EventTypeDef[] = [
     }),
   },
   {
+    name: 'repository.disconnected',
+    description: 'Repository reference disconnected (recorded atomically with the removal)',
+    dataSchema: obj(['url', 'ref', 'commit', 'checkoutPath'], {
+      url: str({ maxLength: 2048 }),
+      ref: str({ maxLength: 256 }),
+      commit: str(),
+      checkoutPath: str({ maxLength: 512 }),
+    }),
+  },
+  {
     name: 'conversation.created',
     description: 'Conversation created',
     dataSchema: obj(['conversationId', 'title'], {
@@ -118,12 +128,69 @@ export const EVENT_TYPES: EventTypeDef[] = [
       version: int({ minimum: 1 }),
     }),
   },
-  { name: 'plan.version.created', description: 'New plan version generated', dataSchema: { type: 'object' } },
-  { name: 'plan.approval.granted', description: 'Exact plan version approved with scope', dataSchema: { type: 'object' } },
-  { name: 'plan.approval.invalidated', description: 'Approval invalidated by a material change', dataSchema: { type: 'object' } },
-  { name: 'run.state.changed', description: 'Run state transition', dataSchema: { type: 'object' } },
-  { name: 'run.tool.progress', description: 'Durable tool/step progress within a run', dataSchema: { type: 'object' } },
-  { name: 'run.scope.violation', description: 'Action outside approved scope was blocked', dataSchema: { type: 'object' } },
+  {
+    name: 'plan.version.created',
+    description: 'New plan version generated (names impacted files/tests and invalidated approvals on a revision)',
+    dataSchema: obj(['planId', 'version'], {
+      planId: idField('pln'),
+      version: int({ minimum: 1 }),
+      invalidatedApprovalIds: arr(str()),
+      impactedPaths: arr(str()),
+      impactedTests: arr(str()),
+    }),
+  },
+  {
+    name: 'plan.approval.granted',
+    description: 'Exact plan version approved with the permitted sandbox scope',
+    dataSchema: obj(['approvalId', 'planId', 'version'], {
+      approvalId: idField('apr'),
+      planId: idField('pln'),
+      version: int({ minimum: 1 }),
+      permittedScope: arr(str()),
+      approvedBy: str(),
+    }),
+  },
+  {
+    name: 'plan.approval.invalidated',
+    description: 'Approval invalidated by a material requirement change; names impacted files and tests',
+    dataSchema: obj(['approvalId', 'planId', 'version', 'reason'], {
+      approvalId: idField('apr'),
+      planId: idField('pln'),
+      version: int({ minimum: 1 }),
+      reason: str({ maxLength: 200 }),
+      impactedPaths: arr(str()),
+      impactedTests: arr(str()),
+    }),
+  },
+  {
+    name: 'run.state.changed',
+    description: 'Run state transition (queued/running then terminal; pause/resume do not exist)',
+    dataSchema: obj(['runId', 'from', 'to'], {
+      runId: str({ description: 'Run identifier' }),
+      from: nullable(str({ enum: ['queued', 'running', 'succeeded', 'failed', 'cancelled'] })),
+      to: str({ enum: ['queued', 'running', 'succeeded', 'failed', 'cancelled'] }),
+      reason: nullable(str({ maxLength: 120 })),
+    }),
+  },
+  {
+    name: 'run.tool.progress',
+    description: 'Durable tool/step progress within a run (bounded; full results stay in run records)',
+    dataSchema: obj(['runId', 'callId', 'tool', 'status'], {
+      runId: str({ description: 'Run identifier' }),
+      callId: str({ maxLength: 128 }),
+      tool: str({ maxLength: 64 }),
+      status: str({ enum: ['ok', 'denied', 'error'] }),
+    }),
+  },
+  {
+    name: 'run.scope.violation',
+    description: 'Action outside approved scope (or after invalidation) was blocked by the tool layer',
+    dataSchema: obj(['runId', 'tool', 'reason'], {
+      runId: str({ description: 'Run identifier' }),
+      tool: str({ maxLength: 64 }),
+      reason: str({ maxLength: 300 }),
+    }),
+  },
   { name: 'capture.session.started', description: 'Screen capture session started', dataSchema: { type: 'object' } },
   { name: 'capture.session.ended', description: 'Screen capture session ended; generation invalidated', dataSchema: { type: 'object' } },
   { name: 'capture.frame.ingested', description: 'Frame accepted and stored', dataSchema: { type: 'object' } },

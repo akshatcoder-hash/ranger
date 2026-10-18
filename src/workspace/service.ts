@@ -40,6 +40,7 @@ import {
   insertWorkspace,
   listArtifacts,
   listSourceFiles,
+  listTestCommandRows,
   markCommandTerminated,
   markWorkspaceDestroyed,
   markWorkspaceRunning,
@@ -260,7 +261,13 @@ export class WorkspaceService {
     return { path: relativePath, contentBase64: content.toString('base64'), sizeBytes: content.byteLength };
   }
 
-  async runCommand(projectId: string, argv: string[], timeoutMs: number, background = false): Promise<CommandRow> {
+  async runCommand(
+    projectId: string,
+    argv: string[],
+    timeoutMs: number,
+    background = false,
+    attribution?: { runId?: string; isTest?: boolean },
+  ): Promise<CommandRow> {
     const workspace = this.requireRunning(projectId);
     const result = await providerFor(this.options).exec({
       machineId: workspace.machineId!,
@@ -278,7 +285,15 @@ export class WorkspaceService {
       logs,
       exitCode: background ? null : result.exitCode,
       timedOut: result.timedOut,
+      runId: attribution?.runId ?? null,
+      isTest: attribution?.isTest === true,
     });
+  }
+
+  /** Persisted test-outcome commands (real exit codes) for the tests read. */
+  testResults(projectId: string): CommandRow[] {
+    this.requireKnown(projectId);
+    return listTestCommandRows(this.options.db, projectId);
   }
 
   command(projectId: string, commandId: string): CommandRow {

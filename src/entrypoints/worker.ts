@@ -2,20 +2,67 @@ import { loadConfig } from '../config.js';
 import { openDatabase } from '../db/db.js';
 import { migrationsDirFromCwd, runMigrations } from '../db/migrate.js';
 import { WorkerLoop, type JobHandler } from '../worker/loop.js';
+import { engineeringRunHandler } from '../runs/executor.js';
+import { reconcileInterruptedRuns } from '../runs/reconcile.js';
+import { RUN_JOB_TYPE } from '../runs/service.js';
+import { RetrievalService } from '../retrieval/service.js';
+import { SecretResolver } from '../secrets.js';
+import { FakeInstabox } from '../workspace/instabox.js';
+import { setWorkspaceProviderForTests, workspaceProviderForTests } from '../workspace/runtime.js';
+import { SdkInstaboxProvider } from '../workspace/sdk-provider.js';
+import type { InstaboxProvider } from '../workspace/provider.js';
+import { scriptedTransportFromEnv } from '../agent/scripted-transport.js';
 import { installGracefulShutdown } from './lifecycle.js';
 
 /**
  * Ranger worker entrypoint (durable engineering work; never in API requests).
- * Foundation: migrations + claim/lease loop with an empty handler registry.
+ *
+ * Registers the engineering-run job handler: one durable run executes one
+ * approved plan version on one ephemeral Instabox workspace with the real
+ * xAI/Trace tool loop. At startup and every 30s the reconciliation
+ * controller fails runs whose worker lease expired (interrupted control
+ * worker) with cleanup — never resuming model/tool work.
+ *
+ * Deterministic test seams (never active in production): when
+ * RANGER_WORKSPACE_PROVIDER=deterministic the Instabox wire model is the
+ * in-repo fake, and RANGER_AGENT_SCRIPT_FILE loads a scripted Responses
+ * protocol transport. Both exist ONLY so fault-path tests can run real
+ * worker processes without provider accounts; a live run ignores them.
  */
 export async function main(): Promise<void> {
   const config = await loadConfig(process.env);
   const db = openDatabase(config.dataDir);
   const migrations = runMigrations(db, migrationsDirFromCwd());
 
-  // Job handlers are registered by the milestones that implement them; the
-  // foundation worker idles cleanly with zero handlers.
+  // Deterministic-provider test seams (see module doc): fail closed unless
+  // explicitly requested via environment for a test process.
+  if (process.env.RANGER_WORKSPACE_PROVIDER === 'deterministic') {
+    setWorkspaceProviderForTests(new FakeInstabox());
+  }
+  const scriptTransport = scriptedTransportFromEnv(process.env);
+
+  const secrets = new SecretResolver(config.secretFile);
+  const retrieval = new RetrievalService({ db, config });
   const handlers = new Map<string, JobHandler>();
+  handlers.set(RUN_JOB_TYPE, engineeringRunHandler({ db, config, retrieval, transportFactory: scriptTransport ?? undefined }));
+
+  // Interrupted-run reconciliation at startup and on a fixed sweep. The
+  // provider resolves lazily so a worker without provider credentials still
+  // starts; an unresolvable sweep is reported by the next one, never retried.
+  let cachedProvider: InstaboxProvider | null = null;
+  const providerForReconcile = (): InstaboxProvider => {
+    const testProvider = workspaceProviderForTests();
+    if (testProvider !== null) return testProvider;
+    if (cachedProvider === null) cachedProvider = new SdkInstaboxProvider(secrets.get('INSTABOX_API_KEY'));
+    return cachedProvider;
+  };
+  const reconcile = (): void => {
+    void reconcileInterruptedRuns({ db, provider: providerForReconcile, ledgerFile: config.liveBudgetFile }).catch(() => {
+      // Accounting uncertainty is reported by the next sweep; never a retry loop.
+    });
+  };
+  reconcile();
+  const reconcileTimer = setInterval(reconcile, 30_000);
 
   const logLine = (sink: NodeJS.WriteStream, msg: string, obj: Record<string, unknown>): void => {
     const fields = Object.entries(obj)
@@ -36,7 +83,9 @@ export async function main(): Promise<void> {
   // that signals as soon as it reads the started line otherwise hits Node's
   // default disposition and the process dies by signal instead of cleanup.
   installGracefulShutdown('ranger worker', async () => {
+    clearInterval(reconcileTimer);
     await loop.stop();
+    if (retrieval !== null) await retrieval.closeAll();
     db.close();
   });
   loop.start();

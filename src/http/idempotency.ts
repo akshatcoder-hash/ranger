@@ -89,6 +89,24 @@ export function runScopedMutation<T>(
 }
 
 /**
+ * Read-only peek at a stored idempotent result WITHOUT executing anything.
+ *
+ * Used by routes whose first execution includes a paid provider dial: the
+ * dial must happen outside any transaction and must not repeat on an
+ * exact-retry replay. Returns the stored result when (scope, key) exists
+ * with the SAME request hash; undefined when absent; a conflicting reuse is
+ * left for withIdempotentMutation to reject. No key → undefined.
+ */
+export function peekIdempotentResult<T>(db: DatabaseSync, opts: { scope: string; key: string | undefined; requestHash: string }): T | undefined {
+  if (opts.key === undefined) return undefined;
+  const existing = mapRow<IdempotencySqlRow>(
+    db.prepare('SELECT request_hash, response_body FROM idempotency_records WHERE scope = ? AND idempotency_key = ?').get(opts.scope, opts.key),
+  );
+  if (existing === undefined || existing.request_hash !== opts.requestHash) return undefined;
+  return JSON.parse(existing.response_body) as T;
+}
+
+/**
  * Run one idempotency-scoped mutation inside a single transaction.
  *
  * `execute` performs the state mutation AND its event appends; it must not
