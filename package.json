@@ -1,0 +1,42 @@
+{
+  "name": "ranger-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ranger backend proof of work: Fastify API, durable worker and preview gateway over SQLite",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:integration": "npm run build && vitest run --config vitest.integration.config.ts",
+    "test:e2e": "npm run build && vitest run --config vitest.e2e.config.ts",
+    "contracts:generate": "npm run build && node dist/scripts/generate-contracts.js",
+    "db:migrate": "npm run build && node dist/scripts/migrate.js",
+    "bootstrap": "npm run build && node dist/scripts/bootstrap.js",
+    "start:api": "node dist/src/entrypoints/api.js",
+    "start:worker": "node dist/src/entrypoints/worker.js",
+    "start:preview": "node dist/src/entrypoints/preview.js"
+  },
+  "dependencies": {
+    "@fastify/websocket": "11.3.4",
+    "@insforge/instabox-sdk": "0.5.3",
+    "fastify": "5.12.7",
+    "openai": "7.38.0",
+    "sharp": "0.35.5",
+    "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.9.2",
+    "@types/ws": "8.18.1",
+    "ajv": "8.17.1",
+    "eslint": "10.13.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.2",
+    "vite": "8.3.4",
+    "vitest": "5.0.5"
+  }
+}

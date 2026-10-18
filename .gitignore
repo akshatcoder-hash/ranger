@@ -1,0 +1,26 @@
+# Dependencies and build output
+node_modules/
+dist/
+coverage/
+
+# Runtime data (databases, blobs, temp files)
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Secrets and local environment
+.env
+.env.*
+*.pem
+*.key
+*.crt
+
+# Logs and OS artifacts
+*.log
+.DS_Store
+
+# Generated indexes and model caches (never track)
+.trace-home/
+trace-index/
+models/
