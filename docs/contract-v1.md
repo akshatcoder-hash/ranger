@@ -181,7 +181,7 @@ Authenticated desktop stream sessions and private application previews
 - `GET /v1/projects/{projectId}/preview/sessions/{sessionId}/app` — previewAppProxy — served from the preview gateway origin
 
 ### retrieval
-Project-scoped Trace retrieval and the labeled fallback
+Project-scoped Trace retrieval over the real pinned Trace sibling (MCP stdio), plus a clearly labeled file-search fallback. Language coverage: TypeScript, TSX, JavaScript, JSX and JSON. Unsupported or unindexed sources (for example Python or Markdown) are served through the `file-search-fallback` provider label, never attributed to Trace. Citations carry file path, 1-based inclusive lines, snapshot id, commit, branch, dirty flag, content hash and score, and are re-verified against the current saved source before serving (`staleDropped` counts dropped stale citations). Search responses mark non-verbatim (structurally synthesized) snippets and low-confidence results with `verbatim`/`uncertain`. Reindexing is serialized and restarts the MCP runtime. An unavailable Trace runtime is an explicit `trace_unavailable` error, never a silent substitution.
 
 - `POST /v1/projects/{projectId}/retrieval/search` — retrievalSearch
 - `GET /v1/projects/{projectId}/retrieval/status` — retrievalStatus

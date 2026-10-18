@@ -5,6 +5,36 @@ served in `/v1/capabilities` (`contractVersion`) must always appear here.
 
 ## v1 — 2026-10-18
 
+### v1 amendment — real Trace retrieval routes implemented (2026-10-18)
+
+The contract version stays v1. The previously declared retrieval family is
+now implemented over the real pinned Trace sibling:
+
+- `retrievalStatus`, `reindexRetrieval` and `retrievalSearch` serve per
+  project membership. Every project has its own source mirror and index;
+  retrieval never returns another project's content.
+- Search responses carry `provider` — `trace` for real Trace results or
+  `file-search-fallback` for content Trace cannot index. The fallback label
+  is always visible; a fallback result is never attributed to Trace.
+- Trace's supported languages are TypeScript, TSX, JavaScript, JSX and JSON
+  (reported by `retrievalStatus.languages`). Unsupported or unindexed
+  sources (for example Python or Markdown) are served through the labeled
+  file-search fallback.
+- Citations carry file path, 1-based inclusive line range, snapshot id,
+  commit, branch, dirty flag, content hash and score. Every citation is
+  re-verified against the current saved source before it is served: a hash
+  mismatch is stale, is dropped, and is counted in `staleDropped` — stale
+  citations are never served. `verbatim` is false for structurally
+  synthesized snippets; `uncertain` marks low-confidence relationships or
+  non-verbatim snippets. Vector similarity alone is not presented as proof
+  of relevance: identifier-shaped queries only serve results that mention
+  the identifier.
+- When the Trace runtime is unavailable, retrieval fails with an explicit
+  `not_configured` error (`trace_unavailable`); it is never silently
+  substituted. Reindexing is serialized (one indexing job at a time) and
+  restarts the MCP runtime, so citations after a reindex carry a fresh
+  snapshot id.
+
 ### v1 amendment — Instabox workspace and rejected deferred lifecycle (2026-10-18)
 
 The contract version stays v1. Public behavior changes:

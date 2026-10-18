@@ -1514,8 +1514,16 @@ function retrievalFamily(): OperationDef[] {
               contentHash: str(),
               score: num(),
               verbatim: bool({ description: 'False for structurally synthesized snippets' }),
+              uncertain: bool({
+                description: 'True for low-confidence relationships or non-verbatim (synthesized) snippets',
+              }),
+              snippet: str({ description: 'Capped evidence snippet; verbatim means it equals the cited lines' }),
             }),
           ),
+          staleDropped: int({
+            minimum: 0,
+            description: 'Citations dropped because the current source hash no longer matches; stale citations are never served',
+          }),
         },
         ['provider', 'results'],
       ),

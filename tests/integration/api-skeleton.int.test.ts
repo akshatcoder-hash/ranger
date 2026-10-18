@@ -37,7 +37,6 @@ const FAMILY_SAMPLES: Record<string, { method: 'GET' | 'POST'; url: string; body
   capture: { method: 'POST', url: `/v1/projects/${PRJ}/capture/sessions`, body: {} },
   'plans-approvals': { method: 'GET', url: `/v1/projects/${PRJ}/plans` },
   runs: { method: 'GET', url: `/v1/projects/${PRJ}/runs` },
-  retrieval: { method: 'GET', url: `/v1/projects/${PRJ}/retrieval/status` },
 };
 
 /** Families with real handlers now: unauthenticated requests get unauthorized, not not_configured. */
@@ -49,6 +48,7 @@ const IMPLEMENTED_FAMILY_SAMPLES: Record<string, { method: 'GET' | 'POST'; url: 
   events: { method: 'GET', url: `/v1/projects/${PRJ}/events` },
   workspace: { method: 'GET', url: `/v1/projects/${PRJ}/workspace/status` },
   'desktop-preview': { method: 'POST', url: `/v1/projects/${PRJ}/desktop/sessions`, body: {} },
+  retrieval: { method: 'GET', url: `/v1/projects/${PRJ}/retrieval/status` },
 };
 
 describe('api skeleton', () => {

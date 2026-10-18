@@ -146,10 +146,13 @@ export function saveSourceFile(db: DatabaseSync, projectId: string, relativePath
 }
 
 export function readSourceFile(db: DatabaseSync, projectId: string, relativePath: string): Buffer | null {
-  const row = mapRow<{ content: Buffer }>(
+  const row = mapRow<{ content: Uint8Array }>(
     db.prepare('SELECT content FROM workspace_source_files WHERE project_id = ? AND relative_path = ?').get(projectId, relativePath),
   );
-  return row?.content ?? null;
+  // node:sqlite returns BLOBs as plain Uint8Array; every consumer needs a
+  // real Buffer so toString('utf8'/'base64') encodes the bytes, not a
+  // comma-joined numeric dump.
+  return row ? Buffer.from(row.content) : null;
 }
 
 export function listSourceFiles(db: DatabaseSync, projectId: string, prefix: string): Array<{ path: string; sizeBytes: number }> {
@@ -167,10 +170,11 @@ export function listSourceFiles(db: DatabaseSync, projectId: string, prefix: str
 }
 
 export function listAllSourceFiles(db: DatabaseSync, projectId: string): Array<{ path: string; content: Buffer }> {
-  const rows = mapRows<{ relative_path: string; content: Buffer }>(
+  const rows = mapRows<{ relative_path: string; content: Uint8Array }>(
     db.prepare('SELECT relative_path, content FROM workspace_source_files WHERE project_id = ?').all(projectId),
   );
-  return rows.map((row) => ({ path: row.relative_path, content: row.content }));
+  // Buffer.from: node:sqlite BLOBs arrive as plain Uint8Array (see readSourceFile).
+  return rows.map((row) => ({ path: row.relative_path, content: Buffer.from(row.content) }));
 }
 
 export function insertCommand(db: DatabaseSync, input: { projectId: string; argv: string[]; state: CommandRow['state']; pid: number | null; logs: string; exitCode: number | null; timedOut: boolean }): CommandRow {
@@ -248,10 +252,11 @@ export function insertArtifact(db: DatabaseSync, projectId: string, name: string
 }
 
 export function getArtifact(db: DatabaseSync, projectId: string, artifactId: string): { content: Buffer; name: string } | null {
-  const row = mapRow<{ content: Buffer; name: string }>(
+  const row = mapRow<{ content: Uint8Array; name: string }>(
     db.prepare('SELECT content, name FROM workspace_artifacts WHERE project_id = ? AND id = ?').get(projectId, artifactId),
   );
-  return row ?? null;
+  // Buffer.from: node:sqlite BLOBs arrive as plain Uint8Array (see readSourceFile).
+  return row ? { content: Buffer.from(row.content), name: row.name } : null;
 }
 
 export function listArtifacts(db: DatabaseSync, projectId: string): Array<{ id: string; name: string; sizeBytes: number; createdAt: number }> {

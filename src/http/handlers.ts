@@ -13,6 +13,7 @@ import { registerRepositoryHandlers } from './handlers-repositories.js';
 import { registerConversationHandlers } from './handlers-conversations.js';
 import { registerEventHandlers } from './handlers-events.js';
 import { registerWorkspaceHandlers } from './handlers-workspace.js';
+import { registerRetrievalHandlers } from './handlers-retrieval.js';
 
 /**
  * Operation handlers.
@@ -42,7 +43,7 @@ function traceStatus(config: RangerConfig): { configured: boolean; detail: strin
   if (repoPresent && homePresent) {
     return {
       configured: true,
-      detail: 'Trace sibling repository and model cache detected; pin verification and MCP runtime arrive with the Trace milestone',
+      detail: 'Trace sibling repository and model cache detected; retrieval routes index project mirrors over the pinned MCP runtime',
     };
   }
   return {
@@ -133,6 +134,7 @@ export function buildHandlerMaps(context: HandlerContext): HandlerMaps {
   registerConversationHandlers(context, handlers);
   registerEventHandlers(context, handlers, wsHandlers);
   registerWorkspaceHandlers(context, handlers);
+  registerRetrievalHandlers(context, handlers);
 
   return { http: handlers, ws: wsHandlers };
 }

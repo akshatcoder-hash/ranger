@@ -2,6 +2,7 @@ import { loadConfig } from '../config.js';
 import { openDatabase } from '../db/db.js';
 import { migrationsDirFromCwd, runMigrations } from '../db/migrate.js';
 import { buildApiServer } from '../http/app.js';
+import { closeRetrievalRuntimes } from '../http/handlers-retrieval.js';
 import { installGracefulShutdown } from './lifecycle.js';
 
 /**
@@ -17,6 +18,7 @@ export async function main(): Promise<void> {
   // so a SIGTERM in the window between bind and the listening line still
   // runs cleanup instead of the default disposition.
   installGracefulShutdown('ranger api', async () => {
+    await closeRetrievalRuntimes();
     await app.close();
     db.close();
   });

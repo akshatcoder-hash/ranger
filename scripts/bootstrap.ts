@@ -6,6 +6,7 @@ import { loadConfig } from '../src/config.js';
 import { SecretResolver } from '../src/secrets.js';
 import { createAdditionalPrincipal, ensureInitialPrincipal } from '../src/identity/bootstrap.js';
 import { resolveRepoRoot } from '../src/identity/repo-root.js';
+import { ensureTracePinned } from '../src/retrieval/trace-pin.js';
 
 /**
  * Self-hosted bootstrap CLI.
@@ -54,6 +55,29 @@ function reportPrincipal(outcome: { principalId: string; credentialPath: string;
 
 const createPrincipalArg = process.argv.indexOf('--create-principal');
 const additionalPrincipalArg = process.argv.indexOf('--additional-principal');
+const traceArg = process.argv.includes('--trace');
+if (traceArg) {
+  // Pinned real Trace bootstrap: exact commit, frozen-lockfile install,
+  // build, model-cache presence. Prints names and paths only, never weights.
+  const outcome = await ensureTracePinned({
+    traceRoot: config.providers.traceRoot,
+    pinnedCommit: config.providers.tracePinnedCommit,
+    traceHome: config.providers.traceHome,
+  });
+  process.stdout.write(
+    [
+      'bootstrap trace:',
+      `  pinned commit: ${outcome.commit}`,
+      `  pin moved to the pinned commit: ${outcome.checkedOut}`,
+      `  pnpm frozen-lockfile install ran: ${outcome.installed}`,
+      `  build ran: ${outcome.built}`,
+      `  cli: ${outcome.cliPath}`,
+      `  embedding model: ${outcome.embeddingModel}`,
+      `  model cache dir: ${outcome.modelCacheDir} (present: ${outcome.modelCachePresent}; weights stay outside git)`,
+      '  trace git history in ranger repo: none (sibling checkout only)',
+    ].join('\n') + '\n',
+  );
+}
 if (createPrincipalArg >= 0 || additionalPrincipalArg >= 0) {
   const isAdditional = additionalPrincipalArg >= 0;
   const nameArg = (isAdditional ? additionalPrincipalArg : createPrincipalArg) + 1;
@@ -82,7 +106,7 @@ if (createPrincipalArg >= 0 || additionalPrincipalArg >= 0) {
     });
     reportPrincipal(outcome, displayName, 'initial');
   }
-} else {
+} else if (!traceArg) {
   process.stdout.write(
     [
       'bootstrap:',
@@ -94,6 +118,7 @@ if (createPrincipalArg >= 0 || additionalPrincipalArg >= 0) {
       `  contract version: v1`,
       'next: run with --create-principal [displayName] to create the initial principal and credential',
       '      (or --additional-principal <displayName> --credential-file <path> for further principals)',
+      '      (or --trace to verify/bootstrap the pinned Trace sibling)',
     ].join('\n') + '\n',
   );
 }

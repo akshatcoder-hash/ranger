@@ -15198,10 +15198,23 @@
                           "verbatim": {
                             "type": "boolean",
                             "description": "False for structurally synthesized snippets"
+                          },
+                          "uncertain": {
+                            "type": "boolean",
+                            "description": "True for low-confidence relationships or non-verbatim (synthesized) snippets"
+                          },
+                          "snippet": {
+                            "type": "string",
+                            "description": "Capped evidence snippet; verbatim means it equals the cited lines"
                           }
                         },
                         "additionalProperties": false
                       }
+                    },
+                    "staleDropped": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Citations dropped because the current source hash no longer matches; stale citations are never served"
                     }
                   }
                 }
