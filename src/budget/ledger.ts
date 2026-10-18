@@ -17,6 +17,10 @@ import { AppError, Errors } from '../errors.js';
  *   validated at reserve time, before any provider create can be attempted.
  * - The ledger is consumed, never reset: writes preserve unknown fields and
  *   append to the operation history. Refusals write nothing.
+ * - xAI reservations settle exactly once: at most one observe or one release
+ *   per reservation id, under the ledger lock. A repeated or unknown
+ *   settlement never frees another reservation's headroom or double counts
+ *   usage, so admission can never be inflated past the caps.
  * - Ledger-configured limits may only lower the approved ceilings; missing,
  *   negative, non-finite or inflated limits fail closed (refuse admission).
  * - When accounting is uncertain, refuse: stop paid work and report.
@@ -305,7 +309,17 @@ export function reserveXaiSpend(
   });
 }
 
-/** Record observed provider usage for a reservation; frees the reservation. */
+/**
+ * The settle-once marker for an xAI reservation: at most one observe or one
+ * release operation may exist per reservation id, so the shared reservedUsd
+ * pool is freed at most once per reservation and usage is counted at most
+ * once. Settlement already happened when either operation marker is present.
+ */
+function findXaiSettlement(operations: LedgerOperation[], reservationId: string): LedgerOperation | undefined {
+  return operations.find((o) => o.provider === 'xai' && (o.id === `${reservationId}-observe` || o.id === `${reservationId}-release`));
+}
+
+/** Record observed provider usage for a reservation; settles it exactly once. */
 export function observeXaiSpend(
   ledgerFile: string,
   input: { reservationId: string; observedUsd: number; note?: string },
@@ -316,6 +330,13 @@ export function observeXaiSpend(
     const op = xai.operations.find((o) => o.id === input.reservationId && o.kind === 'reserve');
     if (op === undefined) {
       throw new BudgetLedgerError('Unknown xAI reservation', { reservationId: 'unknown' });
+    }
+    if (findXaiSettlement(xai.operations, input.reservationId) !== undefined) {
+      // A reservation is settled exactly once; a repeated observe must never
+      // double count usage or free another reservation's headroom.
+      throw new BudgetLedgerError('xAI reservation was already settled; refusing double settlement', {
+        reservationId: 'already_settled',
+      });
     }
     if (typeof input.observedUsd !== 'number' || !Number.isFinite(input.observedUsd) || input.observedUsd < 0) {
       throw new BudgetLedgerError('Observed xAI usage must be a non-negative number', {
@@ -340,13 +361,19 @@ export function observeXaiSpend(
   });
 }
 
-/** Release a reservation without any observed spend (operation not dialed). */
+/**
+ * Release a reservation without any observed spend (operation not dialed).
+ * Settles the reservation exactly once: releasing an unknown reservation is
+ * an idempotent no-op, and releasing one that was already observed or
+ * released never frees reservedUsd a second time.
+ */
 export function releaseXaiReservation(ledgerFile: string, reservationId: string): void {
   withLedgerLock(ledgerFile, () => {
     const data = readLedger(ledgerFile);
     const xai = requireXai(data);
     const op = xai.operations.find((o) => o.id === reservationId && o.kind === 'reserve');
     if (op === undefined) return;
+    if (findXaiSettlement(xai.operations, reservationId) !== undefined) return;
     xai.reservedUsd = round4(Math.max(0, xai.reservedUsd - (op.estimateUsd ?? 0)));
     xai.operations.push({
       id: `${reservationId}-release`,

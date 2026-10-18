@@ -50,11 +50,19 @@ stays v1. Public behavior changes:
   `RANGER_APPROVED_SNAPSHOT_ROOTS` (or the config-file
   `approvedSnapshotRoots`); unapproved paths answer `validation_failed`
   with details reason `local_path_not_approved` before any filesystem
-  probing. Checks are realpath/symlink-safe (symlinked worktrees and
-  symlinked `.git` may not escape an approved root), and inspection never
-  executes repository-configured fsmonitor helpers or hooks and never takes
-  repository locks or honors global/system git config. Remote references
-  persist without host inspection as before.
+  probing. The `.git` entry must be a real directory: gitfile (`gitdir:`)
+  and symlinked `.git` metadata are refused as unsupported forms, effective
+  git dir/worktree are verified canonically inside the approved root, and
+  repo-local `core.worktree` redirection answers `repository_redirect`.
+  Nonempty or symlinked `.git/info/attributes` answers `attributes_rejected`
+  (that source is not suppressible by `--attr-source`). Inspection never
+  executes repository-configured helpers: attribute filters are neutralized
+  from every source (`--attr-source=<empty tree>`,
+  `core.attributesFile=/dev/null`, `GIT_ATTR_NOSYSTEM=1`) on top of
+  fsmonitor/hook hardening, no repository locks are taken, global/system git
+  config is ignored, and ambient `GIT_*` environment variables are stripped.
+  Content hashing hashes symlinks by link text and never reads out-of-root
+  target bytes. Remote references persist without host inspection as before.
 - **Idempotency is principal-scoped**: the `Idempotency-Key` scope now binds
   the authenticated principal in addition to operation and project, so
   identical createProject requests (same key, same body) from two principals

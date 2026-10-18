@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -480,6 +481,112 @@ describe('local repository snapshot', () => {
     rmSync(path.join(inside.root, '.git'), { recursive: true, force: true });
     symlinkSync(path.join(otherOutside.root, '.git'), path.join(inside.root, '.git'));
     await expect(resolveLocalSnapshot(`file://${inside.root}`, 'main', [baseDir])).rejects.toMatchObject(notApproved);
+
+    // Fail closed: a symlinked .git is refused even when its target stays
+    // inside the approved root — gitdir-sharing forms are unsupported.
+    const target = createFixtureRepo(baseDir, 'gitdir-target');
+    const sharer = createFixtureRepo(baseDir, 'gitdir-sharer');
+    rmSync(path.join(sharer.root, '.git'), { recursive: true, force: true });
+    symlinkSync(path.join(target.root, '.git'), path.join(sharer.root, '.git'));
+    await expect(resolveLocalSnapshot(`file://${sharer.root}`, 'main', [baseDir])).rejects.toMatchObject(notApproved);
+  });
+
+  it('refuses gitfile and core.worktree redirection outside the approved root before inspection', async () => {
+    const outsideDir = mkdtempSync(path.join(tmpdir(), 'ranger-redirect-out-'));
+    const outsideRepo = createFixtureRepo(outsideDir, 'outside-app');
+
+    // A regular .git gitfile makes every git command operate on another
+    // repository's git dir; the form is refused outright (fail closed, no
+    // linked-worktree support) before any source inspection runs.
+    const gitfileRepo = path.join(baseDir, 'gitfile-app');
+    mkdirSync(gitfileRepo, { recursive: true });
+    writeFileSync(path.join(gitfileRepo, '.git'), `gitdir: ${path.join(outsideRepo.root, '.git')}\n`);
+    await expect(resolveLocalSnapshot(`file://${gitfileRepo}`, 'main', [baseDir])).rejects.toMatchObject({
+      code: 'validation_failed',
+      details: { reason: 'local_path_not_approved' },
+    });
+
+    // Repo-local core.worktree redirects the effective worktree outside the
+    // approved root; containment is verified before the ref is inspected.
+    const redirected = createFixtureRepo(baseDir, 'redirected-app');
+    execFileSync('git', ['-C', redirected.root, 'config', 'core.worktree', outsideDir]);
+    await expect(resolveLocalSnapshot(`file://${redirected.root}`, 'main', [baseDir])).rejects.toMatchObject({
+      code: 'validation_failed',
+      details: { reason: 'repository_redirect' },
+    });
+  });
+
+  it('never executes attribute filter helpers via worktree, info or config-selected attributes', async () => {
+    const marker = path.join(baseDir, 'filter-marker');
+    const cleanCommand = `touch '${marker}'`;
+    // A tracked file that is stat-dirty makes `git status` consult the clean
+    // filter; that is the round-2 execution vector.
+    writeFileSync(fixture.trackedFile, 'export const version = 1;\n');
+
+    // (a) Worktree .gitattributes plus a repo-local filter definition.
+    writeFileSync(path.join(fixture.root, '.gitattributes'), '* filter=sentinel\n');
+    execFileSync('git', ['-C', fixture.root, 'config', 'filter.sentinel.clean', cleanCommand]);
+
+    // Positive control: an unhardened git status honors the repo config and
+    // runs the harmless, local, self-contained sentinel.
+    execFileSync('git', ['-C', fixture.root, 'status', '--porcelain'], { stdio: 'ignore' });
+    expect(existsSync(marker), 'sentinel must run without hardening (positive control)').toBe(true);
+    rmSync(marker);
+
+    const snapshot = await resolveLocalSnapshot(fixture.fileUrl, 'main', [baseDir]);
+    expect(snapshot).not.toBeNull();
+    expect(existsSync(marker), 'worktree .gitattributes filter must not run').toBe(false);
+    rmSync(path.join(fixture.root, '.gitattributes'));
+
+    // (b) .git/info/attributes is NOT suppressed by --attr-source; nonempty
+    // or symlinked forms are refused outright, before inspection.
+    writeFileSync(path.join(fixture.root, '.git', 'info', 'attributes'), '* filter=sentinel\n');
+    await expect(resolveLocalSnapshot(fixture.fileUrl, 'main', [baseDir])).rejects.toMatchObject({
+      code: 'validation_failed',
+      details: { reason: 'attributes_rejected' },
+    });
+    expect(existsSync(marker), 'info/attributes filter must not run').toBe(false);
+    rmSync(path.join(fixture.root, '.git', 'info', 'attributes'));
+
+    // An empty, regular info/attributes file defines no attributes and stays allowed.
+    writeFileSync(path.join(fixture.root, '.git', 'info', 'attributes'), '\n');
+    await expect(resolveLocalSnapshot(fixture.fileUrl, 'main', [baseDir])).resolves.not.toBeNull();
+    rmSync(path.join(fixture.root, '.git', 'info', 'attributes'));
+
+    // (c) A repo-selected core.attributesFile is overridden, not honored.
+    writeFileSync(path.join(baseDir, 'external-attributes'), '* filter=sentinel\n');
+    execFileSync('git', [
+      '-C',
+      fixture.root,
+      'config',
+      'core.attributesFile',
+      path.join(baseDir, 'external-attributes'),
+    ]);
+    await expect(resolveLocalSnapshot(fixture.fileUrl, 'main', [baseDir])).resolves.not.toBeNull();
+    expect(existsSync(marker), 'config-selected attributes must not run their filter').toBe(false);
+  });
+
+  it('hashes symlink entries by link text and never reads out-of-root target bytes', async () => {
+    const outsideDir = mkdtempSync(path.join(tmpdir(), 'ranger-link-target-'));
+    const target = path.join(outsideDir, 'external.txt');
+    writeFileSync(target, 'external content v1\n');
+    const link = path.join(fixture.root, 'link.ts');
+    symlinkSync(target, link);
+
+    const before = await resolveLocalSnapshot(fixture.fileUrl, 'main', [baseDir]);
+    expect(before).not.toBeNull();
+
+    // Changing the external target's bytes must not change the hash: the
+    // target is never read through the link.
+    writeFileSync(target, 'external content v2 CHANGED\n');
+    const after = await resolveLocalSnapshot(fixture.fileUrl, 'main', [baseDir]);
+    expect(after!.contentHash).toBe(before!.contentHash);
+
+    // A different link text is different tracked content and changes the hash.
+    rmSync(link);
+    symlinkSync('./index.ts', link);
+    const relinked = await resolveLocalSnapshot(fixture.fileUrl, 'main', [baseDir]);
+    expect(relinked!.contentHash).not.toBe(before!.contentHash);
   });
 
   it('never executes repository-configured fsmonitor helpers while resolving a snapshot', async () => {

@@ -133,11 +133,20 @@ remain usable. Local `file://`/absolute-path repositories are inspected
 (read-only git) ONLY when they live under an operator-approved synthetic
 root (`RANGER_APPROVED_SNAPSHOT_ROOTS`): checks are realpath/symlink-safe,
 unapproved paths are refused with `local_path_not_approved` before any
-filesystem probing, and inspection never executes repository-configured
-fsmonitor helpers or hooks (`--no-optional-locks`, `core.fsmonitor=false`,
-`core.hooksPath=/dev/null`, global/system git config ignored). Remote
-references persist without host inspection and resolve in the workspace
-checkout.
+filesystem probing, and inspection is hardened against repository-controlled
+git mechanisms. The `.git` entry must be a real directory (gitfile
+`gitdir:` pointers and symlinked `.git` are refused, `repository_redirect`
+covers detected `core.worktree` redirection after a canonical
+git-dir/worktree containment check), nonempty or symlinked
+`.git/info/attributes` is refused (`attributes_rejected`), no repository
+lock is taken, and no repository-configured helper executes
+(`--no-optional-locks`, `core.fsmonitor=false`, `core.hooksPath=/dev/null`,
+`--attr-source=<empty tree>` plus `core.attributesFile=/dev/null` and
+`GIT_ATTR_NOSYSTEM=1` neutralize attribute filters, global/system git
+config is ignored, and ambient `GIT_*` environment variables are stripped).
+Content hashing hashes symlinks by link text and never reads out-of-root
+target bytes. Remote references persist without host inspection and resolve
+in the workspace checkout.
 
 Mutating routes accept a scoped `Idempotency-Key` header (scoped to the
 operation, project AND authenticated principal, so the same key and body

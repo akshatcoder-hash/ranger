@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  BudgetLedgerError,
   confirmInstaboxCreation,
   observeXaiSpend,
   readLedger,
@@ -173,6 +174,79 @@ describe('xAI budget admission', () => {
     });
     reserveXaiSpend(file, { feature: 'test', estimateUsd: 0.1 });
     expect(() => reserveXaiSpend(file, { feature: 'test', estimateUsd: 2.0 })).toThrow(/admission stop/i);
+  });
+});
+
+describe('xAI settle-once semantics', () => {
+  it('observe-observe: a second observation of the same reservation is refused and never double counts usage', () => {
+    const { file } = tempLedger();
+    const admission = reserveXaiSpend(file, { feature: 'test', estimateUsd: 0.5 });
+    observeXaiSpend(file, { reservationId: admission.reservationId, observedUsd: 0.2 });
+    expect(() =>
+      observeXaiSpend(file, { reservationId: admission.reservationId, observedUsd: 0.2 }),
+    ).toThrow(BudgetLedgerError);
+    const data = readLedger(file);
+    expect(data.xai.observedUsd).toBeCloseTo(0.2);
+    expect(data.xai.reservedUsd).toBeCloseTo(0);
+    expect(data.xai.operations.filter((o) => o.kind === 'observe')).toHaveLength(1);
+  });
+
+  it('observe-release: releasing an already-observed reservation is an idempotent no-op that never frees another reservation', () => {
+    const { file } = tempLedger();
+    const a = reserveXaiSpend(file, { feature: 'test', estimateUsd: 0.5 });
+    reserveXaiSpend(file, { feature: 'test', estimateUsd: 0.5 });
+    observeXaiSpend(file, { reservationId: a.reservationId, observedUsd: 0.2 });
+    releaseXaiReservation(file, a.reservationId);
+    const data = readLedger(file);
+    // Regression (round 2): the second free used to subtract from the shared
+    // reservedUsd pool and silently erased b's outstanding reservation.
+    expect(data.xai.reservedUsd).toBeCloseTo(0.5);
+    expect(data.xai.observedUsd).toBeCloseTo(0.2);
+    expect(data.xai.operations.filter((o) => o.kind === 'release')).toHaveLength(0);
+  });
+
+  it('release-observe: a released reservation cannot accrue observed spend afterwards', () => {
+    const { file } = tempLedger();
+    const admission = reserveXaiSpend(file, { feature: 'test', estimateUsd: 0.5 });
+    releaseXaiReservation(file, admission.reservationId);
+    expect(() =>
+      observeXaiSpend(file, { reservationId: admission.reservationId, observedUsd: 0.3 }),
+    ).toThrow(BudgetLedgerError);
+    const data = readLedger(file);
+    expect(data.xai.observedUsd).toBeCloseTo(0);
+    expect(data.xai.reservedUsd).toBeCloseTo(0);
+  });
+
+  it('release-release: a second release of the same reservation is a no-op single free', () => {
+    const { file } = tempLedger();
+    const admission = reserveXaiSpend(file, { feature: 'test', estimateUsd: 0.5 });
+    releaseXaiReservation(file, admission.reservationId);
+    releaseXaiReservation(file, admission.reservationId);
+    const data = readLedger(file);
+    expect(data.xai.reservedUsd).toBeCloseTo(0);
+    expect(data.xai.operations.filter((o) => o.kind === 'release')).toHaveLength(1);
+  });
+
+  it('unknown reservations: observe refuses and release is a no-op; neither writes the ledger', () => {
+    const { file, raw } = tempLedger();
+    expect(() => observeXaiSpend(file, { reservationId: 'xai-none', observedUsd: 0.1 })).toThrow(BudgetLedgerError);
+    expect(readFileSync(file, 'utf8')).toBe(raw);
+    releaseXaiReservation(file, 'xai-none');
+    expect(readFileSync(file, 'utf8')).toBe(raw);
+  });
+
+  it('a settled reservation can no longer admit spend past the soft stop while another is outstanding', () => {
+    // Reproduces the round-2 review: observe A then release A double-freed
+    // the shared reservedUsd pool, letting admission ignore B's outstanding
+    // reservation and admit past the cap.
+    const { file } = tempLedger();
+    const a = reserveXaiSpend(file, { feature: 'test', estimateUsd: 0.4 });
+    reserveXaiSpend(file, { feature: 'test', estimateUsd: 0.4 });
+    observeXaiSpend(file, { reservationId: a.reservationId, observedUsd: 0.4 });
+    releaseXaiReservation(file, a.reservationId);
+    // b is still outstanding: observed 0.4 + reserved 0.4 leaves 3.2 to the stop.
+    expect(() => reserveXaiSpend(file, { feature: 'test', estimateUsd: 3.3 })).toThrow(/admission stop/i);
+    reserveXaiSpend(file, { feature: 'test', estimateUsd: 3.2 });
   });
 });
 
