@@ -31,6 +31,7 @@ export function App() {
   const [modal, setModal] = useState<'name' | 'plan' | null>(null)
   const [nameDraft, setNameDraft] = useState(engineer)
   const [repoConnected, setRepoConnected] = useState(false)
+  const [contextFiles, setContextFiles] = useState<string[]>([])
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('workspace')
   const [approved, setApproved] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -70,7 +71,7 @@ export function App() {
     if (mediaSessionRef.current) void rangerApi.endMediaSession(mediaSessionRef.current, new AbortController().signal)
     mediaSessionRef.current = null
     requestRef.current?.abort()
-    setRepoConnected(false); setApproved(false); setMessages([]); setMediaState('idle'); setBusy(false)
+    setRepoConnected(false); setContextFiles([]); setApproved(false); setMessages([]); setMediaState('idle'); setBusy(false)
   }, [location.mode])
 
   useEffect(() => {
@@ -133,6 +134,12 @@ export function App() {
     else setNotice({ kind: 'error', text: 'Repository connection is unavailable until the backend contract is provided.' })
   }
 
+  const selectContextFiles = (files: FileList | null) => {
+    const names = files ? Array.from(files, file => file.name) : []
+    setContextFiles(names)
+    if (names.length) setNotice({ kind: 'info', text: demo ? 'Files are selected locally for this walkthrough; they are not uploaded.' : 'Files are selected locally. The backend upload contract is not available yet.' })
+  }
+
   const decidePlan = async (accept: boolean) => {
     if (busy) return
     if (demo) { setApproved(accept); setModal(null); setNotice({ kind: 'success', text: accept ? 'Sample plan approved for this walkthrough.' : 'Plan sent back for changes.' }); return }
@@ -193,7 +200,7 @@ export function App() {
 
   return <div className="app-shell">
     {location.screen === 'home' && <Landing demo={demo} onStart={() => navigate('start')} onDemo={() => navigate('start', 'demo')} onWorkspace={() => navigate('workspace', demo ? 'demo' : 'live')} />}
-    {location.screen === 'start' && <Composer demo={demo} engineer={engineer} repoConnected={repoConnected} prompt={prompt} busy={busy} notice={notice} setPrompt={setPrompt} onConnectRepo={connectRepo} onRename={openRename} onStartCall={() => demo ? navigate('workspace', 'demo') : startMedia('voice')} onSubmit={createProject} onCancel={cancelRequest} onHome={() => navigate('home')} onDemo={() => navigate('start', 'demo')} />}
+    {location.screen === 'start' && <Composer demo={demo} engineer={engineer} repoConnected={repoConnected} contextFiles={contextFiles} prompt={prompt} busy={busy} notice={notice} setPrompt={setPrompt} onContextFiles={selectContextFiles} onConnectRepo={connectRepo} onRename={openRename} onStartCall={() => demo ? navigate('workspace', 'demo') : startMedia('voice')} onSubmit={createProject} onCancel={cancelRequest} onHome={() => navigate('home')} onDemo={() => navigate('start', 'demo')} />}
     {location.screen === 'workspace' && <Workspace demo={demo} engineer={engineer} tab={workspaceTab} setTab={setWorkspaceTab} approved={approved} mediaState={mediaState} messages={messages} message={message} setMessage={setMessage} onSend={sendMessage} onReviewPlan={() => setModal('plan')} onReview={() => navigate('review')} onHome={() => navigate('home')} onRename={openRename} onStartVoice={() => startMedia('voice')} onStartScreen={() => startMedia('screen')} onStopMedia={stopMedia} onCancel={cancelRequest} />}
     {location.screen === 'review' && <Review demo={demo} engineer={engineer} approved={approved} notice={notice} onWorkspace={() => navigate('workspace')} onHome={() => navigate('home')} onRename={openRename} onReviewPlan={() => setModal('plan')} />}
     {notice && <div className={`toast toast-${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}><span>{notice.text}</span><button aria-label="Dismiss message" onClick={() => setNotice(null)}>×</button></div>}
@@ -247,16 +254,17 @@ function MiniWave() { return <div className="mini-wave-wrap"><StatusPill>On a ca
 function MiniTrace() { return <div className="mini-trace"><strong>⌘ northstar / order-service</strong>{['src/routes/orders.ts', 'src/policies/returns.ts', 'src/integrations/support.ts'].map((x, i) => <p key={x}><code>{x}</code><span>{i === 2 ? '+ New' : 'Read'}</span></p>)}</div> }
 function MiniCheck() { return <div className="mini-check"><StatusPill>Ready to try</StatusPill><div><strong>Return my order</strong><small>Order found. Reply drafted.</small></div><p>✓ Order lookup  ·  ✓ Approval rules</p></div> }
 
-function Composer({ demo, engineer, repoConnected, prompt, busy, notice, setPrompt, onConnectRepo, onRename, onStartCall, onSubmit, onCancel, onHome, onDemo }: { demo: boolean; engineer: string; repoConnected: boolean; prompt: string; busy: boolean; notice: Notice | null; setPrompt: (value: string) => void; onConnectRepo: () => void; onRename: () => void; onStartCall: () => void; onSubmit: (event: FormEvent) => void; onCancel: () => void; onHome: () => void; onDemo: () => void }) {
+function Composer({ demo, engineer, repoConnected, contextFiles, prompt, busy, notice, setPrompt, onContextFiles, onConnectRepo, onRename, onStartCall, onSubmit, onCancel, onHome, onDemo }: { demo: boolean; engineer: string; repoConnected: boolean; contextFiles: string[]; prompt: string; busy: boolean; notice: Notice | null; setPrompt: (value: string) => void; onContextFiles: (files: FileList | null) => void; onConnectRepo: () => void; onRename: () => void; onStartCall: () => void; onSubmit: (event: FormEvent) => void; onCancel: () => void; onHome: () => void; onDemo: () => void }) {
   return <main className="composer-page"><header className="composer-header"><button className="brand-button" onClick={onHome}><Brand /></button><div className="header-actions"><button className="header-link" onClick={onHome}>Your projects</button><button className="avatar" aria-label="Your profile">AS</button></div></header>
     <div className="composer-art" />{demo && <div className="composer-demo"><DemoTag /></div>}
     <section className="composer-content"><p className="eyebrow">A NEW PROJECT</p><h1>What are we building?</h1><p className="composer-subtitle">Start with the problem. We’ll figure out the rest together.</p>
       <form className="composer-card" onSubmit={onSubmit}><label className="sr-only" htmlFor="project-prompt">Describe the problem you want to solve</label><textarea id="project-prompt" autoFocus placeholder="I want to connect our support inbox to our order system…" value={prompt} onChange={event => setPrompt(event.target.value)} maxLength={2000} />
         <button type="button" className={`repo-row ${repoConnected ? 'repo-connected' : ''}`} onClick={onConnectRepo}><span className="repo-icon" aria-hidden="true">⌘</span><strong>{repoConnected ? 'northstar / support-inbox' : 'Connect a repository'}</strong><span className="repo-state">{repoConnected ? (demo ? 'Sample' : 'Connected') : 'Choose repo'}</span></button>
-        <div className="composer-controls"><button className="attach-button" type="button" onClick={() => document.getElementById('context-upload')?.click()}><span aria-hidden="true">＋</span> Add context</button><input id="context-upload" className="sr-only" type="file" multiple onChange={event => event.currentTarget.files?.length && notice} />
+        <div className="composer-controls"><button className="attach-button" type="button" onClick={() => document.getElementById('context-upload')?.click()}><span aria-hidden="true">＋</span> Add context{contextFiles.length ? ` · ${contextFiles.length} selected` : ''}</button><input id="context-upload" className="sr-only" type="file" multiple onChange={event => onContextFiles(event.currentTarget.files)} />
           <div>{busy ? <Button type="button" onClick={onCancel}>Cancel</Button> : <><Button kind="primary" type="button" onClick={onStartCall}>Start a call ↗</Button><Button kind="secondary" type="submit" disabled={!prompt.trim()}>Send <span aria-hidden="true">↑</span></Button></>}</div>
         </div>
       </form>
+      {contextFiles.length > 0 && <p className="context-note">{contextFiles.join(' · ')} <span>Selected locally; not uploaded.</span></p>}
       <div className="suggestions"><Button onClick={() => setPrompt('Connect two tools I use every day and carry the right context between them.')}>Connect two tools</Button><Button onClick={() => setPrompt('Fix a workflow that keeps making us do the same thing by hand.')}>Fix a workflow</Button><Button onClick={() => setPrompt('Show me your screen and I’ll walk through what I need.')}>Show you my screen</Button></div>
       <p className="engineer-label">Your engineer’s name is {engineer}. <button onClick={onRename}>Change name</button></p>
       <p className="live-note">{demo ? 'Sample walkthrough: actions stay in this browser.' : 'Live mode. Calls and project creation need the Ranger backend connection.'}</p>
