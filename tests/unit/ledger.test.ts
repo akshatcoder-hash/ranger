@@ -34,7 +34,7 @@ function fixtureLedger(): LedgerFixture {
       operations: [],
     },
     instabox: {
-      maxAdditionalCreations: 6,
+      maxAdditionalCreations: 9,
       maxConcurrent: 1,
       maxLifetimeSeconds: 600,
       additionalCreations: 0,
@@ -265,15 +265,50 @@ describe('Instabox creation allowance', () => {
     expect(instabox.pendingReservations).toHaveLength(0);
   });
 
-  it('refuses a creation beyond the six-machine allowance', () => {
-    const { file } = tempLedger();
+  it('admits exactly the three post-six windows and fails the fourth future reserve closed', () => {
+    // Mirrors the real shared ledger: six historical creations spent, six
+    // machine records preserved, ceiling raised from 6 to 9.
+    const historicalMachines = Array.from({ length: 6 }, (_, i) => ({
+      machineId: `m_hist_${i}`,
+      createdAt: 1792345456838 + i * 1000,
+      killTimeoutMs: 600000,
+      purpose: `prj_historical_${i}`,
+      releasedAt: 1792345458308 + i * 1000,
+    }));
+    const { file } = tempLedger((fixture) => {
+      const instabox = fixture.instabox as Record<string, unknown>;
+      instabox['additionalCreations'] = 6;
+      instabox['machines'] = historicalMachines;
+    });
+    // Windows 7, 8 and 9 are admitted sequentially.
+    for (let i = 0; i < 3; i += 1) {
+      const reservation = reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 });
+      const instabox = confirmInstaboxCreation(file, {
+        reservationId: reservation.reservationId,
+        machineId: `m_new_${i}`,
+      });
+      expect(instabox.additionalCreations).toBe(7 + i);
+      recordInstaboxRelease(file, `m_new_${i}`);
+    }
+    // Every historical record is preserved alongside the new ones.
+    const preserved = readLedger(file).instabox.machines.filter((m) => m.machineId.startsWith('m_hist_'));
+    expect(preserved).toHaveLength(6);
+    // The FOURTH new reserve (a tenth cumulative creation) fails closed.
+    expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(/allowance/i);
+    expect(readLedger(file).instabox.additionalCreations).toBe(9);
+  });
+
+  it('honors a lowered maxAdditionalCreations ledger limit', () => {
+    const { file } = tempLedger((fixture) => {
+      (fixture.instabox as Record<string, unknown>)['maxAdditionalCreations'] = 6;
+    });
     for (let i = 0; i < 6; i += 1) {
       const reservation = reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 });
       confirmInstaboxCreation(file, {
         reservationId: reservation.reservationId,
-        machineId: `m_test_${i}`,
+        machineId: `m_lowered_${i}`,
       });
-      recordInstaboxRelease(file, `m_test_${i}`);
+      recordInstaboxRelease(file, `m_lowered_${i}`);
     }
     expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(/allowance/i);
   });
@@ -318,9 +353,9 @@ describe('Instabox creation allowance', () => {
     expect(second.reservationId).toBeTruthy();
   });
 
-  it('counts an outstanding reservation against the six-total cap (seven-of-six regression)', () => {
+  it('counts an outstanding reservation against the nine-total cap (ten-of-nine regression)', () => {
     const { file } = tempLedger();
-    for (let i = 0; i < 5; i += 1) {
+    for (let i = 0; i < 8; i += 1) {
       const reservation = reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 });
       confirmInstaboxCreation(file, {
         reservationId: reservation.reservationId,
@@ -328,19 +363,19 @@ describe('Instabox creation allowance', () => {
       });
       recordInstaboxRelease(file, `m_${i}`);
     }
-    // The 6th slot can be reserved exactly once; a second outstanding
+    // The 9th slot can be reserved exactly once; a second outstanding
     // reservation is refused (it violates one-at-a-time while pending and
-    // would project a 7th creation).
-    const sixth = reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 });
+    // would project a 10th creation).
+    const ninth = reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 });
     expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(
       /one at a time|allowance/i,
     );
-    confirmInstaboxCreation(file, { reservationId: sixth.reservationId, machineId: 'm_5' });
-    recordInstaboxRelease(file, 'm_5');
-    expect(readLedger(file).instabox.additionalCreations).toBe(6);
+    confirmInstaboxCreation(file, { reservationId: ninth.reservationId, machineId: 'm_8' });
+    recordInstaboxRelease(file, 'm_8');
+    expect(readLedger(file).instabox.additionalCreations).toBe(9);
     // With nothing pending and no machine active, the exhausted total allowance is the gate.
     expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(/allowance/i);
-    expect(readLedger(file).instabox.additionalCreations).toBe(6);
+    expect(readLedger(file).instabox.additionalCreations).toBe(9);
   });
 
   it('rejects an unknown reservation confirmation instead of fabricating a creation', () => {
@@ -390,7 +425,7 @@ describe('Instabox creation allowance', () => {
         delete (fixture.instabox as Record<string, unknown>).maxAdditionalCreations;
       },
       (fixture) => {
-        (fixture.instabox as Record<string, unknown>).maxAdditionalCreations = 7;
+        (fixture.instabox as Record<string, unknown>).maxAdditionalCreations = 10;
       },
       (fixture) => {
         delete (fixture.instabox as Record<string, unknown>).maxConcurrent;

@@ -10,11 +10,15 @@ import { AppError, Errors } from '../errors.js';
  * - xAI: $5 total; a paid operation is admitted only while recorded spend
  *   plus a conservative estimate stays at or below the $4 soft admission stop.
  *   The remaining $1 is reserve for in-flight/accounting uncertainty.
- * - Instabox: at most six additional VM creations, one at a time, each with a
- *   server-side kill timeout of at most 600 s and early cleanup. Outstanding
- *   (pending) reservations count against both the concurrency and total caps
- *   until they are confirmed or released, and the requested kill timeout is
- *   validated at reserve time, before any provider create can be attempted.
+ * - Instabox: at most nine additional VM creations cumulative (the six
+ *   historical mission creations plus three newly authorized sequential
+ *   windows: workspace validation, initial customer run, changed-requirement
+ *   run), one at a time, each with a server-side kill timeout of at most
+ *   600 s and early cleanup. Outstanding (pending) reservations count against
+ *   both the concurrency and total caps until they are confirmed or released,
+ *   and the requested kill timeout is validated at reserve time, before any
+ *   provider create can be attempted. The provider account quota itself is
+ *   five live machines, checked against the provider list before each create.
  * - The ledger is consumed, never reset: writes preserve unknown fields and
  *   append to the operation history. Refusals write nothing.
  * - xAI reservations settle exactly once: at most one observe or one release
@@ -31,7 +35,15 @@ import { AppError, Errors } from '../errors.js';
 
 export const XAI_TOTAL_LIMIT_USD = 5;
 export const XAI_SOFT_ADMISSION_USD = 4;
-export const INSTABOX_MAX_ADDITIONAL_CREATIONS = 6;
+/**
+ * Cumulative Instabox creation ceiling for the whole mission: the six
+ * historical creations remain spent and preserved, and the user authorized
+ * exactly three more sequential windows (workspace validation plus the two
+ * customer conversations). A ledger may lower this but never exceed it, so
+ * with the shared ledger at count 6 the reserves for creations 7, 8 and 9
+ * are admitted and the fourth future reserve fails closed.
+ */
+export const INSTABOX_MAX_ADDITIONAL_CREATIONS = 9;
 export const INSTABOX_MAX_CONCURRENT = 1;
 export const INSTABOX_MAX_LIFETIME_SECONDS = 600;
 

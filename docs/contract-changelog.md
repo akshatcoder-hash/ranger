@@ -171,7 +171,8 @@ Initial publication of the Ranger v1 contract.
   and HTTP replay (see the conversations/events amendment); reserved for the
   voice session reconnect path until the interaction milestone.
 - `budget_exceeded`: xAI $5 total / $4 soft admission stop and the Instabox
-  six-creation allowance, enforced by the shared ledger
+  cumulative nine-creation allowance (six historical creations preserved,
+  three sequential windows newly authorized), enforced by the shared ledger
   (`src/budget/ledger.ts`) before any paid call.
 
 ### v1 amendment — conversations, transactional events and realtime subscription (2026-10-18)

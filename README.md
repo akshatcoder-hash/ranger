@@ -213,8 +213,11 @@ set.
 it: xAI paid operations are admitted only while recorded spend plus a
 conservative estimate stays at or below the **$4 soft admission stop** within
 the **$5 total cap** (the remaining $1 is reserve); Instabox allows at most
-**six additional VM creations**, one at a time, each with a server-side
-10-minute kill timeout and early cleanup. The ledger is locked, written
+**nine additional VM creations cumulative** (the six historical mission
+creations remain spent and preserved, plus three newly authorized sequential
+windows), one at a time, each with a server-side
+10-minute kill timeout and early cleanup, and never more than the account's
+five live machines. The ledger is locked, written
 atomically, preserves history and unknown fields, and **must never be reset
 by tests** (tests use temporary copies). Uncertain accounting refuses the
 operation instead of guessing.

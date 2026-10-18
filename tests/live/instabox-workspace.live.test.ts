@@ -82,6 +82,11 @@ describeLive('live Instabox workspace (one combined VM)', () => {
       });
     const providerKey = new SecretResolver(config.secretFile).get('INSTABOX_API_KEY');
     const before = await Sandbox.list({ apiKey: providerKey });
+    // Account quota is five machines: this one window requires headroom of at
+    // least one live machine before any reserve/create is attempted.
+    expect(before.length).toBeLessThanOrEqual(4);
+    const ledgerBefore = readLedger(config.liveBudgetFile!);
+    expect(ledgerBefore.instabox.additionalCreations).toBeLessThanOrEqual(8);
     let created: Awaited<ReturnType<typeof client.createWorkspace>>;
     try {
       created = await client.createWorkspace({
@@ -202,16 +207,31 @@ describeLive('live Instabox workspace (one combined VM)', () => {
     });
     expect(goneLogs.logs).toContain('TREE-GONE');
 
+    // Marker app first: it serves both the changing-desktop interaction and
+    // the private preview below. The write goes through the repaired trusted
+    // launcher as workload uid1100.
+    const marker = '<h1 id="x">RANGER-PRIVATE-APP</h1>';
+    await client.writeWorkspaceFile({
+      path: { projectId },
+      body: { path: 'index.html', contentBase64: Buffer.from(`<html><body>${marker}</body></html>`).toString('base64') },
+    });
+    const appCommand = await client.startWorkspaceCommand({
+      path: { projectId },
+      body: {
+        command: 'bash',
+        args: ['-lc', 'python3 -m http.server 8080 --bind 127.0.0.1'],
+        timeoutMs: 30_000,
+        background: true,
+      },
+    });
+    expect(appCommand.command.state).toBe('running');
+
+    // Real changing desktop through the public API: the guest browser loading
+    // the marker page is the interaction (SDK desktop control is provider
+    // test tooling; the product surface stays the gateway below).
     const beforeShot = await client.captureWorkspaceScreenshot({ path: { projectId }, body: {} });
     const beforePng = Buffer.from(beforeShot.contentBase64, 'base64');
     expect(beforePng.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
-    await client.startWorkspaceCommand({
-      path: { projectId },
-      body: { command: 'bash', args: ['-lc', 'DISPLAY=:1 xterm -geometry 80x24+40+40 -e "printf RANGER-LIVE-MARKER; sleep 30" &'], timeoutMs: 15_000 },
-    });
-    const afterShot = await client.captureWorkspaceScreenshot({ path: { projectId }, body: {} });
-    const afterPng = Buffer.from(afterShot.contentBase64, 'base64');
-    expect(afterPng.equals(beforePng)).toBe(false);
 
     const desktop = await client.createDesktopSession({ path: { projectId }, body: { ttlSeconds: 60 } });
     expect(desktop.session.gatewayPath).toContain('/desktop/sessions/');
@@ -219,20 +239,32 @@ describeLive('live Instabox workspace (one combined VM)', () => {
     const ticket = await client.createConnectionTicket({
       body: { projectId, purpose: 'desktop-stream' },
     });
-    const sessionName = '6511e41069d1';
-    const streamUrl = `http://127.0.0.1:${previewPort}${desktop.session.gatewayPath.replace('/stream', '/view')}?ticket=${encodeURIComponent(ticket.ticket)}`;
-    execFileSync('agent-browser', ['--session', sessionName, 'open', streamUrl], { timeout: 30_000 });
+    const sessionName = '894a48a8f4fc';
+    const viewUrl = `http://127.0.0.1:${previewPort}${desktop.session.gatewayPath.replace('/stream', '/view')}?ticket=${encodeURIComponent(ticket.ticket)}`;
+    execFileSync('agent-browser', ['--session', sessionName, 'open', viewUrl], { timeout: 30_000 });
     execFileSync('agent-browser', ['--session', sessionName, 'wait', '--load', 'networkidle'], { timeout: 20_000 });
-    const beforeView = execFileSync('agent-browser', ['--session', sessionName, 'screenshot', '--annotate'], {
-      timeout: 20_000,
-      encoding: 'utf8',
-    });
-    expect(beforeView.toLowerCase()).not.toContain('revoked');
-    const shotPath = path.join(tmpdir(), 'ranger-live-desktop-before.png');
-    execFileSync('agent-browser', ['--session', sessionName, 'screenshot', shotPath], { timeout: 20_000 });
-    const viewerPng = readFileSync(shotPath);
-    expect(viewerPng.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
-    expect(viewerPng.equals(afterPng)).toBe(false);
+    const viewer1Path = path.join(tmpdir(), 'ranger-live-desktop-1.png');
+    execFileSync('agent-browser', ['--session', sessionName, 'screenshot', viewer1Path], { timeout: 20_000 });
+    const viewer1 = readFileSync(viewer1Path);
+    expect(viewer1.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+    expect(viewer1.toString('latin1')).not.toContain('dashboard.instabox');
+
+    // Interaction on the real guest desktop, then the viewer must show it.
+    const sandboxConn = await Sandbox.connect(machineId, { apiKey: providerKey, resume: false });
+    await sandboxConn.desktop.open('http://127.0.0.1:8080/');
+    await new Promise((resolve) => setTimeout(resolve, 4_000));
+    const viewer2Path = path.join(tmpdir(), 'ranger-live-desktop-2.png');
+    execFileSync('agent-browser', ['--session', sessionName, 'screenshot', viewer2Path], { timeout: 20_000 });
+    const viewer2 = readFileSync(viewer2Path);
+    expect(viewer2.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+    expect(viewer2.equals(viewer1)).toBe(false);
+
+    // The authorized API screenshot after the interaction also reflects the
+    // changed desktop state.
+    const afterShot = await client.captureWorkspaceScreenshot({ path: { projectId }, body: {} });
+    const afterPng = Buffer.from(afterShot.contentBase64, 'base64');
+    expect(afterPng.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+    expect(afterPng.equals(beforePng)).toBe(false);
 
     await client.revokeDesktopSession({ path: { projectId, sessionId: desktop.session.sessionId } });
     execFileSync('agent-browser', ['--session', sessionName, 'reload'], { timeout: 20_000 });
@@ -243,23 +275,9 @@ describeLive('live Instabox workspace (one combined VM)', () => {
     });
     expect(afterRevoke.toLowerCase()).toMatch(/revoked|unauthorized|not active|closed/);
     execFileSync('agent-browser', ['--session', sessionName, 'close'], { timeout: 15_000 });
-    rmSync(shotPath, { force: true });
+    rmSync(viewer1Path, { force: true });
+    rmSync(viewer2Path, { force: true });
 
-    const marker = '<h1 id="x">RANGER-PRIVATE-APP</h1>';
-    await client.writeWorkspaceFile({
-      path: { projectId },
-      body: { path: 'index.html', contentBase64: Buffer.from(`<html><body>${marker}</body></html>`).toString('base64') },
-    });
-    const appCommand = await client.startWorkspaceCommand({
-      path: { projectId },
-      body: {
-        command: 'bash',
-        args: ['-lc', 'cd /data/ranger/project && python3 -m http.server 8080 --bind 127.0.0.1'],
-        timeoutMs: 30_000,
-        background: true,
-      },
-    });
-    expect(appCommand.command.state).toBe('running');
     const previewSession = await client.createPreviewSession({
       path: { projectId },
       body: { guestPort: 8080 },
@@ -285,8 +303,12 @@ describeLive('live Instabox workspace (one combined VM)', () => {
     const saved = readFileSync(path.join(dataDir, 'ranger.db'));
     expect(saved.includes(Buffer.from('live = 1'))).toBe(true);
     const ledger = readLedger(config.liveBudgetFile!);
-    expect(ledger.instabox.additionalCreations).toBe(1);
+    expect(ledger.instabox.additionalCreations).toBe(ledgerBefore.instabox.additionalCreations + 1);
+    expect(ledger.instabox.additionalCreations).toBeLessThanOrEqual(ledger.instabox.maxAdditionalCreations);
     expect(ledger.instabox.pendingReservations ?? []).toHaveLength(0);
     expect(ledger.instabox.machines.filter((item) => item.releasedAt == null)).toHaveLength(0);
+    const recorded = ledger.instabox.machines.find((item) => item.machineId === machineId);
+    expect(recorded?.killTimeoutMs).toBe(600000);
+    expect(recorded?.releasedAt ?? null).not.toBeNull();
   }, 540_000);
 });
