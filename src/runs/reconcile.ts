@@ -129,21 +129,65 @@ export async function reconcileInterruptedRuns(deps: ReconcileDeps): Promise<Rec
     }
     if (ws !== null && ws.machineId !== null && ws.observedState !== 'destroyed' && !ws.uncertain) {
       try {
-        await closeRecordedSessions({ db, provider, projectId: run.projectId });
+        // Destroy the machine FIRST: a session-close failure must never leave
+        // a provider resource alive. If the kill itself fails the row stays
+        // recorded so the sweep below (and later sweeps) retry the destroy.
         await provider.kill(ws.machineId);
+        try {
+          await closeRecordedSessions({ db, provider, projectId: run.projectId });
+        } catch {
+          // Session closure is best effort once the machine is gone.
+        }
         if (ledgerFile !== null && ws.reservationId !== null) {
           recordInstaboxRelease(ledgerFile, ws.machineId);
         }
         markWorkspaceDestroyed(db, run.projectId);
         report.destroyedWorkspaces.push(ws.machineId);
       } catch {
-        // Best effort: reconciliation never creates anything.
+        // Best effort: the next sweep retries via the orphan sweep below.
       }
     }
   }
 
+  report.destroyedWorkspaces.push(...(await destroyOrphanedWorkspaces({ db, provider, ledgerFile })));
+
   report.resolvedUncertainWorkspaces = await reconcileUncertainWorkspaces({ db, provider, ledgerFile });
   return report;
+}
+
+/**
+ * Destroy recorded workspaces whose project has no active run. This covers
+ * the window between "run failed" and "workspace destroyed": if the destroy
+ * of a failed run's machine failed once (or the control process died right
+ * after the run was failed), later sweeps still reclaim the provider
+ * resource and settle the ledger. Never creates anything.
+ */
+async function destroyOrphanedWorkspaces(deps: { db: DatabaseSync; provider: InstaboxProvider; ledgerFile: string | null }): Promise<string[]> {
+  const { db, provider, ledgerFile } = deps;
+  const rows = db
+    .prepare(
+      `SELECT w.project_id, w.machine_id, w.reservation_id FROM workspaces w
+       WHERE w.machine_id IS NOT NULL AND w.observed_state != 'destroyed' AND w.uncertain = 0
+         AND w.observed_state != 'uncertain'
+         AND NOT EXISTS (
+           SELECT 1 FROM runs r WHERE r.project_id = w.project_id AND r.state IN ('queued', 'running')
+         )`,
+    )
+    .all() as Array<{ project_id: string; machine_id: string; reservation_id: string | null }>;
+  const destroyed: string[] = [];
+  for (const row of rows) {
+    try {
+      await provider.kill(row.machine_id);
+      if (ledgerFile !== null && row.reservation_id !== null) {
+        recordInstaboxRelease(ledgerFile, row.machine_id);
+      }
+      markWorkspaceDestroyed(db, row.project_id);
+      destroyed.push(row.machine_id);
+    } catch {
+      // Unreclaimable this sweep: reported by the next sweep, never guessed.
+    }
+  }
+  return destroyed;
 }
 
 /**

@@ -827,6 +827,73 @@ describe('approved run workflow (deterministic providers, public API)', () => {
     }
   });
 
+  it('reclaims a failed run machine on later sweeps when the first destroy failed', async () => {
+    const h = await openHarness();
+    try {
+      // Scripted clarification + plan (deterministic; never a live dial).
+      // The transport is built ONCE: the factory may be invoked per dial and
+      // a per-dial instance would restart at step one.
+      const planning = scriptedTransport([
+        { output: [messageItem(JSON.stringify({ questions: ['Where do the fixtures live?'] }))] },
+        {
+          output: [
+            messageItem(
+              JSON.stringify({
+                items: ['Integrate the fixtures'],
+                acceptanceCriteria: ['Tickets flow end to end'],
+                permittedScope: ['edit:src/', 'command'],
+              }),
+            ),
+          ],
+        },
+      ]);
+      setPlanningTransportForTests(() => planning.transport);
+      await seedConversation(h, 'Orphan reclaim task');
+      const { approvalId } = await planAndApprove(h, ['edit:src/', 'command']);
+      const started = await h.app.inject({
+        method: 'POST',
+        url: `/v1/projects/${h.projectId}/runs`,
+        headers: h.bearer,
+        payload: { conversationId: h.conversationId, approvalId },
+      });
+      const runId = (started.json() as { run: { runId: string } }).run.runId;
+
+      // The incident shape from the live window: the run was failed honestly
+      // but its machine destroy failed once (control process died in between),
+      // leaving a recorded running workspace with no active run behind.
+      const { reserveInstaboxCreation, confirmInstaboxCreation, recordInstaboxRelease } = await import('../../src/budget/ledger.js');
+      const reservation = reserveInstaboxCreation(h.ledgerFile, { feature: 'runs-workflow-int', purpose: h.projectId, killTimeoutMs: 600_000 });
+      confirmInstaboxCreation(h.ledgerFile, { reservationId: reservation.reservationId, machineId: 'm_orphan_machine', purpose: h.projectId });
+      h.db.prepare("UPDATE runs SET state = 'failed', failure_code = 'control_worker_lease_expired' WHERE id = ?").run(runId);
+      h.db
+        .prepare(
+          "INSERT INTO workspaces (project_id, operation_key, machine_id, reservation_id, desired_state, observed_state, kill_timeout_ms, deadline_at, uncertain, created_at) VALUES (?, ?, 'm_orphan_machine', ?, 'running', 'running', 600000, ?, 0, ?)",
+        )
+        .run(h.projectId, `runs-workflow-int:${h.projectId}`, reservation.reservationId, Date.now() + 600_000, Date.now());
+
+      const { reconcileInterruptedRuns } = await import('../../src/runs/reconcile.js');
+      const report = await reconcileInterruptedRuns({ db: h.db, ledgerFile: h.ledgerFile, provider: h.provider });
+      expect(report.destroyedWorkspaces).toContain('m_orphan_machine');
+      expect(h.provider.kills).toContain('m_orphan_machine');
+      const workspaceRow = h.db.prepare('SELECT observed_state FROM workspaces WHERE project_id = ?').get(h.projectId) as { observed_state: string };
+      expect(workspaceRow.observed_state).toBe('destroyed');
+      const ledger = JSON.parse(readFileSync(h.ledgerFile, 'utf8')) as {
+        instabox: { machines: Array<{ machineId: string; releasedAt: number | null }> };
+      };
+      expect(ledger.instabox.machines.find((m) => m.machineId === 'm_orphan_machine')?.releasedAt).not.toBeNull();
+
+      // Idempotent: the reclaimed workspace is not killed twice.
+      const killsBefore = h.provider.kills.length;
+      await reconcileInterruptedRuns({ db: h.db, ledgerFile: h.ledgerFile, provider: h.provider });
+      expect(h.provider.kills.filter((id) => id === 'm_orphan_machine')).toHaveLength(1);
+      expect(h.provider.kills.length).toBe(killsBefore);
+      expect(recordInstaboxRelease(h.ledgerFile, 'm_orphan_machine')).toBeUndefined();
+    } finally {
+      h.close();
+      rmSync(h.dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('invalidates the v1 approval on a material change, names impact and blocks the old approval', async () => {
     const planning = scriptedTransport([
       {

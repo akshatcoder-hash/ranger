@@ -56,6 +56,7 @@ let previewProc: ChildProcess | null = null;
 let projectId = '';
 let project2Id = '';
 let conversationId = '';
+let approvalId = '';
 let runId = '';
 let machineId = '';
 let providerIdsBefore: string[] = [];
@@ -298,24 +299,25 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
       body: { permittedScope: ['edit:integration/', 'command', 'launch', 'evidence'] },
     });
     expect(approved.approval.status).toBe('active');
+    approvalId = approved.approval.approvalId;
     phase('planning', {
       questions: clarification.questions.length,
       planId: generated.plan.planId,
       planVersion: generated.plan.version,
-      approvalId: approved.approval.approvalId,
+      approvalId,
     });
   }, 300_000);
 
   it('starts exactly one approved run whose executor creates the one window2 VM', async () => {
     const client = operatorClient();
+    // Idempotency is opt-in per call: the retry MUST present the SAME key as
+    // the original request, otherwise the retry executes fresh and hits the
+    // one-active-run guard (the live finding that spent window2).
     const idempotent = operatorClient({ 'idempotency-key': 'window2-run-start' });
-    const started = await client.startRun({ path: { projectId }, body: { conversationId, approvalId: (evidence['phases'] as Record<string, Record<string, string>>)['planning']!['approvalId']! } });
+    const started = await idempotent.startRun({ path: { projectId }, body: { conversationId, approvalId } });
     runId = started.run.runId;
     expect(started.run.state).toBe('queued');
-    const replay = await idempotent.startRun({
-      path: { projectId },
-      body: { conversationId, approvalId: (evidence['phases'] as Record<string, Record<string, string>>)['planning']!['approvalId']! },
-    });
+    const replay = await idempotent.startRun({ path: { projectId }, body: { conversationId, approvalId } });
     expect(replay.run.runId).toBe(runId);
 
     runStartedAt = Date.now();
@@ -337,6 +339,13 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
 
   it('runs the primitive write/read/command smoke and seeds the customer source on the same VM', async () => {
     const client = operatorClient();
+
+    // The workspace row appears only after the executor provisions it; never
+    // write before it exists (the cascade lesson from the live window).
+    await waitFor('workspace recorded', 120_000, async () => {
+      const status = await client.getWorkspaceStatus({ path: { projectId } });
+      return status.workspace.observedState === 'running' ? status.workspace : null;
+    });
 
     // FIRST live guest write (the window1 failure point). No fallback: any
     // failure here fails the window and the cleanup deletes the VM.
@@ -570,7 +579,14 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
     expect(memory.exitCode).not.toBe(0);
     expect(memory.logs).not.toContain('MemoryError');
 
-    // Second viewer state: the desktop changed with the running app open.
+    // Second viewer state after a REAL interaction on the guest desktop:
+    // the provider SDK test tooling opens the running integration in the
+    // guest browser; the viewer must show the changed desktop.
+    const key = new SecretResolver(SECRET_FILE).get('INSTABOX_API_KEY');
+    const guest = await Sandbox.connect(machineId, { apiKey: key, resume: false });
+    await guest.desktop.start();
+    await guest.desktop.open('http://127.0.0.1:8080/');
+    await new Promise((resolve) => setTimeout(resolve, 4_000));
     const desktop2 = await client.createDesktopSession({ path: { projectId }, body: { ttlSeconds: 30 } });
     const ticket2 = await client.createConnectionTicket({ body: { projectId, purpose: 'desktop-stream' } });
     const viewUrl2 = `${PREVIEW_URL}${desktop2.session.gatewayPath.replace('/stream', '/view')}?ticket=${encodeURIComponent(ticket2.ticket)}`;
@@ -610,8 +626,8 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
       const status = await client.getWorkspaceStatus({ path: { projectId } });
       return status.workspace.observedState === 'destroyed' ? status.workspace : null;
     });
-    const key = new SecretResolver(SECRET_FILE).get('INSTABOX_API_KEY');
-    const after = await Sandbox.list({ apiKey: key });
+    const key2 = new SecretResolver(SECRET_FILE).get('INSTABOX_API_KEY');
+    const after = await Sandbox.list({ apiKey: key2 });
     expect(after.some((item) => item.sandboxId === machineId)).toBe(false);
 
     // The integration source persists beside the honest cancelled status.
