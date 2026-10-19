@@ -1,16 +1,34 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent } from 'react'
 import { rangerApi } from '../api'
 import { MediaLifecycle, OperationEpoch } from './lifecycle'
+import { DEMO_PROJECT_ID, applyEventPage, executionBlockers, isLiveProjectId, normalizeCredential, parseLines, planCreateOutcome, projectViewEngineerName, validateRepositoryInput, type Capabilities } from './liveHelpers'
 
 type Screen = 'home' | 'start' | 'workspace' | 'review'
 type Mode = 'live' | 'demo'
 type WorkspaceTab = 'workspace' | 'changes' | 'checks'
 type Notice = { kind: 'error' | 'info' | 'success'; text: string }
+type Modal = 'name' | 'plan' | 'manual' | 'repo'
+type OkData<T> = T extends { ok: true; data: infer D } ? D : never
+type Failure = Extract<Awaited<ReturnType<typeof rangerApi.getSession>>, { ok: false }>
+type LiveProject = OkData<Awaited<ReturnType<typeof rangerApi.loadProject>>>
+type LivePlan = NonNullable<LiveProject['plan']>
+type ProjectEvent = OkData<Awaited<ReturnType<typeof rangerApi.getEvents>>>['events'][number]
+type Auth = { state: 'checking' } | { state: 'signed-out'; message?: string } | { state: 'connected'; principalId: string }
+type CapabilityState = { state: 'idle' } | { state: 'loading' } | { state: 'ready'; value: Capabilities } | { state: 'error'; message: string }
+type ProjectLoad = { state: 'idle' } | { state: 'loading'; projectId: string } | { state: 'ready'; projectId: string } | { state: 'error'; projectId: string; message: string }
+type EventFeed = { projectId: string | null; events: ProjectEvent[]; status: 'idle' | 'polling' | 'paused' | 'error'; error?: string }
+type LiveStatus = { kind: 'ok' } | { kind: 'checking' } | { kind: 'needs-session' } | { kind: 'no-project' } | { kind: 'invalid' } | { kind: 'loading' } | { kind: 'error'; message: string }
+
+const EVENT_POLL_MS = 5000
+const EVENT_MAX_POLLS = 24
+const EVENT_MAX_PAGES = 5
+const fieldStyle: CSSProperties = { width: '100%', padding: '9px 11px', border: '1px solid var(--line)', borderRadius: 7, resize: 'vertical' }
 
 function readLocation() {
   const path = window.location.pathname.split('/').filter(Boolean)
   const screen: Screen = path[0] === 'start' ? 'start' : path[0] === 'workspace' ? 'workspace' : path[0] === 'review' ? 'review' : 'home'
-  return { screen, projectId: path[1] || 'northstar-return-support', mode: new URLSearchParams(window.location.search).get('mode') === 'demo' ? 'demo' as const : 'live' as const }
+  const mode = new URLSearchParams(window.location.search).get('mode') === 'demo' ? 'demo' as const : 'live' as const
+  return { screen, projectId: path[1] || (mode === 'demo' ? DEMO_PROJECT_ID : null), mode }
 }
 
 function Brand({ small = false }: { small?: boolean }) {
@@ -29,8 +47,12 @@ export function App() {
   const [location, setLocation] = useState(readLocation)
   const [notice, setNotice] = useState<Notice | null>(null)
   const [engineer, setEngineer] = useState('Ranger')
-  const [modal, setModal] = useState<'name' | 'plan' | null>(null)
+  const [modal, setModal] = useState<Modal | null>(null)
+  const [modalError, setModalError] = useState<string | null>(null)
   const [nameDraft, setNameDraft] = useState(engineer)
+  const [repoDraft, setRepoDraft] = useState({ url: '', ref: 'main' })
+  const [planDraft, setPlanDraft] = useState({ items: '', criteria: '' })
+  const [pendingRepo, setPendingRepo] = useState<{ url: string; ref: string } | null>(null)
   const [repoConnected, setRepoConnected] = useState(false)
   const [contextFiles, setContextFiles] = useState<string[]>([])
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('workspace')
@@ -40,16 +62,48 @@ export function App() {
   const [message, setMessage] = useState('')
   const [messages, setMessages] = useState<string[]>([])
   const [mediaState, setMediaState] = useState<'idle' | 'requesting' | 'active'>('idle')
-  const [mediaLifecycle] = useState(() => new MediaLifecycle(id => {
-    void rangerApi.endMediaSession(id, new AbortController().signal)
-  }))
-  const mediaApiControllerRef = useRef<AbortController | null>(null)
+  const [auth, setAuth] = useState<Auth>({ state: 'checking' })
+  const [capabilities, setCapabilities] = useState<CapabilityState>({ state: 'idle' })
+  const [project, setProject] = useState<LiveProject | null>(null)
+  const [projectLoad, setProjectLoad] = useState<ProjectLoad>({ state: 'idle' })
+  const [reloadKey, setReloadKey] = useState(0)
+  const [eventsKey, setEventsKey] = useState(0)
+  const [eventFeed, setEventFeed] = useState<EventFeed>({ projectId: null, events: [], status: 'idle' })
+  const [mediaLifecycle] = useState(() => new MediaLifecycle(() => {}))
   const requestRef = useRef<AbortController | null>(null)
   const operationEpochRef = useRef(new OperationEpoch())
+  const projectRef = useRef<LiveProject | null>(null)
+  const lastProjectIdRef = useRef<string | null>(null)
   const previousModeRef = useRef(location.mode)
   const dialogRef = useRef<HTMLDivElement>(null)
   const nameInputRef = useRef<HTMLInputElement>(null)
   const demo = location.mode === 'demo'
+  const routeProjectId = location.projectId
+  const principalId = auth.state === 'connected' ? auth.principalId : null
+  const needsProject = !demo && principalId !== null && (location.screen === 'workspace' || location.screen === 'review') && isLiveProjectId(routeProjectId)
+  const activeProject = !demo && project && project.projectId === routeProjectId ? project : null
+  const liveStatus: LiveStatus = demo ? { kind: 'ok' }
+    : auth.state === 'checking' ? { kind: 'checking' }
+    : auth.state === 'signed-out' ? { kind: 'needs-session' }
+    : !routeProjectId ? { kind: 'no-project' }
+    : !isLiveProjectId(routeProjectId) ? { kind: 'invalid' }
+    : activeProject ? { kind: 'ok' }
+    : projectLoad.state === 'error' && projectLoad.projectId === routeProjectId ? { kind: 'error', message: projectLoad.message }
+    : { kind: 'loading' }
+  const capabilityValue = capabilities.state === 'ready' ? capabilities.value : null
+
+  const applyProject = useCallback((next: LiveProject | null) => {
+    projectRef.current = next
+    if (next) lastProjectIdRef.current = next.projectId
+    setProject(next)
+  }, [])
+
+  const patchProject = useCallback((projectId: string, patch: Partial<LiveProject>) => {
+    const current = projectRef.current
+    if (current && current.projectId === projectId) applyProject({ ...current, ...patch })
+  }, [applyProject])
+
+  const refreshLive = useCallback(() => { setReloadKey(key => key + 1); setEventsKey(key => key + 1) }, [])
 
   const invalidateRequest = useCallback(() => {
     operationEpochRef.current.invalidate()
@@ -59,20 +113,20 @@ export function App() {
   }, [])
 
   const clearMedia = useCallback(() => {
-    mediaApiControllerRef.current?.abort()
-    mediaApiControllerRef.current = null
     mediaLifecycle.release()
     setMediaState('idle')
   }, [mediaLifecycle])
 
-  const navigate = useCallback((screen: Screen, mode: Mode = location.mode, projectId = location.projectId, replace = false) => {
+  const navigate = useCallback((screen: Screen, mode: Mode = location.mode, projectId: string | null = mode === location.mode ? location.projectId : null, replace = false) => {
     invalidateRequest()
     clearMedia()
-    const path = screen === 'home' ? '/' : screen === 'start' ? '/start' : `/${screen}/${encodeURIComponent(projectId)}`
+    const id = projectId ?? (mode === 'demo' ? DEMO_PROJECT_ID : null)
+    const path = screen === 'home' ? '/' : screen === 'start' ? '/start' : id ? `/${screen}/${encodeURIComponent(id)}` : `/${screen}`
     const query = mode === 'demo' ? '?mode=demo' : ''
     window.history[replace ? 'replaceState' : 'pushState']({}, '', `${path}${query}`)
     setLocation(readLocation())
     setNotice(null)
+    setModal(null)
     if (screen === 'workspace') setWorkspaceTab('workspace')
     window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior })
   }, [clearMedia, invalidateRequest, location.mode, location.projectId])
@@ -83,6 +137,7 @@ export function App() {
       clearMedia()
       setLocation(readLocation())
       setNotice(null)
+      setModal(null)
     }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
@@ -93,8 +148,99 @@ export function App() {
     previousModeRef.current = location.mode
     invalidateRequest()
     clearMedia()
-    setRepoConnected(false); setContextFiles([]); setApproved(false); setMessages([]); setMediaState('idle'); setBusy(false)
+    lastProjectIdRef.current = null
+    setEngineer('Ranger'); setRepoConnected(false); setPendingRepo(null); setContextFiles([]); setApproved(false); setMessages([]); setMediaState('idle'); setBusy(false); setModal(null)
   }, [clearMedia, invalidateRequest, location.mode])
+
+  useEffect(() => {
+    if (demo) return
+    const controller = new AbortController()
+    let current = true
+    setAuth({ state: 'checking' })
+    void rangerApi.getSession(controller.signal).then(result => {
+      if (!current) return
+      setAuth(result.ok ? { state: 'connected', principalId: result.data.principalId } : { state: 'signed-out', message: result.reason === 'unauthorized' ? undefined : result.message })
+    })
+    return () => { current = false; controller.abort() }
+  }, [demo])
+
+  useEffect(() => {
+    if (!principalId) { setCapabilities({ state: 'idle' }); return }
+    const controller = new AbortController()
+    let current = true
+    setCapabilities({ state: 'loading' })
+    void rangerApi.getCapabilities(controller.signal).then(result => {
+      if (!current) return
+      setCapabilities(result.ok ? { state: 'ready', value: result.data } : { state: 'error', message: result.message })
+    })
+    return () => { current = false; controller.abort() }
+  }, [principalId])
+
+  const loadProjectId = needsProject ? routeProjectId : null
+  useEffect(() => {
+    if (!loadProjectId) {
+      applyProject(null)
+      setProjectLoad({ state: 'idle' })
+      return
+    }
+    const controller = new AbortController()
+    let current = true
+    setProjectLoad(state => (state.state === 'ready' && state.projectId === loadProjectId ? state : { state: 'loading', projectId: loadProjectId }))
+    void rangerApi.loadProject(loadProjectId, controller.signal).then(result => {
+      if (!current) return
+      if (result.ok) {
+        applyProject(result.data)
+        setProjectLoad({ state: 'ready', projectId: loadProjectId })
+        return
+      }
+      if (result.reason === 'unauthorized') { setAuth({ state: 'signed-out', message: 'Your session has ended. Connect again to continue.' }); return }
+      setProjectLoad({ state: 'error', projectId: loadProjectId, message: result.message })
+      if (projectRef.current?.projectId === loadProjectId) setNotice({ kind: 'error', text: `Could not refresh the project: ${result.message}` })
+    })
+    return () => { current = false; controller.abort() }
+  }, [applyProject, loadProjectId, principalId, reloadKey])
+
+  const eventProjectId = activeProject?.projectId ?? null
+  useEffect(() => {
+    if (!eventProjectId) { setEventFeed({ projectId: null, events: [], status: 'idle' }); return }
+    const controller = new AbortController()
+    let current = true
+    let events: ProjectEvent[] = []
+    let cursor: string | undefined
+    let polls = 0
+    let timer: number | undefined
+    setEventFeed({ projectId: eventProjectId, events: [], status: 'polling' })
+
+    const pull = async () => {
+      for (let page = 0; page < EVENT_MAX_PAGES; page += 1) {
+        const result = await rangerApi.getEvents(eventProjectId, controller.signal, cursor)
+        if (!current) return false
+        if (!result.ok) {
+          if (result.reason === 'unauthorized') setAuth({ state: 'signed-out', message: 'Your session has ended. Connect again to continue.' })
+          else setEventFeed(feed => ({ ...feed, status: 'error', error: result.message }))
+          return false
+        }
+        const step = applyEventPage({ events, cursor }, result.data)
+        const added = step.state.events !== events
+        events = step.state.events
+        cursor = step.state.cursor
+        if (added) setEventFeed({ projectId: eventProjectId, events, status: 'polling' })
+        if (step.error) { setEventFeed(feed => ({ ...feed, events, status: 'error', error: step.error })); return false }
+        if (!step.fetchMore) break
+      }
+      return true
+    }
+    const loop = async () => {
+      const ok = await pull()
+      if (!current || !ok) return
+      polls += 1
+      if (polls >= EVENT_MAX_POLLS) { setEventFeed(feed => ({ ...feed, status: 'paused' })); return }
+      setEventFeed(feed => (feed.status === 'polling' && !feed.error ? feed : { ...feed, status: 'polling', error: undefined }))
+      timer = window.setTimeout(() => { void loop() }, EVENT_POLL_MS)
+    }
+    void loop()
+    return () => { current = false; controller.abort(); window.clearTimeout(timer) }
+  }, [eventProjectId, eventsKey])
 
   useEffect(() => {
     if (!modal) return
@@ -110,22 +256,67 @@ export function App() {
       }
     }
     document.addEventListener('keydown', onKey)
-    requestAnimationFrame(() => (modal === 'name' ? nameInputRef.current : dialogRef.current?.querySelector<HTMLElement>('button'))?.focus())
+    requestAnimationFrame(() => (modal === 'name' ? nameInputRef.current : dialogRef.current?.querySelector<HTMLElement>('input, textarea, button'))?.focus())
     return () => { document.removeEventListener('keydown', onKey); previous?.focus() }
   }, [modal])
 
   useEffect(() => () => {
-    mediaApiControllerRef.current?.abort()
     mediaLifecycle.release()
     requestRef.current?.abort()
   }, [mediaLifecycle])
 
-  const openRename = () => { setNameDraft(engineer); setModal('name') }
-  const saveRename = (event: FormEvent) => {
+  const openModal = (next: Modal) => { setModalError(null); setModal(next) }
+  const openRename = () => { setNameDraft(location.screen === 'start' || demo ? engineer : viewEngineer); openModal('name') }
+
+  const beginRequest = () => {
+    if (busy || (requestRef.current && !requestRef.current.signal.aborted)) return null
+    const controller = new AbortController(); requestRef.current = controller
+    const operation = operationEpochRef.current.begin()
+    setBusy(true)
+    return { controller, operation }
+  }
+  const finishRequest = (operation: number) => {
+    if (!operationEpochRef.current.isCurrent(operation)) return false
+    requestRef.current = null
+    setBusy(false)
+    return true
+  }
+  const reportFailure = (result: Failure, inModal = false) => {
+    if (result.reason === 'aborted') return
+    if (result.reason === 'unauthorized') {
+      invalidateRequest(); setModal(null)
+      setAuth({ state: 'signed-out', message: 'Your session has ended. Connect again to continue.' })
+      return
+    }
+    if (result.reason === 'partial') refreshLive()
+    if (inModal) setModalError(result.message)
+    else setNotice({ kind: 'error', text: result.message })
+  }
+
+  const connectSession = async (credential: string) => {
+    const request = beginRequest()
+    if (!request) return
+    setNotice(null)
+    const result = await rangerApi.connectSession(credential, request.controller.signal)
+    if (!finishRequest(request.operation)) return
+    if (result.ok) { setAuth({ state: 'connected', principalId: result.data.principalId }); setNotice({ kind: 'success', text: 'Session connected.' }) }
+    else if (result.reason !== 'aborted') setAuth({ state: 'signed-out', message: result.message })
+  }
+
+  const saveRename = async (event: FormEvent) => {
     event.preventDefault()
     const clean = nameDraft.trim().slice(0, 32)
-    if (clean) setEngineer(clean)
-    setModal(null)
+    if (!clean) { setModal(null); return }
+    if (demo || location.screen === 'start') { setEngineer(clean); setModal(null); return }
+    if (!activeProject) { setModal(null); return }
+    const request = beginRequest()
+    if (!request) return
+    setModalError(null)
+    const result = await rangerApi.renameEngineer(activeProject.projectId, clean, request.controller.signal)
+    if (!finishRequest(request.operation)) return
+    if (!result.ok) { reportFailure(result, true); return }
+    patchProject(activeProject.projectId, { engineerName: clean }); setModal(null)
+    setReloadKey(key => key + 1)
   }
 
   const createProject = async (event: FormEvent) => {
@@ -144,115 +335,207 @@ export function App() {
       requestRef.current = null
       setBusy(false); navigate('workspace', 'demo'); return
     }
-    invalidateRequest()
-    const controller = new AbortController(); requestRef.current = controller
-    const operation = operationEpochRef.current.begin()
-    setBusy(true)
-    const result = await rangerApi.createProject({ prompt: prompt.trim(), engineerName: engineer, repository: repoConnected ? 'northstar/support-inbox' : undefined }, controller.signal)
-    if (!operationEpochRef.current.isCurrent(operation)) return
-    requestRef.current = null
-    setBusy(false)
-    if (result.ok) navigate('workspace', 'live', result.data.projectId)
-    else if (result.reason !== 'aborted') setNotice({ kind: 'error', text: result.message })
+    if (!principalId) { setNotice({ kind: 'error', text: 'Connect a session before creating a project.' }); return }
+    const request = beginRequest()
+    if (!request) return
+    setNotice(null)
+    const created = await rangerApi.createProject({ prompt: prompt.trim(), engineerName: engineer }, request.controller.signal)
+    if (!operationEpochRef.current.isCurrent(request.operation)) return
+    const outcome = planCreateOutcome(created)
+    if (!created.ok) {
+      finishRequest(request.operation)
+      if (outcome.kind === 'recovered') {
+        lastProjectIdRef.current = outcome.projectId
+        setPrompt(''); setPendingRepo(null)
+        navigate('workspace', 'live', outcome.projectId)
+        if (outcome.reason === 'unauthorized') reportFailure(created)
+        else setNotice({ kind: 'error', text: outcome.message })
+      } else reportFailure(created)
+      return
+    }
+    if (outcome.kind !== 'created') return
+    const { projectId } = outcome
+    let repositoryProblem: string | null = null
+    if (pendingRepo) {
+      const connected = await rangerApi.connectRepository(projectId, pendingRepo.url, pendingRepo.ref, request.controller.signal)
+      if (!operationEpochRef.current.isCurrent(request.operation)) return
+      if (!connected.ok) {
+        if (connected.reason === 'unauthorized') { finishRequest(request.operation); reportFailure(connected); return }
+        repositoryProblem = connected.message
+      }
+    }
+    finishRequest(request.operation)
+    lastProjectIdRef.current = projectId
+    setPrompt(''); setPendingRepo(null)
+    navigate('workspace', 'live', projectId)
+    if (repositoryProblem) setNotice({ kind: 'error', text: `Project created, but the repository was not connected: ${repositoryProblem}` })
   }
 
-  const connectRepo = () => {
-    if (demo) { setRepoConnected(true); setNotice({ kind: 'info', text: 'Sample repository connected for this walkthrough.' }) }
-    else setNotice({ kind: 'error', text: 'Repository connection is unavailable until the backend contract is provided.' })
+  const openRepo = () => {
+    if (demo) { setRepoConnected(true); setNotice({ kind: 'info', text: 'Sample repository connected for this walkthrough.' }); return }
+    setRepoDraft(draft => ({ url: activeProject?.repositoryUrl ?? pendingRepo?.url ?? draft.url, ref: pendingRepo?.ref ?? draft.ref }))
+    openModal('repo')
+  }
+
+  const submitRepo = async (event: FormEvent) => {
+    event.preventDefault()
+    const url = repoDraft.url.trim(), ref = repoDraft.ref.trim()
+    const problem = validateRepositoryInput(url, ref)
+    if (problem) { setModalError(problem); return }
+    if (!activeProject) { setPendingRepo({ url, ref }); setModal(null); return }
+    const request = beginRequest()
+    if (!request) return
+    setModalError(null)
+    const result = await rangerApi.connectRepository(activeProject.projectId, url, ref, request.controller.signal)
+    if (!finishRequest(request.operation)) return
+    if (!result.ok) { reportFailure(result, true); return }
+    setModal(null); setNotice({ kind: 'success', text: 'Repository connected.' }); refreshLive()
   }
 
   const selectContextFiles = (files: FileList | null) => {
     const names = files ? Array.from(files, file => file.name) : []
     setContextFiles(names)
-    if (names.length) setNotice({ kind: 'info', text: demo ? 'Files are selected locally for this walkthrough; they are not uploaded.' : 'Files are selected locally. The backend upload contract is not available yet.' })
+    if (names.length) setNotice({ kind: 'info', text: demo ? 'Files are selected locally for this walkthrough; they are not uploaded.' : 'Files are selected locally in this browser only. They are not uploaded and Ranger cannot read them.' })
+  }
+
+  const submitManualPlan = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!activeProject || !activeProject.conversationId) return
+    const items = parseLines(planDraft.items), acceptanceCriteria = parseLines(planDraft.criteria)
+    if (!items.length || !acceptanceCriteria.length) { setModalError('Add at least one step and one acceptance criterion, one per line.'); return }
+    const request = beginRequest()
+    if (!request) return
+    setModalError(null)
+    const { projectId, conversationId } = activeProject
+    const result = await rangerApi.createManualPlan({ projectId, conversationId, items, acceptanceCriteria }, request.controller.signal)
+    if (!finishRequest(request.operation)) return
+    if (!result.ok) { reportFailure(result, true); return }
+    patchProject(projectId, { plan: result.data, approved: false })
+    setPlanDraft({ items: '', criteria: '' }); setModal(null)
+    setNotice({ kind: 'success', text: `Manual plan version ${result.data.version} saved. It is not approved yet.` }); refreshLive()
   }
 
   const decidePlan = async (accept: boolean) => {
     if (busy || (requestRef.current && !requestRef.current.signal.aborted)) return
     if (demo) { setApproved(accept); setModal(null); setNotice({ kind: 'success', text: accept ? 'Sample plan approved for this walkthrough.' : 'Plan sent back for changes.' }); return }
-    invalidateRequest(); const controller = new AbortController(); requestRef.current = controller
-    const operation = operationEpochRef.current.begin()
-    setBusy(true)
-    const result = await rangerApi.decidePlan({ approved: accept, planId: 'current' }, controller.signal)
-    if (!operationEpochRef.current.isCurrent(operation)) return
-    requestRef.current = null
-    setBusy(false)
-    if (result.ok) { setApproved(result.data.accepted); setModal(null) }
-    else if (result.reason !== 'aborted') setNotice({ kind: 'error', text: result.message })
+    if (!activeProject || !activeProject.conversationId || !activeProject.plan || !accept) return
+    const request = beginRequest()
+    if (!request) return
+    setModalError(null)
+    const { projectId, conversationId, plan } = activeProject
+    const result = await rangerApi.decidePlan({ projectId, conversationId, approved: true, planId: plan.planId, permittedScope: plan.permittedScope }, request.controller.signal)
+    if (!finishRequest(request.operation)) return
+    if (!result.ok) { reportFailure(result, true); return }
+    setModal(null)
+    if (result.data.accepted) setNotice({ kind: 'success', text: 'Plan approved. No work has been started.' })
+    else setNotice({ kind: 'error', text: 'The backend did not accept this approval.' })
+    refreshLive()
   }
 
-  const startMedia = async (kind: 'voice' | 'screen') => {
-    if (busy || mediaLifecycle.phase !== 'idle') return
-    if (demo) { setMediaState('active'); setNotice({ kind: 'info', text: `Sample ${kind === 'voice' ? 'call' : 'screen share'} shown. No media is being recorded.` }); return }
-    const operation = mediaLifecycle.begin()
-    if (operation === null) return
-    setMediaState('requesting'); setNotice(null)
-    try {
-      const stream = kind === 'voice'
-        ? await navigator.mediaDevices.getUserMedia({ audio: true })
-        : await navigator.mediaDevices.getDisplayMedia({ video: true })
-      if (!mediaLifecycle.attach(operation, stream)) return
-      const onTrackEnded = () => {
-        if (mediaLifecycle.release(operation)) {
-          mediaApiControllerRef.current?.abort()
-          mediaApiControllerRef.current = null
-          setMediaState('idle')
-        }
-      }
-      stream.getTracks().forEach(track => track.addEventListener('ended', onTrackEnded, { once: true }))
-      if (!mediaLifecycle.isCurrent(operation)) return
-      const controller = new AbortController()
-      mediaApiControllerRef.current = controller
-      const result = await rangerApi.startMediaSession({ kind, stream }, controller.signal)
-      if (!mediaLifecycle.isCurrent(operation)) {
-        if (result.ok) void rangerApi.endMediaSession(result.data.id, new AbortController().signal)
-        return
-      }
-      mediaApiControllerRef.current = null
-      if (!result.ok) {
-        mediaLifecycle.release(operation)
-        setMediaState('idle'); setNotice({ kind: 'error', text: result.message }); return
-      }
-      mediaLifecycle.setSession(operation, result.data.id)
-      if (!mediaLifecycle.activate(operation)) return
-      setMediaState('active')
-    } catch (error) {
-      if (!mediaLifecycle.isCurrent(operation)) return
-      mediaApiControllerRef.current = null
-      mediaLifecycle.release(operation); setMediaState('idle')
-      const messageText = error instanceof DOMException && error.name === 'NotAllowedError' ? 'Permission was declined. You can try again when you are ready.' : 'Media could not be started in this browser.'
-      setNotice({ kind: 'error', text: messageText })
-    }
+  const startMedia = (kind: 'voice' | 'screen') => {
+    if (!demo || busy || mediaLifecycle.phase !== 'idle') return
+    setMediaState('active'); setNotice({ kind: 'info', text: `Sample ${kind === 'voice' ? 'call' : 'screen share'} shown. No media is being recorded.` })
   }
 
   const stopMedia = () => {
     clearMedia(); setNotice({ kind: 'info', text: 'Media stopped.' })
   }
 
-  const sendMessage = (event: FormEvent) => {
+  const sendMessage = async (event: FormEvent) => {
     event.preventDefault()
     const clean = message.trim()
     if (!clean || busy) return
-    if (!demo) { setNotice({ kind: 'error', text: 'Messaging is unavailable until the backend contract is provided.' }); return }
-    setMessages(items => [...items, clean]); setMessage('')
+    if (demo) { setMessages(items => [...items, clean]); setMessage(''); return }
+    if (!activeProject || !activeProject.conversationId) return
+    const request = beginRequest()
+    if (!request) return
+    const { projectId, conversationId } = activeProject
+    const result = await rangerApi.sendMessage(projectId, conversationId, clean, request.controller.signal)
+    if (!finishRequest(request.operation)) return
+    if (!result.ok) { reportFailure(result); return }
+    setMessage('')
+    patchProject(projectId, { messages: [...(projectRef.current?.messages ?? []), clean] })
+    refreshLive()
   }
 
   const cancelRequest = () => {
     invalidateRequest()
-    if (mediaLifecycle.phase === 'requesting') clearMedia()
     setBusy(false); setNotice({ kind: 'info', text: 'Request cancelled.' })
   }
 
+  const openLiveWorkspace = () => {
+    const id = lastProjectIdRef.current
+    if (id) navigate('workspace', 'live', id)
+    else navigate('start', 'live')
+  }
+
+  const viewEngineer = projectViewEngineerName(demo, engineer, activeProject?.engineerName)
+  const projectName = demo ? 'Order support' : activeProject?.name ?? 'Project'
+  const shownMessages = demo ? messages : activeProject?.messages ?? []
+  const planApproved = demo ? approved : activeProject?.approved ?? false
+
   return <div className="app-shell">
-    {location.screen === 'home' && <Landing demo={demo} onStart={() => navigate('start')} onDemo={() => navigate('start', 'demo')} onWorkspace={() => navigate('workspace', demo ? 'demo' : 'live')} />}
-    {location.screen === 'start' && <Composer demo={demo} engineer={engineer} repoConnected={repoConnected} contextFiles={contextFiles} prompt={prompt} busy={busy} notice={notice} setPrompt={setPrompt} onContextFiles={selectContextFiles} onConnectRepo={connectRepo} onRename={openRename} onStartCall={() => demo ? navigate('workspace', 'demo') : startMedia('voice')} onSubmit={createProject} onCancel={cancelRequest} onHome={() => navigate('home')} onDemo={() => navigate('start', 'demo')} />}
-    {location.screen === 'workspace' && <Workspace demo={demo} engineer={engineer} tab={workspaceTab} setTab={setWorkspaceTab} approved={approved} mediaState={mediaState} messages={messages} message={message} setMessage={setMessage} onSend={sendMessage} onReviewPlan={() => setModal('plan')} onReview={() => navigate('review')} onHome={() => navigate('home')} onRename={openRename} onStartVoice={() => startMedia('voice')} onStartScreen={() => startMedia('screen')} onStopMedia={stopMedia} onCancel={cancelRequest} />}
-    {location.screen === 'review' && <Review demo={demo} engineer={engineer} approved={approved} notice={notice} onWorkspace={() => navigate('workspace')} onHome={() => navigate('home')} onRename={openRename} onReviewPlan={() => setModal('plan')} />}
+    {location.screen === 'home' && <Landing demo={demo} onStart={() => navigate('start')} onDemo={() => navigate('start', 'demo')} onWorkspace={() => demo ? navigate('workspace', 'demo') : openLiveWorkspace()} />}
+    {location.screen === 'start' && <Composer demo={demo} engineer={engineer} repoLabel={demo ? 'northstar / support-inbox' : pendingRepo?.url ?? null} repoState={demo ? 'Sample' : 'Selected'} repoConnected={demo ? repoConnected : pendingRepo !== null} contextFiles={contextFiles} prompt={prompt} busy={busy} signedIn={demo || principalId !== null} auth={auth} capabilities={capabilities} setPrompt={setPrompt} onContextFiles={selectContextFiles} onConnectRepo={openRepo} onConnect={connectSession} onRename={openRename} onStartCall={() => navigate('workspace', 'demo')} onSubmit={createProject} onCancel={cancelRequest} onHome={() => navigate('home')} onToggleMode={() => navigate('start', demo ? 'live' : 'demo')} />}
+    {location.screen === 'workspace' && <Workspace demo={demo} engineer={viewEngineer} projectName={projectName} project={activeProject} status={liveStatus} auth={auth} capabilities={capabilities} eventFeed={eventFeed} tab={workspaceTab} setTab={setWorkspaceTab} approved={planApproved} mediaState={mediaState} messages={shownMessages} message={message} busy={busy} setMessage={setMessage} onSend={sendMessage} onReviewPlan={() => openModal('plan')} onWriteManualPlan={() => openModal('manual')} onConnectRepo={openRepo} onConnect={connectSession} onRetry={() => setReloadKey(key => key + 1)} onRefreshEvents={() => setEventsKey(key => key + 1)} onStartProject={() => navigate('start', 'live')} onReview={() => navigate('review')} onHome={() => navigate('home')} onRename={openRename} onStartVoice={() => startMedia('voice')} onStartScreen={() => startMedia('screen')} onStopMedia={stopMedia} onCancel={cancelRequest} />}
+    {location.screen === 'review' && <Review demo={demo} engineer={viewEngineer} projectName={projectName} status={liveStatus} auth={auth} busy={busy} approved={planApproved} notice={notice} onConnect={connectSession} onRetry={() => setReloadKey(key => key + 1)} onStartProject={() => navigate('start', 'live')} onWorkspace={() => navigate('workspace')} onHome={() => navigate('home')} onRename={openRename} onReviewPlan={() => openModal('plan')} />}
     {notice && <div className={`toast toast-${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}><span>{notice.text}</span><button aria-label="Dismiss message" onClick={() => setNotice(null)}>×</button></div>}
     {modal && <div className="modal-scrim" onMouseDown={event => { if (event.target === event.currentTarget) setModal(null) }}><div ref={dialogRef} className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-      {modal === 'name' ? <form onSubmit={saveRename}><p className="eyebrow">YOUR ENGINEER</p><h2 id="modal-title">Give your engineer a name</h2><label className="field-label" htmlFor="engineer-name">Name</label><input ref={nameInputRef} id="engineer-name" autoComplete="off" maxLength={32} value={nameDraft} onChange={event => setNameDraft(event.target.value)} /><div className="modal-actions"><Button type="button" onClick={() => setModal(null)}>Cancel</Button><Button kind="primary" type="submit">Save name</Button></div></form>
-        : <><p className="eyebrow">PLAN REVIEW</p><h2 id="modal-title">Before Ranger starts</h2><p className="muted">Review what will change. You can still talk through the plan before approving it.</p><ul className="plan-list"><li>Find the order behind each ticket</li><li>Apply the current return policy</li><li>Draft the customer reply</li><li>Ask before issuing a refund</li></ul><div className="modal-actions"><Button disabled={busy} onClick={() => decidePlan(false)}>Request changes</Button><Button kind="primary" disabled={busy} onClick={() => decidePlan(true)}>{busy ? 'Saving…' : 'Approve plan'}</Button></div></>}
+      {modal === 'name' ? <form onSubmit={saveRename}><p className="eyebrow">YOUR ENGINEER</p><h2 id="modal-title">Give your engineer a name</h2><label className="field-label" htmlFor="engineer-name">Name</label><input ref={nameInputRef} id="engineer-name" autoComplete="off" maxLength={32} value={nameDraft} onChange={event => setNameDraft(event.target.value)} />{modalError && <p role="alert">{modalError}</p>}<div className="modal-actions"><Button type="button" onClick={() => setModal(null)}>Cancel</Button><Button kind="primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save name'}</Button></div></form>
+        : modal === 'repo' ? <form onSubmit={submitRepo}><p className="eyebrow">REPOSITORY</p><h2 id="modal-title">Connect a repository</h2><p>{activeProject ? 'Ranger will use this URL and ref for the project.' : 'The repository is connected right after the project is created.'}</p><label className="field-label" htmlFor="repo-url">Repository URL</label><input id="repo-url" type="url" autoComplete="off" placeholder="https://" value={repoDraft.url} onChange={event => setRepoDraft(draft => ({ ...draft, url: event.target.value }))} /><label className="field-label" htmlFor="repo-ref">Branch, tag or commit</label><input id="repo-ref" autoComplete="off" value={repoDraft.ref} onChange={event => setRepoDraft(draft => ({ ...draft, ref: event.target.value }))} />{modalError && <p role="alert">{modalError}</p>}<div className="modal-actions"><Button type="button" onClick={() => setModal(null)}>Cancel</Button><Button kind="primary" type="submit" disabled={busy}>{busy ? 'Connecting…' : activeProject ? 'Connect repository' : 'Use repository'}</Button></div></form>
+        : modal === 'manual' ? <form onSubmit={submitManualPlan}><p className="eyebrow">MANUAL PLAN</p><h2 id="modal-title">Write a plan by hand</h2><p>This is a plan you write as the operator. It is not generated by Ranger or a model, and it is saved as a new version that still needs your approval.</p><label className="field-label" htmlFor="manual-items">Steps, one per line</label><textarea id="manual-items" rows={5} style={fieldStyle} value={planDraft.items} onChange={event => setPlanDraft(draft => ({ ...draft, items: event.target.value }))} /><label className="field-label" htmlFor="manual-criteria">Acceptance criteria, one per line</label><textarea id="manual-criteria" rows={4} style={fieldStyle} value={planDraft.criteria} onChange={event => setPlanDraft(draft => ({ ...draft, criteria: event.target.value }))} />{modalError && <p role="alert">{modalError}</p>}<div className="modal-actions"><Button type="button" onClick={() => setModal(null)}>Cancel</Button><Button kind="primary" type="submit" disabled={busy || !activeProject?.conversationId}>{busy ? 'Saving…' : 'Save manual plan'}</Button></div></form>
+        : demo ? <><p className="eyebrow">PLAN REVIEW</p><h2 id="modal-title">Before Ranger starts</h2><p className="muted">Review what will change. You can still talk through the plan before approving it.</p><ul className="plan-list"><li>Find the order behind each ticket</li><li>Apply the current return policy</li><li>Draft the customer reply</li><li>Ask before issuing a refund</li></ul><div className="modal-actions"><Button disabled={busy} onClick={() => decidePlan(false)}>Request changes</Button><Button kind="primary" disabled={busy} onClick={() => decidePlan(true)}>{busy ? 'Saving…' : 'Approve plan'}</Button></div></>
+        : <LivePlanDialog plan={activeProject?.plan ?? null} approved={activeProject?.approved ?? false} busy={busy} modalError={modalError} blockers={executionBlockers(capabilityValue)} onClose={() => setModal(null)} onApprove={() => decidePlan(true)} onWriteNew={() => openModal('manual')} />}
     </div></div>}
+  </div>
+}
+
+function LivePlanDialog({ plan, approved, busy, modalError, blockers, onClose, onApprove, onWriteNew }: { plan: LivePlan | null; approved: boolean; busy: boolean; modalError: string | null; blockers: string[]; onClose: () => void; onApprove: () => void; onWriteNew: () => void }) {
+  if (!plan) return <><p className="eyebrow">PLAN REVIEW</p><h2 id="modal-title">No plan yet</h2><p className="muted">Nothing has been planned for this project. Ranger does not write plans in this view; you can write one by hand.</p><div className="modal-actions"><Button onClick={onClose}>Close</Button><Button kind="primary" onClick={onWriteNew}>Write manual plan</Button></div></>
+  return <><p className="eyebrow">PLAN REVIEW · VERSION {plan.version}</p><h2 id="modal-title">{approved ? 'Approved plan' : 'Review this plan'}</h2><p className="muted">Approving binds exactly this version and the scope below. It does not start any work.</p>
+    <div style={{ maxHeight: '42vh', overflowY: 'auto' }}>
+      <p className="field-label">Steps</p><ul className="plan-list">{plan.items.map((item, i) => <li key={`${item}-${i}`}>{item}</li>)}</ul>
+      <p className="field-label">Acceptance criteria</p><ul className="plan-list">{plan.acceptanceCriteria.length ? plan.acceptanceCriteria.map((item, i) => <li key={`${item}-${i}`}>{item}</li>) : <li>None recorded.</li>}</ul>
+      <p className="field-label">Permitted scope</p><ul className="plan-list">{plan.permittedScope.length ? plan.permittedScope.map((item, i) => <li key={`${item}-${i}`}><code>{item}</code></li>) : <li>No scope is permitted by this plan.</li>}</ul>
+    </div>
+    {blockers.length > 0 && <p className="muted" role="status">Execution is blocked: {blockers.join(' ')}</p>}
+    {modalError && <p role="alert">{modalError}</p>}
+    <div className="modal-actions"><Button onClick={onClose}>Close</Button><Button onClick={onWriteNew}>Write a new version</Button>{!approved && <Button kind="primary" disabled={busy} onClick={onApprove}>{busy ? 'Saving…' : 'Approve plan'}</Button>}</div></>
+}
+
+function ConnectPanel({ auth, busy, onConnect }: { auth: Auth; busy: boolean; onConnect: (credential: string) => void }) {
+  const [credential, setCredential] = useState('')
+  const [formatError, setFormatError] = useState<string | null>(null)
+  const submit = (event: FormEvent) => {
+    event.preventDefault()
+    if (!credential.trim() || busy) return
+    const secret = normalizeCredential(credential)
+    setCredential('')
+    if (!secret) { setFormatError('That does not look like a single credential. Paste the token, or the RANGER_BOOTSTRAP_TOKEN=… line from the bootstrap file.'); return }
+    setFormatError(null)
+    onConnect(secret)
+  }
+  if (auth.state === 'checking') return <p className="small-muted" role="status">Checking for an existing session…</p>
+  if (auth.state === 'connected') return <p className="small-muted" role="status">Session connected.</p>
+  return <form className="detail-card" onSubmit={submit} autoComplete="off">
+    <h3>Connect to Ranger</h3>
+    <p className="small-muted">Paste your Ranger access token (or the RANGER_BOOTSTRAP_TOKEN=… line from the bootstrap file) once to start a browser session. It is cleared from this page right away and is not stored.</p>
+    <label className="sr-only" htmlFor="connect-credential">Ranger access credential</label>
+    <input id="connect-credential" type="password" autoComplete="off" spellCheck={false} placeholder="Access credential" style={{ ...fieldStyle, resize: undefined, height: 36, margin: '10px 0' }} value={credential} onChange={event => setCredential(event.target.value)} />
+    {(formatError ?? auth.message) && <p role="alert" className="small-muted">{formatError ?? auth.message}</p>}
+    <Button kind="primary" type="submit" disabled={busy || !credential.trim()}>{busy ? 'Connecting…' : 'Connect'}</Button>
+  </form>
+}
+
+function CapabilityStrip({ capabilities }: { capabilities: CapabilityState }) {
+  if (capabilities.state === 'idle') return null
+  if (capabilities.state === 'loading') return <p className="small-muted" role="status">Checking provider availability…</p>
+  if (capabilities.state === 'error') return <p className="small-muted" role="status">Provider availability could not be checked: {capabilities.message}</p>
+  const { xai, instabox, trace } = capabilities.value
+  return <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }} aria-label="Provider availability">
+    <StatusPill tone={xai ? 'green' : 'amber'}>xAI {xai ? 'available' : 'unavailable'}</StatusPill>
+    <StatusPill tone={instabox ? 'green' : 'amber'}>Instabox {instabox ? 'available' : 'unavailable'}</StatusPill>
+    <StatusPill tone={trace ? 'green' : 'gray'}>Trace {trace ? 'available' : 'unavailable'}</StatusPill>
   </div>
 }
 
@@ -299,44 +582,81 @@ function MiniWave() { return <div className="mini-wave-wrap"><StatusPill>On a ca
 function MiniTrace() { return <div className="mini-trace"><strong>⌘ northstar / order-service</strong>{['src/routes/orders.ts', 'src/policies/returns.ts', 'src/integrations/support.ts'].map((x, i) => <p key={x}><code>{x}</code><span>{i === 2 ? '+ New' : 'Read'}</span></p>)}</div> }
 function MiniCheck() { return <div className="mini-check"><StatusPill>Ready to try</StatusPill><div><strong>Return my order</strong><small>Order found. Reply drafted.</small></div><p>✓ Order lookup  ·  ✓ Approval rules</p></div> }
 
-function Composer({ demo, engineer, repoConnected, contextFiles, prompt, busy, notice, setPrompt, onContextFiles, onConnectRepo, onRename, onStartCall, onSubmit, onCancel, onHome, onDemo }: { demo: boolean; engineer: string; repoConnected: boolean; contextFiles: string[]; prompt: string; busy: boolean; notice: Notice | null; setPrompt: (value: string) => void; onContextFiles: (files: FileList | null) => void; onConnectRepo: () => void; onRename: () => void; onStartCall: () => void; onSubmit: (event: FormEvent) => void; onCancel: () => void; onHome: () => void; onDemo: () => void }) {
+function Composer({ demo, engineer, repoLabel, repoState, repoConnected, contextFiles, prompt, busy, signedIn, auth, capabilities, setPrompt, onContextFiles, onConnectRepo, onConnect, onRename, onStartCall, onSubmit, onCancel, onHome, onToggleMode }: { demo: boolean; engineer: string; repoLabel: string | null; repoState: string; repoConnected: boolean; contextFiles: string[]; prompt: string; busy: boolean; signedIn: boolean; auth: Auth; capabilities: CapabilityState; setPrompt: (value: string) => void; onContextFiles: (files: FileList | null) => void; onConnectRepo: () => void; onConnect: (credential: string) => void; onRename: () => void; onStartCall: () => void; onSubmit: (event: FormEvent) => void; onCancel: () => void; onHome: () => void; onToggleMode: () => void }) {
   return <main className="composer-page"><header className="composer-header"><button className="brand-button" onClick={onHome}><Brand /></button><div className="header-actions"><button className="header-link" onClick={onHome}>Your projects</button><button className="avatar" aria-label="Your profile">AS</button></div></header>
     <div className="composer-art" />{demo && <div className="composer-demo"><DemoTag /></div>}
     <section className="composer-content"><p className="eyebrow">A NEW PROJECT</p><h1>What are we building?</h1><p className="composer-subtitle">Start with the problem. We’ll figure out the rest together.</p>
+      {!demo && <ConnectPanel auth={auth} busy={busy} onConnect={onConnect} />}
+      {!demo && signedIn && <CapabilityStrip capabilities={capabilities} />}
       <form className="composer-card" onSubmit={onSubmit}><label className="sr-only" htmlFor="project-prompt">Describe the problem you want to solve</label><textarea id="project-prompt" autoFocus placeholder="I want to connect our support inbox to our order system…" value={prompt} onChange={event => setPrompt(event.target.value)} maxLength={2000} />
-        <button type="button" className={`repo-row ${repoConnected ? 'repo-connected' : ''}`} onClick={onConnectRepo}><span className="repo-icon" aria-hidden="true">⌘</span><strong>{repoConnected ? 'northstar / support-inbox' : 'Connect a repository'}</strong><span className="repo-state">{repoConnected ? (demo ? 'Sample' : 'Connected') : 'Choose repo'}</span></button>
+        <button type="button" className={`repo-row ${repoConnected ? 'repo-connected' : ''}`} onClick={onConnectRepo}><span className="repo-icon" aria-hidden="true">⌘</span><strong>{repoConnected && repoLabel ? repoLabel : 'Connect a repository'}</strong><span className="repo-state">{repoConnected ? repoState : 'Choose repo'}</span></button>
         <div className="composer-controls"><button className="attach-button" type="button" onClick={() => document.getElementById('context-upload')?.click()}><span aria-hidden="true">＋</span> Add context{contextFiles.length ? ` · ${contextFiles.length} selected` : ''}</button><input id="context-upload" className="sr-only" type="file" multiple onChange={event => onContextFiles(event.currentTarget.files)} />
-          <div>{busy ? <Button type="button" onClick={onCancel}>Cancel</Button> : <><Button kind="primary" type="button" onClick={onStartCall}>Start a call ↗</Button><Button kind="secondary" type="submit" disabled={!prompt.trim()}>Send <span aria-hidden="true">↑</span></Button></>}</div>
+          <div>{busy ? <Button type="button" onClick={onCancel}>Cancel</Button> : <><Button kind="primary" type="button" disabled={!demo} title={demo ? undefined : 'Calls are unavailable: the browser media relay is not connected.'} onClick={onStartCall}>Start a call ↗</Button><Button kind="secondary" type="submit" disabled={!prompt.trim() || !signedIn}>Send <span aria-hidden="true">↑</span></Button></>}</div>
         </div>
       </form>
       {contextFiles.length > 0 && <p className="context-note">{contextFiles.join(' · ')} <span>Selected locally; not uploaded.</span></p>}
       <div className="suggestions"><Button onClick={() => setPrompt('Connect two tools I use every day and carry the right context between them.')}>Connect two tools</Button><Button onClick={() => setPrompt('Fix a workflow that keeps making us do the same thing by hand.')}>Fix a workflow</Button><Button onClick={() => setPrompt('Show me your screen and I’ll walk through what I need.')}>Show you my screen</Button></div>
       <p className="engineer-label">Your engineer’s name is {engineer}. <button onClick={onRename}>Change name</button></p>
-      <p className="live-note">{demo ? 'Sample walkthrough: actions stay in this browser.' : 'Live mode. Calls and project creation need the Ranger backend connection.'}</p>
-      <button className="text-link demo-switch" onClick={onDemo}>{demo ? 'Switch to live mode' : 'Open sample walkthrough'}</button>
+      <p className="live-note">{demo ? 'Sample walkthrough: actions stay in this browser.' : 'Live mode. Your project and first message are saved to your Ranger backend. Calls and screen sharing are unavailable in this build.'}</p>
+      <button className="text-link demo-switch" onClick={onToggleMode}>{demo ? 'Switch to live mode' : 'Open sample walkthrough'}</button>
     </section>
   </main>
 }
 
-function Workspace({ demo, engineer, tab, setTab, approved, mediaState, messages, message, setMessage, onSend, onReviewPlan, onReview, onHome, onRename, onStartVoice, onStartScreen, onStopMedia, onCancel }: { demo: boolean; engineer: string; tab: WorkspaceTab; setTab: (tab: WorkspaceTab) => void; approved: boolean; mediaState: 'idle' | 'requesting' | 'active'; messages: string[]; message: string; setMessage: (value: string) => void; onSend: (event: FormEvent) => void; onReviewPlan: () => void; onReview: () => void; onHome: () => void; onRename: () => void; onStartVoice: () => void; onStartScreen: () => void; onStopMedia: () => void; onCancel: () => void }) {
+function LiveGate({ status, auth, busy, onConnect, onRetry, onStartProject }: { status: LiveStatus; auth: Auth; busy: boolean; onConnect: (credential: string) => void; onRetry: () => void; onStartProject: () => void }) {
+  if (status.kind === 'ok') return null
+  if (status.kind === 'checking' || status.kind === 'needs-session') return <ConnectPanel auth={auth} busy={busy} onConnect={onConnect} />
+  if (status.kind === 'loading') return <p className="small-muted" role="status">Loading project…</p>
+  if (status.kind === 'error') return <div role="alert"><p className="small-muted">Could not load this project: {status.message}</p><Button onClick={onRetry}>Try again</Button></div>
+  return <div className="empty-conversation"><span className="empty-icon">↗</span><h2>{status.kind === 'invalid' ? 'Project not found' : 'No project selected'}</h2><p>{status.kind === 'invalid' ? 'This address is not a Ranger project.' : 'Start a project to open its workspace.'}</p><Button kind="primary" onClick={onStartProject}>Start a project</Button></div>
+}
+
+function Workspace({ demo, engineer, projectName, project, status, auth, capabilities, eventFeed, tab, setTab, approved, mediaState, messages, message, busy, setMessage, onSend, onReviewPlan, onWriteManualPlan, onConnectRepo, onConnect, onRetry, onRefreshEvents, onStartProject, onReview, onHome, onRename, onStartVoice, onStartScreen, onStopMedia, onCancel }: { demo: boolean; engineer: string; projectName: string; project: LiveProject | null; status: LiveStatus; auth: Auth; capabilities: CapabilityState; eventFeed: EventFeed; tab: WorkspaceTab; setTab: (tab: WorkspaceTab) => void; approved: boolean; mediaState: 'idle' | 'requesting' | 'active'; messages: string[]; message: string; busy: boolean; setMessage: (value: string) => void; onSend: (event: FormEvent) => void; onReviewPlan: () => void; onWriteManualPlan: () => void; onConnectRepo: () => void; onConnect: (credential: string) => void; onRetry: () => void; onRefreshEvents: () => void; onStartProject: () => void; onReview: () => void; onHome: () => void; onRename: () => void; onStartVoice: () => void; onStartScreen: () => void; onStopMedia: () => void; onCancel: () => void }) {
+  const canMessage = demo || (status.kind === 'ok' && !!project?.conversationId)
   return <main className="workspace-page">
-    <header className="workspace-topbar"><button className="brand-button" onClick={onHome}><Brand /></button><span className="breadcrumbs">Projects <span>/</span> Northstar <span>/</span> Order support</span><div className="topbar-right">{demo ? <DemoTag /> : <StatusPill tone="amber">Backend disconnected</StatusPill>}<Button>Share</Button></div></header>
+    <header className="workspace-topbar"><button className="brand-button" onClick={onHome}><Brand /></button><span className="breadcrumbs">Projects <span>/</span> {demo ? <>Northstar <span>/</span> Order support</> : projectName}</span><div className="topbar-right">{demo ? <DemoTag /> : auth.state === 'connected' ? <StatusPill>Session connected</StatusPill> : <StatusPill tone="amber">Not connected</StatusPill>}<Button disabled={!demo}>Share</Button></div></header>
     {demo && <div className="workspace-demo-strip"><DemoTag /><span>Sample conversation, repository, and change set. No real work has run.</span></div>}
     <div className="workspace-layout"><aside className="rail" aria-label="Workspace navigation"><button aria-label="Projects" onClick={onHome}>⌂</button><button aria-label="Search" onClick={() => {}}>⌕</button><button aria-label="History" onClick={() => {}}>◷</button><button aria-label="Connections" onClick={() => {}}>▦</button><button className="rail-avatar" onClick={onRename}>AS</button></aside>
-      <section className="conversation-panel" aria-label="Conversation with your engineer"><div className="conversation-title"><span>{engineer}</span>{demo && <StatusPill>Sample call</StatusPill>}</div><h1>Order support</h1><p className="small-muted">Northstar / customer operations</p><hr />
-        {demo ? <><VoiceCard mediaState={mediaState} onStartVoice={onStartVoice} onStartScreen={onStartScreen} onStopMedia={onStopMedia} /><p className="speaker-label">YOU</p><p className="quote">“Every morning we copy the order details here before replying.”</p><div className="speech-bubble"><p className="speaker-label">YOUR ENGINEER</p><p>I can connect those steps. Should refunds always wait for someone on your team?</p></div><p className="speaker-label">YOU</p><p className="quote">Yes. Draft the reply, but let us approve the refund.</p><button className="plan-saved" onClick={onReviewPlan}><strong>{approved ? 'Plan approved' : 'Saved to the plan'}</strong><span>Refunds need your approval. <u>Review plan</u></span></button>{messages.map((item, i) => <div className="message-bubble" key={`${item}-${i}`}>{item}</div>)}</> : <div className="empty-conversation"><span className="empty-icon">↗</span><h2>No conversation yet</h2><p>Start a call to share context with {engineer}. Your microphone is only requested when you choose to start.</p><Button kind="primary" onClick={onStartVoice}>Start a call</Button></div>}
+      <section className="conversation-panel" aria-label="Conversation with your engineer"><div className="conversation-title"><span>{engineer}</span>{demo && <StatusPill>Sample call</StatusPill>}</div><h1>{demo ? 'Order support' : projectName}</h1><p className="small-muted">{demo ? 'Northstar / customer operations' : project ? (project.repositoryUrl ? `Repository: ${project.repositoryUrl}` : 'No repository connected') : ''}</p><hr />
+        {demo ? <><VoiceCard mediaState={mediaState} onStartVoice={onStartVoice} onStartScreen={onStartScreen} onStopMedia={onStopMedia} /><p className="speaker-label">YOU</p><p className="quote">“Every morning we copy the order details here before replying.”</p><div className="speech-bubble"><p className="speaker-label">YOUR ENGINEER</p><p>I can connect those steps. Should refunds always wait for someone on your team?</p></div><p className="speaker-label">YOU</p><p className="quote">Yes. Draft the reply, but let us approve the refund.</p><button className="plan-saved" onClick={onReviewPlan}><strong>{approved ? 'Plan approved' : 'Saved to the plan'}</strong><span>Refunds need your approval. <u>Review plan</u></span></button>{messages.map((item, i) => <div className="message-bubble" key={`${item}-${i}`}>{item}</div>)}</>
+          : status.kind !== 'ok' || !project ? <LiveGate status={status} auth={auth} busy={busy} onConnect={onConnect} onRetry={onRetry} onStartProject={onStartProject} />
+          : <>{messages.length ? <><p className="speaker-label">CONVERSATION</p>{messages.map((item, i) => <div className="message-bubble" key={`${item}-${i}`}>{item}</div>)}</> : <div className="empty-conversation"><span className="empty-icon">↗</span><h2>No messages yet</h2><p>{project.conversationId ? 'Type a message below. It is saved to this project’s conversation.' : 'This project has no conversation to write to.'}</p></div>}
+            {project.plan
+              ? <button className="plan-saved" onClick={onReviewPlan}><strong>{approved ? `Plan version ${project.plan.version} approved` : `Plan version ${project.plan.version} waiting for approval`}</strong><span>{project.plan.items.length} steps · {project.plan.acceptanceCriteria.length} acceptance criteria · <u>Review plan</u></span></button>
+              : <div className="plan-saved"><strong>No plan yet</strong><span>Ranger does not write plans in this view. You can write one by hand.</span></div>}
+            <div className="media-controls" style={{ marginTop: 10 }}><Button disabled={busy || !project.conversationId} onClick={onWriteManualPlan}>{project.plan ? 'Write a new manual plan' : 'Write a manual plan'}</Button><Button disabled={busy} onClick={onConnectRepo}>{project.repositoryUrl ? 'Change repository' : 'Connect repository'}</Button></div></>}
         <div className="conversation-spacer" />
-        <div className="media-controls">{mediaState === 'active' ? <Button onClick={onStopMedia}>End media</Button> : <><Button onClick={onStartVoice} disabled={mediaState === 'requesting'}>{mediaState === 'requesting' ? 'Waiting for permission…' : 'Start call'}</Button><Button onClick={onStartScreen} disabled={mediaState === 'requesting'}>Share screen</Button></>}{demo && mediaState === 'active' && <StatusPill>Sample</StatusPill>}</div>
-        <form className="message-form" onSubmit={onSend}><label className="sr-only" htmlFor="workspace-message">Type a message</label><input id="workspace-message" placeholder="Or type a message…" value={message} onChange={event => setMessage(event.target.value)} /><button aria-label="Send message" disabled={!message.trim()}>↑</button></form>
+        <div className="media-controls">{mediaState === 'active' ? <Button onClick={onStopMedia}>End media</Button> : <><Button onClick={onStartVoice} disabled={!demo || mediaState === 'requesting'}>{mediaState === 'requesting' ? 'Waiting for permission…' : 'Start call'}</Button><Button onClick={onStartScreen} disabled={!demo || mediaState === 'requesting'}>Share screen</Button></>}{demo && mediaState === 'active' && <StatusPill>Sample</StatusPill>}</div>
+        {!demo && <p className="small-muted" role="note">Calls and screen sharing are unavailable: the browser media relay is not connected, so nothing is heard or seen.</p>}
+        <form className="message-form" onSubmit={onSend}><label className="sr-only" htmlFor="workspace-message">Type a message</label><input id="workspace-message" placeholder={canMessage ? 'Or type a message…' : 'Messaging is unavailable'} disabled={!canMessage} value={message} onChange={event => setMessage(event.target.value)} /><button aria-label="Send message" disabled={!message.trim() || busy || !canMessage}>↑</button></form>
       </section>
-      <section className="work-panel"><div className="workspace-controls"><div className="tab-list" role="tablist" aria-label="Project details" onKeyDown={event => tabKeydown(event, setTab, ['workspace', 'changes', 'checks'])}>{(['workspace', 'changes', 'checks'] as const).map(item => <button key={item} role="tab" id={`tab-${item}`} aria-selected={tab === item} aria-controls="workspace-tab-panel" tabIndex={tab === item ? 0 : -1} onClick={() => setTab(item)}>{item[0].toUpperCase() + item.slice(1)}{item === 'changes' && demo && <span className="tab-count">4</span>}</button>)}</div><div className="build-controls">{demo ? <StatusPill tone="violet">{tab === 'checks' ? 'Checks passed' : 'Building'}</StatusPill> : <StatusPill tone="gray">Waiting for backend</StatusPill>}<Button disabled={!demo} onClick={onCancel}>Pause</Button></div></div>
+      <section className="work-panel"><div className="workspace-controls"><div className="tab-list" role="tablist" aria-label="Project details" onKeyDown={event => tabKeydown(event, setTab, ['workspace', 'changes', 'checks'])}>{(['workspace', 'changes', 'checks'] as const).map(item => <button key={item} role="tab" id={`tab-${item}`} aria-selected={tab === item} aria-controls="workspace-tab-panel" tabIndex={tab === item ? 0 : -1} onClick={() => setTab(item)}>{item[0].toUpperCase() + item.slice(1)}{item === 'changes' && demo && <span className="tab-count">4</span>}</button>)}</div><div className="build-controls">{demo ? <StatusPill tone="violet">{tab === 'checks' ? 'Checks passed' : 'Building'}</StatusPill> : <StatusPill tone="gray">No run started</StatusPill>}<Button disabled={!demo} onClick={onCancel}>Pause</Button></div></div>
         <div id="workspace-tab-panel" role="tabpanel" aria-labelledby={`tab-${tab}`} className="workspace-tab-panel">
-          {tab === 'workspace' ? demo ? <SampleWorkspace onReview={onReview} /> : <LiveEmpty title="Working computer is not connected" detail="The workspace API and repository events are not configured yet. No files or checks are being reported as live." /> : tab === 'changes' ? demo ? <SampleChanges onReview={onReview} /> : <LiveEmpty title="No change set available" detail="Ranger has not reported any code changes. Connect the backend before reviewing a diff." /> : demo ? <SampleChecks onReview={onReview} /> : <LiveEmpty title="No checks have run" detail="Acceptance checks will appear here after the backend contract is connected." />}
+          {tab === 'workspace' ? demo ? <SampleWorkspace onReview={onReview} /> : project ? <LiveWorkspace project={project} capabilities={capabilities} eventFeed={eventFeed} onRefresh={onRefreshEvents} /> : <LiveEmpty title="No project loaded" detail="Open a project to see its plan state and recorded history." />
+            : tab === 'changes' ? demo ? <SampleChanges onReview={onReview} /> : <LiveEmpty title="No change set available" detail="No code changes have been reported for this project." />
+            : demo ? <SampleChecks onReview={onReview} /> : <LiveEmpty title="No checks have run" detail="Acceptance checks appear here only after a run reports results. No run has started." />}
         </div>
-        <p className="work-footnote">{demo ? 'Sample activity for design review.' : 'Live activity will appear here when the backend is connected.'}</p>
+        <p className="work-footnote">{demo ? 'Sample activity for design review.' : 'Everything shown here comes from the backend. Nothing is sampled.'}</p>
       </section>
     </div>
   </main>
+}
+
+function LiveWorkspace({ project, capabilities, eventFeed, onRefresh }: { project: LiveProject; capabilities: CapabilityState; eventFeed: EventFeed; onRefresh: () => void }) {
+  const blockers = executionBlockers(capabilities.state === 'ready' ? capabilities.value : null)
+  const events = eventFeed.projectId === project.projectId ? [...eventFeed.events].reverse().slice(0, 100) : []
+  const executionText = blockers.length ? `Execution is blocked. ${blockers.join(' ')}`
+    : !project.plan ? 'There is no plan yet. No run has been started.'
+    : !project.approved ? 'The plan is waiting for your approval. No run has been started.'
+    : 'The plan is approved. No run has been started, and runs are never started automatically.'
+  return <div style={{ display: 'grid', gap: 14 }}>
+    <article className="detail-card"><h3>Execution</h3><CapabilityStrip capabilities={capabilities} /><p role="status">{executionText}</p></article>
+    <article className="detail-card"><h3>Project history</h3>
+      <div style={{ maxHeight: 280, overflowY: 'auto' }}>{events.length ? events.map(item => <p className="activity-row" key={item.eventId}><code>{item.type}</code><small>Event {item.sequence}</small></p>) : <p className="small-muted">{eventFeed.status === 'error' ? 'History could not be loaded.' : 'No events have been recorded yet.'}</p>}</div>
+      {eventFeed.status === 'error' && eventFeed.error && <p role="alert" className="small-muted">{eventFeed.error}</p>}
+      <p className="small-muted">{eventFeed.status === 'polling' ? 'Checking for new events every few seconds.' : eventFeed.status === 'paused' ? 'Automatic refresh stopped. Refresh to check again.' : ''}</p>
+      <Button onClick={onRefresh}>Refresh history</Button></article>
+  </div>
 }
 
 function VoiceCard({ mediaState, onStartVoice, onStartScreen, onStopMedia }: { mediaState: 'idle' | 'requesting' | 'active'; onStartVoice: () => void; onStartScreen: () => void; onStopMedia: () => void }) {
@@ -356,7 +676,7 @@ function SampleChecks({ onReview }: { onReview: () => void }) {
 }
 
 function LiveEmpty({ title, detail }: { title: string; detail: string }) {
-  return <div className="live-empty"><span className="empty-icon">⌁</span><h2>{title}</h2><p>{detail}</p><p className="muted">Try the labeled sample walkthrough to explore the interface.</p></div>
+  return <div className="live-empty"><span className="empty-icon">⌁</span><h2>{title}</h2><p>{detail}</p><p className="muted">The labeled sample walkthrough shows what this view looks like with example data.</p></div>
 }
 
 function tabKeydown(event: KeyboardEvent<HTMLDivElement>, setTab: (tab: WorkspaceTab) => void, tabs: WorkspaceTab[]) {
@@ -366,11 +686,11 @@ function tabKeydown(event: KeyboardEvent<HTMLDivElement>, setTab: (tab: Workspac
   setTab(tabs[next]); requestAnimationFrame(() => document.getElementById(`tab-${tabs[next]}`)?.focus())
 }
 
-function Review({ demo, engineer, approved, notice, onWorkspace, onHome, onRename, onReviewPlan }: { demo: boolean; engineer: string; approved: boolean; notice: Notice | null; onWorkspace: () => void; onHome: () => void; onRename: () => void; onReviewPlan: () => void }) {
-  return <main className="review-page"><header className="workspace-topbar"><button className="brand-button" onClick={onHome}><Brand /></button><span className="breadcrumbs">Projects <span>/</span> Northstar <span>/</span> Order support</span><div className="topbar-right">{demo ? <DemoTag /> : <StatusPill tone="amber">Backend disconnected</StatusPill>}<Button onClick={onWorkspace}>Open preview ↗</Button></div></header>
-    <div className="review-layout"><aside className="review-sidebar"><p className="eyebrow">NORTHSTAR</p><h2>Order support</h2><nav aria-label="Project views"><button onClick={onWorkspace}>Conversation</button><button onClick={onReviewPlan}>Plan</button><button className="active" aria-current="page">Changes <span>4</span></button><button onClick={onWorkspace}>Checks</button><button onClick={onWorkspace}>Workspace</button></nav><div className="review-engineer"><p>{engineer}</p><Button onClick={onRename}>Change name</Button><Button onClick={onWorkspace}>Start a call</Button></div></aside>
-      <section className="review-content"><div className="review-heading"><div>{demo && <p className="eyebrow">SAMPLE WALKTHROUGH</p>}<h1>{demo ? 'Your integration is ready.' : 'Review changes'}</h1><p>{demo ? 'Order lookup, reply drafts and a human check before every refund.' : 'No live changes are available until the backend reports a change set.'}</p></div><Button kind="primary" onClick={onWorkspace}>Try it now ↗</Button></div>
-        {demo ? <><div className="checks-banner review-banner"><div><h2>All 6 checks passed</h2><p>Tested against the {approved ? 'plan you approved' : 'sample plan'}.</p></div><span className="review-summary">4 files changed</span><span className="review-summary">+128  −12</span></div><div className="review-cards"><article className="detail-card full-diff"><h3>What changed</h3><p className="file-path">src/integrations/order-support.ts</p><pre><span className="diff-context"> 18  const order = await orders.find(ticket.orderId);</span>{'\n'}<span className="diff-context"> 19  if (!order) return requestOrderDetails(ticket);</span>{'\n'}<span className="diff-context"> 20  </span>{'\n'}<span className="diff-add">+21  const policy = await policies.get("returns");</span>{'\n'}<span className="diff-add">+22  const reply = await draftReply(ticket, order, policy);</span>{'\n'}<span className="diff-add">+23  await tickets.saveDraft(ticket.id, reply);</span>{'\n'}<span className="diff-add">+24  </span>{'\n'}<span className="diff-add">+25  if (reply.refundRequested) {'{'}</span>{'\n'}<span className="diff-add">+26    await approvals.request({'{'}</span>{'\n'}<span className="diff-add">+27      ticketId: ticket.id,</span>{'\n'}<span className="diff-add">+28      orderId: order.id,</span>{'\n'}<span className="diff-add">+29      amount: order.total,</span>{'\n'}<span className="diff-add">+30    {'})'}</span>{'\n'}<span className="diff-add">+31  {'}}'}</span></pre></article><article className="detail-card plan-checks"><h3>Checked against your plan</h3>{[['Order found', 'The draft uses the right order.'], ['Order missing', 'Asks the customer for details.'], ['Duplicate ticket', 'Only one draft is created.'], ['Order service offline', 'Retries, then asks for help.'], ['Refund requested', 'Waits for human approval.'], ['Policy changed', 'Uses the latest return window.']].map(([title, sub]) => <p key={title}><strong>✓ {title}</strong><small>{sub}</small></p>)}</article></div><div className="change-question"><div><h3>Want to change anything?</h3><p>Talk it through or leave a note. Your engineer keeps the context.</p></div><Button onClick={onWorkspace}>Ask for a change</Button></div></> : <div className="live-review-empty"><LiveEmpty title="No changes to review" detail="The backend has not reported a diff or acceptance checks. This screen is kept empty until those results are available." />{notice && <p role="status">{notice.text}</p>}</div>}
+function Review({ demo, engineer, projectName, status, auth, busy, approved, notice, onConnect, onRetry, onStartProject, onWorkspace, onHome, onRename, onReviewPlan }: { demo: boolean; engineer: string; projectName: string; status: LiveStatus; auth: Auth; busy: boolean; approved: boolean; notice: Notice | null; onConnect: (credential: string) => void; onRetry: () => void; onStartProject: () => void; onWorkspace: () => void; onHome: () => void; onRename: () => void; onReviewPlan: () => void }) {
+  return <main className="review-page"><header className="workspace-topbar"><button className="brand-button" onClick={onHome}><Brand /></button><span className="breadcrumbs">Projects <span>/</span> {demo ? <>Northstar <span>/</span> Order support</> : projectName}</span><div className="topbar-right">{demo ? <DemoTag /> : auth.state === 'connected' ? <StatusPill>Session connected</StatusPill> : <StatusPill tone="amber">Not connected</StatusPill>}<Button onClick={onWorkspace}>{demo ? 'Open preview ↗' : 'Open workspace'}</Button></div></header>
+    <div className="review-layout"><aside className="review-sidebar"><p className="eyebrow">{demo ? 'NORTHSTAR' : 'PROJECT'}</p><h2>{demo ? 'Order support' : projectName}</h2><nav aria-label="Project views"><button onClick={onWorkspace}>Conversation</button><button disabled={!demo && status.kind !== 'ok'} onClick={onReviewPlan}>Plan</button><button className="active" aria-current="page">Changes{demo && <span>4</span>}</button><button onClick={onWorkspace}>Checks</button><button onClick={onWorkspace}>Workspace</button></nav><div className="review-engineer"><p>{engineer}</p><Button onClick={onRename}>Change name</Button><Button onClick={onWorkspace}>{demo ? 'Start a call' : 'Open workspace'}</Button></div></aside>
+      <section className="review-content"><div className="review-heading"><div>{demo && <p className="eyebrow">SAMPLE WALKTHROUGH</p>}<h1>{demo ? 'Your integration is ready.' : 'Review changes'}</h1><p>{demo ? 'Order lookup, reply drafts and a human check before every refund.' : 'No code changes have been reported for this project.'}</p></div>{demo && <Button kind="primary" onClick={onWorkspace}>Try it now ↗</Button>}</div>
+        {demo ? <><div className="checks-banner review-banner"><div><h2>All 6 checks passed</h2><p>Tested against the {approved ? 'plan you approved' : 'sample plan'}.</p></div><span className="review-summary">4 files changed</span><span className="review-summary">+128  −12</span></div><div className="review-cards"><article className="detail-card full-diff"><h3>What changed</h3><p className="file-path">src/integrations/order-support.ts</p><pre><span className="diff-context"> 18  const order = await orders.find(ticket.orderId);</span>{'\n'}<span className="diff-context"> 19  if (!order) return requestOrderDetails(ticket);</span>{'\n'}<span className="diff-context"> 20  </span>{'\n'}<span className="diff-add">+21  const policy = await policies.get("returns");</span>{'\n'}<span className="diff-add">+22  const reply = await draftReply(ticket, order, policy);</span>{'\n'}<span className="diff-add">+23  await tickets.saveDraft(ticket.id, reply);</span>{'\n'}<span className="diff-add">+24  </span>{'\n'}<span className="diff-add">+25  if (reply.refundRequested) {'{'}</span>{'\n'}<span className="diff-add">+26    await approvals.request({'{'}</span>{'\n'}<span className="diff-add">+27      ticketId: ticket.id,</span>{'\n'}<span className="diff-add">+28      orderId: order.id,</span>{'\n'}<span className="diff-add">+29      amount: order.total,</span>{'\n'}<span className="diff-add">+30    {'})'}</span>{'\n'}<span className="diff-add">+31  {'}}'}</span></pre></article><article className="detail-card plan-checks"><h3>Checked against your plan</h3>{[['Order found', 'The draft uses the right order.'], ['Order missing', 'Asks the customer for details.'], ['Duplicate ticket', 'Only one draft is created.'], ['Order service offline', 'Retries, then asks for help.'], ['Refund requested', 'Waits for human approval.'], ['Policy changed', 'Uses the latest return window.']].map(([title, sub]) => <p key={title}><strong>✓ {title}</strong><small>{sub}</small></p>)}</article></div><div className="change-question"><div><h3>Want to change anything?</h3><p>Talk it through or leave a note. Your engineer keeps the context.</p></div><Button onClick={onWorkspace}>Ask for a change</Button></div></> : <div className="live-review-empty">{status.kind === 'ok' ? <LiveEmpty title="No changes to review" detail="No diff or acceptance checks have been reported. No run has started." /> : <LiveGate status={status} auth={auth} busy={busy} onConnect={onConnect} onRetry={onRetry} onStartProject={onStartProject} />}{notice && notice.kind !== 'error' && <p role="status">{notice.text}</p>}</div>}
       </section>
     </div>
   </main>
