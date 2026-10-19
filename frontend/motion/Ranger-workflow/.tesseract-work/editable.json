@@ -1,0 +1,1431 @@
+{
+  "$schema": "https://jerboa.dev/schemas/fx-composition/editable/v1/document.schema.json",
+  "composition": {
+    "dynamics": {
+      "entries": [
+        {
+          "animator": {
+            "enabled": true,
+            "keyframes": [
+              {
+                "easing": {
+                  "type": "linear"
+                },
+                "id": "workflow-dot-start",
+                "layerTime": 0,
+                "value": {
+                  "type": "float",
+                  "value": 180.0
+                }
+              },
+              {
+                "easing": {
+                  "type": "cubicBezier",
+                  "x1": 0.23,
+                  "x2": 0.32,
+                  "y1": 1.0,
+                  "y2": 1.0
+                },
+                "id": "workflow-dot-plan",
+                "layerTime": 1800,
+                "value": {
+                  "type": "float",
+                  "value": 540.0
+                }
+              },
+              {
+                "easing": {
+                  "type": "cubicBezier",
+                  "x1": 0.23,
+                  "x2": 0.32,
+                  "y1": 1.0,
+                  "y2": 1.0
+                },
+                "id": "workflow-dot-build",
+                "layerTime": 3600,
+                "value": {
+                  "type": "float",
+                  "value": 900.0
+                }
+              },
+              {
+                "easing": {
+                  "type": "linear"
+                },
+                "id": "workflow-dot-hold",
+                "layerTime": 5200,
+                "value": {
+                  "type": "float",
+                  "value": 900.0
+                }
+              }
+            ],
+            "type": "keyframes"
+          },
+          "target": {
+            "kind": "layer",
+            "layerId": 6,
+            "propertyType": "positionX"
+          }
+        }
+      ]
+    },
+    "id": "main",
+    "layers": [
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 21,
+        "name": "Footer note",
+        "sourceText": {
+          "allCaps": false,
+          "applyFill": true,
+          "applyStroke": false,
+          "baselineShift": 0.0,
+          "boxPosition": [
+            0.0,
+            0.0
+          ],
+          "boxSize": [
+            980.0,
+            16.0
+          ],
+          "boxText": true,
+          "fillColor": [
+            0.49,
+            0.49,
+            0.47,
+            1.0
+          ],
+          "fontFamily": "Inter",
+          "fontSize": 9.0,
+          "fontStyle": "Medium",
+          "justification": "left",
+          "leading": 12.15,
+          "strokeOverFill": false,
+          "strokeWidth": 0.0,
+          "text": "TALK  \u00b7  PLAN  \u00b7  BUILD",
+          "tracking": 0.0,
+          "verticalAlign": "top"
+        },
+        "transform": {
+          "anchorPoint": [
+            0.0,
+            0.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            49.0,
+            382.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Text"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 20,
+        "name": "Step 3 detail",
+        "sourceText": {
+          "allCaps": false,
+          "applyFill": true,
+          "applyStroke": false,
+          "baselineShift": 0.0,
+          "boxPosition": [
+            0.0,
+            0.0
+          ],
+          "boxSize": [
+            248.0,
+            55.0
+          ],
+          "boxText": true,
+          "fillColor": [
+            0.46,
+            0.46,
+            0.44,
+            1.0
+          ],
+          "fontFamily": "Inter",
+          "fontSize": 12.0,
+          "fontStyle": "Regular",
+          "justification": "left",
+          "leading": 16.200000000000003,
+          "strokeOverFill": false,
+          "strokeWidth": 0.0,
+          "text": "Watch the work, review changes,\nthen open the working app.",
+          "tracking": 0.0,
+          "verticalAlign": "top"
+        },
+        "transform": {
+          "anchorPoint": [
+            0.0,
+            0.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            776.0,
+            270.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Text"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 19,
+        "name": "Step 3 title",
+        "sourceText": {
+          "allCaps": false,
+          "applyFill": true,
+          "applyStroke": false,
+          "baselineShift": 0.0,
+          "boxPosition": [
+            0.0,
+            0.0
+          ],
+          "boxSize": [
+            248.0,
+            30.0
+          ],
+          "boxText": true,
+          "fillColor": [
+            0.13,
+            0.13,
+            0.13,
+            1.0
+          ],
+          "fontFamily": "Inter",
+          "fontSize": 19.0,
+          "fontStyle": "Medium",
+          "justification": "left",
+          "leading": 25.65,
+          "strokeOverFill": false,
+          "strokeWidth": 0.0,
+          "text": "Try it together",
+          "tracking": 0.0,
+          "verticalAlign": "top"
+        },
+        "transform": {
+          "anchorPoint": [
+            0.0,
+            0.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            776.0,
+            235.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Text"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 18,
+        "name": "Step 3 label",
+        "sourceText": {
+          "allCaps": false,
+          "applyFill": true,
+          "applyStroke": false,
+          "baselineShift": 0.0,
+          "boxPosition": [
+            0.0,
+            0.0
+          ],
+          "boxSize": [
+            248.0,
+            17.0
+          ],
+          "boxText": true,
+          "fillColor": [
+            0.38,
+            0.47,
+            0.42,
+            1.0
+          ],
+          "fontFamily": "Inter",
+          "fontSize": 10.0,
+          "fontStyle": "Medium",
+          "justification": "left",
+          "leading": 13.5,
+          "strokeOverFill": false,
+          "strokeWidth": 0.0,
+          "text": "03  /  BUILD",
+          "tracking": 0.0,
+          "verticalAlign": "top"
+        },
+        "transform": {
+          "anchorPoint": [
+            0.0,
+            0.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            776.0,
+            212.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Text"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 17,
+        "name": "Step 2 detail",
+        "sourceText": {
+          "allCaps": false,
+          "applyFill": true,
+          "applyStroke": false,
+          "baselineShift": 0.0,
+          "boxPosition": [
+            0.0,
+            0.0
+          ],
+          "boxSize": [
+            248.0,
+            55.0
+          ],
+          "boxText": true,
+          "fillColor": [
+            0.46,
+            0.46,
+            0.44,
+            1.0
+          ],
+          "fontFamily": "Inter",
+          "fontSize": 12.0,
+          "fontStyle": "Regular",
+          "justification": "left",
+          "leading": 16.200000000000003,
+          "strokeOverFill": false,
+          "strokeWidth": 0.0,
+          "text": "Choose the steps together\nbefore code changes.",
+          "tracking": 0.0,
+          "verticalAlign": "top"
+        },
+        "transform": {
+          "anchorPoint": [
+            0.0,
+            0.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            416.0,
+            270.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Text"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 16,
+        "name": "Step 2 title",
+        "sourceText": {
+          "allCaps": false,
+          "applyFill": true,
+          "applyStroke": false,
+          "baselineShift": 0.0,
+          "boxPosition": [
+            0.0,
+            0.0
+          ],
+          "boxSize": [
+            248.0,
+            30.0
+          ],
+          "boxText": true,
+          "fillColor": [
+            0.13,
+            0.13,
+            0.13,
+            1.0
+          ],
+          "fontFamily": "Inter",
+          "fontSize": 19.0,
+          "fontStyle": "Medium",
+          "justification": "left",
+          "leading": 25.65,
+          "strokeOverFill": false,
+          "strokeWidth": 0.0,
+          "text": "Agree on the plan",
+          "tracking": 0.0,
+          "verticalAlign": "top"
+        },
+        "transform": {
+          "anchorPoint": [
+            0.0,
+            0.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            416.0,
+            235.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Text"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 15,
+        "name": "Step 2 label",
+        "sourceText": {
+          "allCaps": false,
+          "applyFill": true,
+          "applyStroke": false,
+          "baselineShift": 0.0,
+          "boxPosition": [
+            0.0,
+            0.0
+          ],
+          "boxSize": [
+            248.0,
+            17.0
+          ],
+          "boxText": true,
+          "fillColor": [
+            0.38,
+            0.47,
+            0.42,
+            1.0
+          ],
+          "fontFamily": "Inter",
+          "fontSize": 10.0,
+          "fontStyle": "Medium",
+          "justification": "left",
+          "leading": 13.5,
+          "strokeOverFill": false,
+          "strokeWidth": 0.0,
+          "text": "02  /  PLAN",
+          "tracking": 0.0,
+          "verticalAlign": "top"
+        },
+        "transform": {
+          "anchorPoint": [
+            0.0,
+            0.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            416.0,
+            212.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Text"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 14,
+        "name": "Step 1 detail",
+        "sourceText": {
+          "allCaps": false,
+          "applyFill": true,
+          "applyStroke": false,
+          "baselineShift": 0.0,
+          "boxPosition": [
+            0.0,
+            0.0
+          ],
+          "boxSize": [
+            248.0,
+            55.0
+          ],
+          "boxText": true,
+          "fillColor": [
+            0.46,
+            0.46,
+            0.44,
+            1.0
+          ],
+          "fontFamily": "Inter",
+          "fontSize": 12.0,
+          "fontStyle": "Regular",
+          "justification": "left",
+          "leading": 16.200000000000003,
+          "strokeOverFill": false,
+          "strokeWidth": 0.0,
+          "text": "A real screen and a real problem.\nRanger follows along.",
+          "tracking": 0.0,
+          "verticalAlign": "top"
+        },
+        "transform": {
+          "anchorPoint": [
+            0.0,
+            0.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            56.0,
+            270.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Text"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 13,
+        "name": "Step 1 title",
+        "sourceText": {
+          "allCaps": false,
+          "applyFill": true,
+          "applyStroke": false,
+          "baselineShift": 0.0,
+          "boxPosition": [
+            0.0,
+            0.0
+          ],
+          "boxSize": [
+            248.0,
+            30.0
+          ],
+          "boxText": true,
+          "fillColor": [
+            0.13,
+            0.13,
+            0.13,
+            1.0
+          ],
+          "fontFamily": "Inter",
+          "fontSize": 19.0,
+          "fontStyle": "Medium",
+          "justification": "left",
+          "leading": 25.65,
+          "strokeOverFill": false,
+          "strokeWidth": 0.0,
+          "text": "Talk it through",
+          "tracking": 0.0,
+          "verticalAlign": "top"
+        },
+        "transform": {
+          "anchorPoint": [
+            0.0,
+            0.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            56.0,
+            235.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Text"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 12,
+        "name": "Step 1 label",
+        "sourceText": {
+          "allCaps": false,
+          "applyFill": true,
+          "applyStroke": false,
+          "baselineShift": 0.0,
+          "boxPosition": [
+            0.0,
+            0.0
+          ],
+          "boxSize": [
+            248.0,
+            17.0
+          ],
+          "boxText": true,
+          "fillColor": [
+            0.38,
+            0.47,
+            0.42,
+            1.0
+          ],
+          "fontFamily": "Inter",
+          "fontSize": 10.0,
+          "fontStyle": "Medium",
+          "justification": "left",
+          "leading": 13.5,
+          "strokeOverFill": false,
+          "strokeWidth": 0.0,
+          "text": "01  /  CONTEXT",
+          "tracking": 0.0,
+          "verticalAlign": "top"
+        },
+        "transform": {
+          "anchorPoint": [
+            0.0,
+            0.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            56.0,
+            212.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Text"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 11,
+        "name": "Subheading",
+        "sourceText": {
+          "allCaps": false,
+          "applyFill": true,
+          "applyStroke": false,
+          "baselineShift": 0.0,
+          "boxPosition": [
+            0.0,
+            0.0
+          ],
+          "boxSize": [
+            960.0,
+            27.0
+          ],
+          "boxText": true,
+          "fillColor": [
+            0.44,
+            0.44,
+            0.42,
+            1.0
+          ],
+          "fontFamily": "Inter",
+          "fontSize": 15.0,
+          "fontStyle": "Regular",
+          "justification": "left",
+          "leading": 20.25,
+          "strokeOverFill": false,
+          "strokeWidth": 0.0,
+          "text": "Context, a shared plan, and work you can follow as it happens.",
+          "tracking": 0.0,
+          "verticalAlign": "top"
+        },
+        "transform": {
+          "anchorPoint": [
+            0.0,
+            0.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            49.0,
+            92.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Text"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 10,
+        "name": "Heading",
+        "sourceText": {
+          "allCaps": false,
+          "applyFill": true,
+          "applyStroke": false,
+          "baselineShift": 0.0,
+          "boxPosition": [
+            0.0,
+            0.0
+          ],
+          "boxSize": [
+            960.0,
+            48.0
+          ],
+          "boxText": true,
+          "fillColor": [
+            0.13,
+            0.13,
+            0.13,
+            1.0
+          ],
+          "fontFamily": "Inter",
+          "fontSize": 31.0,
+          "fontStyle": "Medium",
+          "justification": "left",
+          "leading": 41.85,
+          "strokeOverFill": false,
+          "strokeWidth": 0.0,
+          "text": "A useful handoff, made visible.",
+          "tracking": 0.0,
+          "verticalAlign": "top"
+        },
+        "transform": {
+          "anchorPoint": [
+            0.0,
+            0.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            48.0,
+            48.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Text"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 6,
+        "name": "Progress marker",
+        "rect": {
+          "fillColor": [
+            0.19,
+            0.42,
+            0.32,
+            1.0
+          ],
+          "fillEnabled": true,
+          "position": [
+            0.0,
+            0.0
+          ],
+          "roundness": 4.0,
+          "size": [
+            8.0,
+            8.0
+          ],
+          "strokeColor": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "strokeEnabled": false,
+          "strokeWidth": 0.0
+        },
+        "transform": {
+          "anchorPoint": [
+            4.0,
+            4.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            180.0,
+            158.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Rect"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 1,
+        "name": "Context to plan \u00b7 track",
+        "rect": {
+          "fillColor": [
+            0.88,
+            0.87,
+            0.84,
+            1.0
+          ],
+          "fillEnabled": true,
+          "position": [
+            0.0,
+            0.0
+          ],
+          "roundness": 0.0,
+          "size": [
+            360.0,
+            2.0
+          ],
+          "strokeColor": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "strokeEnabled": false,
+          "strokeWidth": 0.0
+        },
+        "transform": {
+          "anchorPoint": [
+            180.0,
+            1.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            180.0,
+            158.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Rect"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 2,
+        "name": "Plan to build \u00b7 track",
+        "rect": {
+          "fillColor": [
+            0.88,
+            0.87,
+            0.84,
+            1.0
+          ],
+          "fillEnabled": true,
+          "position": [
+            0.0,
+            0.0
+          ],
+          "roundness": 0.0,
+          "size": [
+            360.0,
+            2.0
+          ],
+          "strokeColor": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "strokeEnabled": false,
+          "strokeWidth": 0.0
+        },
+        "transform": {
+          "anchorPoint": [
+            180.0,
+            1.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            540.0,
+            158.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Rect"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 3,
+        "name": "Workflow stop 1",
+        "rect": {
+          "fillColor": [
+            0.84,
+            0.87,
+            0.83,
+            1.0
+          ],
+          "fillEnabled": true,
+          "position": [
+            0.0,
+            0.0
+          ],
+          "roundness": 5.0,
+          "size": [
+            10.0,
+            10.0
+          ],
+          "strokeColor": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "strokeEnabled": false,
+          "strokeWidth": 0.0
+        },
+        "transform": {
+          "anchorPoint": [
+            5.0,
+            5.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            180.0,
+            158.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Rect"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 4,
+        "name": "Workflow stop 2",
+        "rect": {
+          "fillColor": [
+            0.84,
+            0.87,
+            0.83,
+            1.0
+          ],
+          "fillEnabled": true,
+          "position": [
+            0.0,
+            0.0
+          ],
+          "roundness": 5.0,
+          "size": [
+            10.0,
+            10.0
+          ],
+          "strokeColor": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "strokeEnabled": false,
+          "strokeWidth": 0.0
+        },
+        "transform": {
+          "anchorPoint": [
+            5.0,
+            5.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            540.0,
+            158.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Rect"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 5,
+        "name": "Workflow stop 3",
+        "rect": {
+          "fillColor": [
+            0.84,
+            0.87,
+            0.83,
+            1.0
+          ],
+          "fillEnabled": true,
+          "position": [
+            0.0,
+            0.0
+          ],
+          "roundness": 5.0,
+          "size": [
+            10.0,
+            10.0
+          ],
+          "strokeColor": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "strokeEnabled": false,
+          "strokeWidth": 0.0
+        },
+        "transform": {
+          "anchorPoint": [
+            5.0,
+            5.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            900.0,
+            158.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Rect"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 7,
+        "name": "Workflow step card 1",
+        "rect": {
+          "fillColor": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "fillEnabled": true,
+          "position": [
+            0.0,
+            0.0
+          ],
+          "roundness": 10.0,
+          "size": [
+            300.0,
+            164.0
+          ],
+          "strokeColor": [
+            0.91,
+            0.9,
+            0.88,
+            1.0
+          ],
+          "strokeEnabled": true,
+          "strokeWidth": 1.0
+        },
+        "transform": {
+          "anchorPoint": [
+            150.0,
+            82.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            180.0,
+            271.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Rect"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 8,
+        "name": "Workflow step card 2",
+        "rect": {
+          "fillColor": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "fillEnabled": true,
+          "position": [
+            0.0,
+            0.0
+          ],
+          "roundness": 10.0,
+          "size": [
+            300.0,
+            164.0
+          ],
+          "strokeColor": [
+            0.91,
+            0.9,
+            0.88,
+            1.0
+          ],
+          "strokeEnabled": true,
+          "strokeWidth": 1.0
+        },
+        "transform": {
+          "anchorPoint": [
+            150.0,
+            82.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            540.0,
+            271.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Rect"
+      },
+      {
+        "activeRange": {
+          "duration": 5400,
+          "start": 0
+        },
+        "blendMode": "normal",
+        "id": 9,
+        "name": "Workflow step card 3",
+        "rect": {
+          "fillColor": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "fillEnabled": true,
+          "position": [
+            0.0,
+            0.0
+          ],
+          "roundness": 10.0,
+          "size": [
+            300.0,
+            164.0
+          ],
+          "strokeColor": [
+            0.91,
+            0.9,
+            0.88,
+            1.0
+          ],
+          "strokeEnabled": true,
+          "strokeWidth": 1.0
+        },
+        "transform": {
+          "anchorPoint": [
+            150.0,
+            82.0
+          ],
+          "opacity": 100.0,
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "position": [
+            900.0,
+            271.0
+          ],
+          "rotation": 0.0,
+          "rotationX": 0.0,
+          "rotationY": 0.0,
+          "scale": [
+            100.0,
+            100.0
+          ],
+          "skew": 0.0,
+          "skewAxis": 0.0
+        },
+        "type": "Rect"
+      }
+    ],
+    "name": "Main"
+  },
+  "dimensions": {
+    "height": 420,
+    "width": 1080
+  },
+  "duration": 5.4,
+  "formatVersion": 1,
+  "backgroundColor": [
+    0.98,
+    0.976,
+    0.965,
+    1.0
+  ]
+}
