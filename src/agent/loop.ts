@@ -230,6 +230,12 @@ export async function runCodingLoop(options: CodingLoopOptions): Promise<CodingL
 
     const calls = output.filter(isFunctionCall);
     if (calls.length === 0) {
+      const commands = toolOutcomes.filter(outcome => outcome.status === 'ok' && (outcome.name === 'run_command' || outcome.name === 'run_tests'));
+      const lastCommand = commands.at(-1);
+      const lastTest = commands.findLast(outcome => outcome.name === 'run_tests');
+      if (lastTest?.result?.['passed'] === false || (lastCommand !== undefined && lastCommand.result?.['exitCode'] !== 0)) {
+        return failure(input, toolOutcomes, turns, usage, 'command_failed', 'The last command or test did not pass; model completion does not override its exit code');
+      }
       return { status: 'completed', outputItems: input, toolOutcomes, turns, usage, failure: null };
     }
 

@@ -174,11 +174,24 @@ function registerOperation(
     ...(op.body !== undefined ? { body: op.body } : {}),
     ...(op.mutating === true ? { headers: mutationHeaders() } : {}),
   };
+  // URL query values are strings on the wire. Decode only declared integer
+  // fields; keep JSON bodies and every other query type strictly validated.
+  const preValidation = async (req: FastifyRequest): Promise<void> => {
+    const properties = op.querystring?.['properties'] as Record<string, { type?: string }> | undefined;
+    const query = req.query as Record<string, unknown> | undefined;
+    if (properties === undefined || query === undefined) return;
+    for (const [key, field] of Object.entries(properties)) {
+      const value = query[key];
+      if (field.type === 'integer' && typeof value === 'string' && /^-?\d+$/.test(value) && Number.isSafeInteger(Number(value))) {
+        query[key] = Number(value);
+      }
+    }
+  };
 
   if (op.ws === true) {
     // @fastify/websocket v11 passes the raw WebSocket as first argument.
     const handle: (socket: WsWebSocket, req: FastifyRequest) => void = wsHandler ?? notConfiguredWs(op);
-    app.get(url, { websocket: true, schema }, (socket, req) => {
+    app.get(url, { websocket: true, schema, preValidation }, (socket, req) => {
       handle(socket, req);
       void handler;
     });
@@ -192,6 +205,7 @@ function registerOperation(
     method: op.method,
     url,
     ...(Object.keys(schema).length > 0 ? { schema } : {}),
+    preValidation,
     ...(preHandler !== undefined ? { preHandler } : {}),
     ...(op.id === 'getOpenApiDocument' ? { config: { rawDoc: true } } : {}),
     handler: async (req, reply) => handler(req, reply),

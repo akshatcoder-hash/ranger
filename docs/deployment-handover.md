@@ -5,8 +5,8 @@ the repository root; the frontend is in `frontend/`. Earlier component
 verification is recorded in `cloud-validation-2026-10-19.md`.
 
 The recording build is deployed as of **2026-10-20**. Fly image:
-`deployment-01M5AZS5X5PVR3AFA00KNQ4BDB`; Cloudflare Worker version:
-`77fe330d-a8a7-471b-9202-b7e2783d9b29`.
+`deployment-01M5B2Y7ADW2NAJ618M6T8CRJW`; Cloudflare Worker version:
+`22196192-7101-4864-8512-c0fe2530b044`.
 
 ## Cumulative VM limit migration (2026-10-19)
 
@@ -64,15 +64,42 @@ receive the same translation as WebSocket headers. API responses are
 ## How to use
 
 1. Open **https://ranger.akshats.xyz**. No token or sign-in form is needed.
-2. Start a project, connect a public GitHub URL and select its branch or tag.
-3. Start a call: “Prepare this repository, then explain how its main workflow works.”
+2. Start a project and connect a public GitHub URL. `HEAD` selects its default
+   branch; use an explicit branch or tag only when needed.
+3. Choose **Start call** directly on the new-project screen, with or without
+   a typed problem. A connected repository is prepared automatically when
+   the provider connection opens. Saved user messages give the call context.
 4. Watch **Project** for clone, index and total times. Ask a code question;
    answers should cite the connected files.
-5. Ask for one concrete change and its acceptance conditions. **Review plan**,
+5. Ask for one concrete change and its acceptance conditions. Confirm the
+   requirements Ranger repeats back and ask it to draft the plan. **Review plan**,
    approve that version, then ask Ranger to start the approved work.
 6. **Live activity** shows real commands starting and finishing. **VM** lets
    you run a command or capture a screenshot. Command output appears after
    completion, not as streamed stdout. **Changes** and **Checks** show results.
+
+Typed messages during a live call are now also sent to the voice agent.
+Outside a call they are saved as context, not executed. A failed preparation
+is not automatically retried by reconnecting: fix the reported cause, then
+explicitly ask Ranger to prepare again.
+
+### Call diagnostics
+
+`fly logs -a ranger-backend-akshats` shows structured diagnostics from both
+the API and worker. Filter by the project/session id or these event names:
+
+- `voice.relay.authenticated`, `voice.provider.opened`, `voice.provider.dial_failed`
+- `voice.call.context` (saved message count and preparation status, not content)
+- `voice.speech.started`, `voice.speech.stopped`, `voice.transport.usage`
+- `voice.text.received`, `voice.tool.started`, `voice.tool.finished`
+- `voice.provider.error`, `voice.response.done`, `voice.session.ended`
+- `workspace.preparation`, `workspace.clone.*`, `workspace.create.*`,
+  `workspace.seed.*`, `workspace.cleanup.*`
+
+These record identifiers, counters, timings and stable status/error codes.
+They do not log audio, transcripts, prompts, repository contents, tool
+arguments/results, credentials or connection tickets. Preparation events
+also remain in SQLite after Fly's recent log buffer rolls over.
 
 The prepared VM is reused for approved work while its original lifetime
 allows. There is one VM at a time and a 600-second lifetime, not a cumulative
@@ -84,11 +111,13 @@ variables or browser storage.
 
 ### Short recording script
 
-- Repository: `https://github.com/jonschlinkert/is-number`, branch `master`.
+- Repository: `https://github.com/jonschlinkert/is-number`, branch `HEAD`.
 - “Prepare this repo. How does it handle numeric strings and invalid input?”
 - “We import amounts from customer CSVs. Add `normalize-number.js` using the
   existing validator: return a number for valid inputs and null otherwise.
-  Keep existing files unchanged and test it with Node’s built-in assert.”
+  Add `test-normalize-number.js` using Node’s built-in assert. Keep existing
+  files unchanged. Include both new files and commands in the plan scope.”
+- “Confirmed. Those are the requirements. Draft the plan now.”
 - Review and approve the plan, then: “Start the approved work.”
 - In **VM**, try `node -e "console.log(require('./normalize-number')('42.25'))"`.
 
@@ -105,7 +134,46 @@ dependency installation. Their source was inspected, but their adapted UI
 and Ranger preview path have **not** been rehearsed live. The tested
 `is-number` recording shows its changed behavior in the VM command console.
 
-## Verified recording path (2026-10-20)
+## Browser verification after the call fixes (2026-10-20)
+
+The deployed workspace call was exercised with a synthetic microphone, not
+a human microphone. Opening the provider connection automatically prepared
+the connected `is-number` repository. Synthetic speech triggered successful
+`search_project_code` and `read_project_source` calls. Typed messages reached
+the live conversation, drafted a plan after explicit confirmation, and
+requested work after the exact plan was approved in the UI.
+
+| Measurement | Observed |
+| --- | --- |
+| Clone | 0.95 seconds |
+| Trace index | 14.2 seconds |
+| Total preparation | 26.5 seconds |
+| Repository | 15 files, 24.0 KB |
+| Approved work | Both scoped files edited on the prepared VM |
+| Agent verification | `run_tests`: `node test-normalize-number.js`, exit 0 |
+| Independent VM-console verification | `BROWSER_CSV_PASS`, exit 0, output visible |
+| Cleanup | Test VM removed, zero tracked active machines, user's existing VM left alone |
+
+The browser test caught whole shell commands being treated as executable
+names, false success after failing commands, and integer log-query parameters
+being rejected. All three are fixed in the deployed backend. Coding tools
+normalize shell commands and approval checks inspect the normalized command.
+A failed command or test cannot be cleared merely by a model's final message.
+
+New-project **Start call** creates the project and voice session, but its
+uninterrupted handoff is **not verified** in the embedded browser. Instrumentation
+showed a full document load after the app's `history.pushState`, with no form
+submission. Grok's read-only review found no product code requesting that
+load; the embedded browser is the suspected cause. For the verified path,
+create/open the workspace, then choose **Start call** there.
+
+Final local checks passed: frontend typecheck, lint, build and 164 tests;
+backend typecheck, lint, build, 419 unit tests and 111 integration tests.
+The deployment still reports one moderate dependency advisory; this change
+does not resolve it. The live ledger recorded 12 historical VM creations,
+$2.7034 observed xAI spend out of $5, and zero reserved spend after cleanup.
+
+## Earlier API-driver verification (2026-10-20)
 
 A public-domain API driver opened an anonymous session, connected the public
 `is-number` repository, requested preparation through the real xAI relay,

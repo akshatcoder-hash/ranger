@@ -143,11 +143,25 @@ describe('workspace public API (deterministic fake provider)', () => {
 
     const logs = await h.app.inject({
       method: 'GET',
-      url: `/v1/projects/${h.projectId}/workspace/commands/${commandBody.command.commandId}/logs`,
+      url: `/v1/projects/${h.projectId}/workspace/commands/${commandBody.command.commandId}/logs?sinceByte=0`,
       headers: h.ownerAuth,
     });
     expect(logs.statusCode).toBe(200);
     expect(String((logs.json() as { logs: string }).logs)).toContain('ready');
+    const partialLogs = await h.app.inject({ method: 'GET',
+      url: `/v1/projects/${h.projectId}/workspace/commands/${commandBody.command.commandId}/logs?sinceByte=1`,
+      headers: h.ownerAuth });
+    expect(partialLogs.statusCode).toBe(200);
+    expect(partialLogs.json().logs).toBe((logs.json() as { logs: string }).logs.slice(1));
+    for (const invalid of ['-1', '1.5', 'NaN', '9007199254740993']) {
+      const rejected = await h.app.inject({ method: 'GET',
+        url: `/v1/projects/${h.projectId}/workspace/commands/${commandBody.command.commandId}/logs?sinceByte=${invalid}`,
+        headers: h.ownerAuth });
+      expect(rejected.statusCode).toBe(400);
+    }
+    const stringBody = await h.app.inject({ method: 'POST', url: `/v1/projects/${h.projectId}/workspace/commands`,
+      headers: h.ownerAuth, payload: { command: 'echo', args: ['no'], timeoutMs: '5000' } });
+    expect(stringBody.statusCode).toBe(400);
 
     const shot = await h.app.inject({
       method: 'POST',

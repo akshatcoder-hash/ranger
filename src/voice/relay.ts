@@ -24,6 +24,8 @@ import { ENGINEERING_RUN_TOOL_NAME, INSPECT_SHARED_SCREEN_TOOL_NAME, DRAFT_PROJE
 import { retrievalServiceFor } from '../http/handlers-retrieval.js';
 import { releaseXaiReservation, reserveXaiSpend, observeXaiSpend } from '../budget/ledger.js';
 import { accountVoiceTextInputs, voiceTextInputCount } from './accounting.js';
+import { prepareCallContext } from './call-start.js';
+import { diagnostic, diagnosticCode } from '../observability.js';
 
 /**
  * The authenticated server-side realtime relay (VAL-MEDIA-001/002).
@@ -179,6 +181,8 @@ export function handleVoiceRelayUpgrade(
   const projectId = params.projectId;
   const sessionId = params.sessionId;
   const requestId = req.id;
+  const log = (event: string, fields: Record<string, string | number | boolean | null | undefined> = {}): void =>
+    diagnostic(event, { projectId, sessionId, ...fields });
   const origin =
     typeof req.headers.origin === 'string' && req.headers.origin !== '' ? req.headers.origin : undefined;
 
@@ -196,6 +200,7 @@ export function handleVoiceRelayUpgrade(
   let flushed: UsageDelta = { audioSeconds: 0, textTokens: 0, toolCalls: 0 };
 
   const fail = (close: { code: number; reason: string; errorCode?: string }, message: string, details?: Record<string, unknown>): void => {
+    log('voice.relay.rejected', { closeCode: close.code, reason: close.reason, errorCode: close.errorCode });
     // Deliberately NOT guarded by `ended`: the disconnect paths end the
     // session first and then rely on fail() to deliver the documented close
     // code/reason to the client. socket.close is idempotent.
@@ -239,6 +244,7 @@ export function handleVoiceRelayUpgrade(
   /** Terminal, idempotent session end + event + usage settlement. */
   const endSession = (reason: VoiceSessionEndReason): void => {
     if (ended) return;
+    log('voice.session.ended', { reason, audioSeconds: round3(observed.audioSeconds), toolCalls: observed.toolCalls, textTokens: observed.textTokens });
     ended = true;
     if (usageTimer !== null) clearInterval(usageTimer);
     if (limitTimer !== null) clearInterval(limitTimer);
@@ -301,6 +307,7 @@ export function handleVoiceRelayUpgrade(
     const delta = residualUsage();
     flushed = { audioSeconds: observed.audioSeconds, textTokens: observed.textTokens, toolCalls: observed.toolCalls };
     if (delta.audioSeconds <= 0 && delta.textTokens <= 0 && delta.toolCalls <= 0) return;
+    log('voice.transport.usage', { audioSeconds: delta.audioSeconds, textTokens: delta.textTokens, toolCalls: delta.toolCalls });
     withTransaction(db, () => {
       addVoiceSessionUsage(db, sessionId, delta);
     });
@@ -325,6 +332,9 @@ export function handleVoiceRelayUpgrade(
     const callId = typeof frame['call_id'] === 'string' ? frame['call_id'] : typeof frame['item_id'] === 'string' ? frame['item_id'] : '';
     // Claim the id before any async work. Duplicate provider deliveries must never dial twice or start a response loop.
     if (callId !== '' && seenCallIds.has(callId)) return;
+    const toolName = String(frame['name']);
+    const toolStartedAt = Date.now();
+    log('voice.tool.started', { toolName });
     if (callId !== '') {
       seenCallIds.add(callId);
       if (seenCallIds.size > SEEN_CALL_IDS_MAX) {
@@ -359,7 +369,6 @@ export function handleVoiceRelayUpgrade(
         });
       }
       requireMembership(db, projectId, session.principalId);
-      const toolName = String(frame['name']);
       let result: { output: Record<string, unknown>; replayed: boolean };
       if (toolName === ENGINEERING_RUN_TOOL_NAME) {
         const reference = enqueueVoiceEngineeringRun(db, {
@@ -391,11 +400,14 @@ export function handleVoiceRelayUpgrade(
       // Persist the durable tool evidence promptly, not only at session end.
       flushUsage();
       output = JSON.stringify(result.output);
+      log('voice.tool.finished', { toolName, elapsedMs: Date.now() - toolStartedAt, status: 'succeeded', replayed: result.replayed });
     } catch (cause) {
       const error = isAppError(cause)
         ? { code: cause.code, message: cause.message, details: cause.details }
         : { code: 'internal_error', message: 'The engineering function failed' };
       output = JSON.stringify({ error });
+      log('voice.tool.finished', { toolName, elapsedMs: Date.now() - toolStartedAt, status: 'failed',
+        code: error.code, reason: isAppError(cause) ? diagnosticCode(cause.details?.['reason'], cause.code) : 'internal_error' });
     }
     // Feed the validated result back per the documented protocol, then ask
     // for the next provider turn. Tool results are untrusted data.
@@ -428,6 +440,15 @@ export function handleVoiceRelayUpgrade(
       return;
     }
     frameKind(parsed.type);
+    if (parsed.type === 'error') {
+      const error = parsed.frame['error'] as Record<string, unknown> | undefined;
+      log('voice.provider.error', { code: diagnosticCode(error?.['code']) });
+    } else if (parsed.type === 'response.done') {
+      const response = parsed.frame['response'] as Record<string, unknown> | undefined;
+      log('voice.response.done', { status: diagnosticCode(response?.['status'], 'completed') });
+    } else if (parsed.type === 'input_audio_buffer.speech_started' || parsed.type === 'input_audio_buffer.speech_stopped') {
+      log(parsed.type === 'input_audio_buffer.speech_started' ? 'voice.speech.started' : 'voice.speech.stopped');
+    }
     // Observed provider usage: any frame carrying a usage object.
     const usage = parsed.frame['usage'] as { input_tokens?: unknown; output_tokens?: unknown } | undefined;
     if (usage !== undefined && usage !== null && typeof usage === 'object') {
@@ -496,6 +517,7 @@ export function handleVoiceRelayUpgrade(
         fail({ code: 4400, reason: 'invalid_frame', errorCode: 'validation_failed' }, 'Clients may submit user messages only; tool outputs and instructions are server-owned');
         return;
       }
+      log('voice.text.received', { textInputCount: voiceTextInputCount(parsed.frame) });
     }
     // Observed audio transport volume from client frames carrying audio.
     const audio = parsed.frame['audio'];
@@ -543,6 +565,8 @@ export function handleVoiceRelayUpgrade(
   /** The dial never came up: end the session honestly without a settle. */
   const dialFailed = (message: string, failure?: RealtimeProviderFailure): void => {
     if (ended) return;
+    log('voice.provider.dial_failed', { category: failure?.category, httpStatus: failure?.httpStatus,
+      networkCode: failure?.networkCode });
     ended = true;
     if (usageTimer !== null) clearInterval(usageTimer);
     if (limitTimer !== null) clearInterval(limitTimer);
@@ -661,6 +685,7 @@ export function handleVoiceRelayUpgrade(
   }
 
   const factory = testFactory ?? xaiRealtimeProviderFactory;
+  log('voice.relay.authenticated');
   /** Client frames received before the upstream opened (flushed in order). */
   const pendingClientFrames: Array<{ raw: string; textInputCount: number }> = [];
   /** An interrupt that arrived while the provider dial was still opening. */
@@ -671,8 +696,9 @@ export function handleVoiceRelayUpgrade(
       apiKey: apiKey ?? 'test-only-injected',
       handlers: {
         onOpen: () => {
-          if (ended) return;
+          if (ended || providerOpened) return;
           providerOpened = true;
+          log('voice.provider.opened');
           // Declare the one engineering function server-side with fixed
           // instructions. The client can never widen this authority; its own
           // session config flows as ordinary frames afterwards.
@@ -708,6 +734,20 @@ export function handleVoiceRelayUpgrade(
             startTimers();
             return;
           }
+          try {
+            const context = prepareCallContext(ctx, { projectId, conversationId: session.conversationId, sessionId, requestId },
+              () => admitTextInputs(1, 'user_text'));
+            if (ended) return;
+            if (context !== null) {
+              provider?.send(JSON.stringify({
+                type: 'conversation.item.create',
+                item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: context }] },
+              }));
+              if (pendingClientFrames.length === 0) provider?.send(JSON.stringify({ type: 'response.create' }));
+            }
+          } catch {
+            log('voice.call.context_failed', { code: 'internal_error' });
+          }
           // Flush frames the client streamed during the dial, in order,
           // after the server-side tool declaration.
           const buffered = pendingClientFrames.splice(0, pendingClientFrames.length);
@@ -732,8 +772,9 @@ export function handleVoiceRelayUpgrade(
           startTimers();
         },
         onMessage: handleProviderFrame,
-        onClose: () => {
+        onClose: (code) => {
           if (ended) return;
+          log('voice.provider.closed', { closeCode: code });
           endSession('provider_disconnect');
           fail(
             { code: 4503, reason: 'provider_disconnected', errorCode: 'conflict' },

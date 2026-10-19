@@ -15,7 +15,8 @@ import { runMigrations } from '../../src/db/migrate.js';
 import { buildApiServer } from '../../src/http/app.js';
 import { ensureInitialPrincipal, createAdditionalPrincipal } from '../../src/identity/bootstrap.js';
 import { createProjectRecord } from '../../src/projects/store.js';
-import { createConversationRow } from '../../src/conversations/store.js';
+import { appendMessageRow, createConversationRow } from '../../src/conversations/store.js';
+import { connectRepository } from '../../src/repositories/store.js';
 import { createPlanVersionRow, approvePlanVersionRow } from '../../src/plans/store.js';
 import { createTicket } from '../../src/auth/tickets.js';
 import { setRealtimeProviderForTests } from '../../src/voice/runtime.js';
@@ -307,6 +308,33 @@ describe('relay upgrade authentication (zero provider dials)', () => {
 });
 
 describe('authorized relay roundtrip', () => {
+  it('starts one preparation and restores saved context just by opening a connected project call', async () => {
+    const previousProject = projectId;
+    const previousConversation = conversationId;
+    projectId = createProjectRecord(db, { name: 'Call preparation', engineerDisplayName: 'Ranger', principalId: ownerPrincipalId }).id;
+    conversationId = createConversationRow(db, projectId, 'Call preparation').id;
+    appendMessageRow(db, conversationId, 'user', 'Adapt customer CSV numbers. API_KEY=planted-secret');
+    await connectRepository(db, projectId, ownerPrincipalId, { url: 'https://github.com/jonschlinkert/is-number', ref: 'master' }, []);
+    try {
+      for (let index = 0; index < 2; index += 1) {
+        fake.received.length = 0;
+        const relay = await relayConnect(await voiceSessionStart(), await voiceTicket());
+        const context = await waitFor(() => fake.received.find(raw => raw.includes('Earlier user messages')) ?? null);
+        expect(context).toContain('Adapt customer CSV numbers');
+        expect(context).not.toContain('planted-secret');
+        expect(context).not.toContain('https://github.com');
+        expect(context).toContain('queued');
+        relay.socket.close();
+        await relay.closeEvent;
+      }
+      expect(db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE type = 'project_workspace_prep' AND json_extract(payload, '$.projectId') = ?").get(projectId)?.['count']).toBe(1);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM workspaces WHERE project_id = ?').get(projectId)?.['count']).toBe(0);
+    } finally {
+      projectId = previousProject;
+      conversationId = previousConversation;
+    }
+  });
+
   it('relays audio, text and a function call; the run enqueues durably with a prompt runId', async () => {
     fake.received.length = 0;
     const connectionsBefore = fake.connections;

@@ -13,7 +13,7 @@ import { readLedger } from '../../src/budget/ledger.js';
 import { FakeInstabox } from '../../src/workspace/instabox.js';
 import { setWorkspaceProviderForTests } from '../../src/workspace/runtime.js';
 import { WorkspaceService } from '../../src/workspace/service.js';
-import { codingTools, CodingToolRunner, functionToolDeclarations } from '../../src/agent/tools.js';
+import { codingCommandArgv, codingTools, CodingToolRunner, functionToolDeclarations } from '../../src/agent/tools.js';
 import { runCodingLoop, type CodingLoopResult } from '../../src/agent/loop.js';
 import type { ResponsesCall, ResponsesResult } from '../../src/agent/transport.js';
 
@@ -124,6 +124,32 @@ const NO_BUDGET = null;
 const ALWAYS_ALLOW = (): void => undefined;
 
 describe('coding loop protocol and discipline (deterministic protocol mock)', () => {
+  it('normalizes complete shell commands while retaining structured arguments', () => {
+    expect(codingCommandArgv({ command: 'node -e "console.log(1)"' })).toEqual(['sh', '-lc', 'node -e "console.log(1)"']);
+    expect(codingCommandArgv({ command: 'cat index.js', args: [] })).toEqual(['sh', '-lc', 'cat index.js']);
+    expect(codingCommandArgv({ command: 'node', args: ['-e', 'console.log(1)'] })).toEqual(['node', '-e', 'console.log(1)']);
+    expect(codingCommandArgv({ command: 'pwd' })).toEqual(['pwd']);
+    expect(() => codingCommandArgv({ command: 'node', args: [1] })).toThrow(/array of strings/);
+  });
+
+  it.each(['run_tests', 'run_command'])('only a passing test clears a failed test, not a later %s', async laterTool => {
+    let checks = 0;
+    const tools = codingTools({ projectId: h.projectId, workspace: h.workspace }).map(tool => ({
+      ...tool,
+      execute: async () => tool.name === 'run_tests'
+        ? { exitCode: checks++ === 0 ? 1 : 0, passed: checks > 1 }
+        : { exitCode: 0 },
+    }));
+    const mock = scriptedTransport([
+      () => ({ output: [functionCallItem('run_tests', { command: 'test' }, 'failed-check')] }),
+      () => ({ output: [functionCallItem(laterTool, { command: 'test' }, 'later-check')] }),
+      () => ({ output: [messageItem('Everything passed')] }),
+    ]);
+    const result = await runCodingLoop({ projectId: h.projectId, transport: mock.transport, model: 'grok-4.3',
+      instructions: 'test', input: [], tools, runner: h.runner, checker: ALWAYS_ALLOW, budget: NO_BUDGET });
+    expect(result.status).toBe(laterTool === 'run_tests' ? 'completed' : 'failed');
+  });
+
   it('refuses to run without an injected checker (no default-allow)', async () => {
     const mock = scriptedTransport([]);
     const attempt = runCodingLoop({
@@ -163,7 +189,8 @@ describe('coding loop protocol and discipline (deterministic protocol mock)', ()
       checker: ALWAYS_ALLOW,
       budget: NO_BUDGET,
     });
-    expect(result.status).toBe('completed');
+    expect(result.status).toBe('failed');
+    expect(result.failure?.code).toBe('command_failed');
     // The fake provider fails closed on the unmodeled command: real exit
     // code 127, so passed=false — even though the model then claims success.
     const runTests = result.toolOutcomes.find((outcome) => outcome.name === 'run_tests');

@@ -4,7 +4,7 @@ import { appendProjectEvent } from '../events/store.js';
 import { getApprovalRow, getPlanRow, latestPlanRow } from '../plans/store.js';
 import { isProhibitedCommand, requiredScopeForTool, scopeAllows, scopeCoversEdit } from '../plans/scope.js';
 import { getRunRow } from './store.js';
-import type { ToolApprovalChecker } from '../agent/tools.js';
+import { codingCommandArgv, type ToolApprovalChecker } from '../agent/tools.js';
 
 /**
  * The tool-layer approval recheck (the injected, mandatory authority).
@@ -62,10 +62,7 @@ export function approvalChecker(db: DatabaseSync, runId: string): ToolApprovalCh
     }
 
     if (input.tool === 'run_command' || input.tool === 'run_tests' || input.tool === 'launch_app') {
-      const argv = [
-        ...(typeof input.args['command'] === 'string' ? [input.args['command']] : []),
-        ...(Array.isArray(input.args['args']) ? input.args['args'].filter((entry): entry is string => typeof entry === 'string') : []),
-      ];
+      const argv = codingCommandArgv(input.args);
       const verdict = isProhibitedCommand(argv);
       if (verdict.prohibited) {
         deny(

@@ -160,6 +160,94 @@ async function goLive(ctx: ReturnType<typeof setup>) {
 }
 
 describe('voice transport', () => {
+  it('opens microphone permission in the click before creating a project for the call', async () => {
+    const ctx = setup()
+    const project = deferred<typeof TARGET | null>()
+    const resolveTarget = vi.fn(() => project.promise)
+    const started = ctx.voice.start(resolveTarget)
+    expect(ctx.getUserMedia).toHaveBeenCalledOnce()
+    expect(resolveTarget).not.toHaveBeenCalled()
+    await tick()
+    expect(resolveTarget).toHaveBeenCalledOnce()
+    expect(ctx.api.startVoiceSession).not.toHaveBeenCalled()
+    project.resolve(TARGET)
+    await started
+    expect(ctx.voice.isFor(TARGET)).toBe(true)
+    expect(ctx.voice.isFor({ ...TARGET, projectId: 'other' })).toBe(false)
+    expect(ctx.api.startVoiceSession).toHaveBeenCalledWith(PROJECT, CONVERSATION, expect.anything())
+  })
+
+  it('does not create a project if microphone permission is denied', async () => {
+    const ctx = setup()
+    ctx.getUserMedia.mockRejectedValue({ name: 'NotAllowedError' })
+    const resolveTarget = vi.fn(async () => TARGET)
+    await ctx.voice.start(resolveTarget)
+    expect(resolveTarget).not.toHaveBeenCalled()
+    expect(ctx.api.startVoiceSession).not.toHaveBeenCalled()
+    expect(ctx.voice.status.error).toContain('not granted')
+  })
+
+  it('does not start a late call after cancelling project creation', async () => {
+    const ctx = setup()
+    const project = deferred<typeof TARGET | null>()
+    const starting = ctx.voice.start(() => project.promise)
+    await tick()
+    ctx.voice.stop()
+    project.resolve(TARGET)
+    await starting
+    expect(ctx.api.startVoiceSession).not.toHaveBeenCalled()
+    expect(ctx.mic.stop).toHaveBeenCalled()
+    expect(ctx.voice.isFor(TARGET)).toBe(false)
+  })
+
+  it('releases the microphone when project creation fails', async () => {
+    const ctx = setup()
+    await ctx.voice.start(async () => null)
+    expect(ctx.api.startVoiceSession).not.toHaveBeenCalled()
+    expect(ctx.voice.status.phase).toBe('idle')
+    expect(ctx.mic.stop).toHaveBeenCalled()
+  })
+
+  it('delivers typed messages to the live call and requests a response', async () => {
+    const ctx = setup()
+    expect(ctx.voice.sendText(TARGET, 'prepare this repository')).toBe(false)
+    const socket = await goLive(ctx)
+    expect(ctx.voice.sendText(TARGET, ' prepare this repository ')).toBe(true)
+    expect(socket.sent.slice(-2)).toEqual([
+      { type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'prepare this repository' }] } },
+      { type: 'response.create' },
+    ])
+    const count = socket.sent.length
+    expect(ctx.voice.sendText({ ...TARGET, conversationId: 'other' }, 'wrong conversation')).toBe(false)
+    expect(ctx.voice.sendText({ ...TARGET, projectId: 'other' }, 'wrong project')).toBe(false)
+    expect(ctx.voice.sendText(TARGET, '  ')).toBe(false)
+    ctx.voice.stop()
+    expect(ctx.voice.sendText(TARGET, 'after stop')).toBe(false)
+    expect(socket.sent).toHaveLength(count)
+  })
+
+  it('waits for an active answer before responding to typed follow-ups', async () => {
+    const ctx = setup()
+    const socket = await goLive(ctx)
+    socket.frame({ type: 'response.created' })
+    expect(ctx.voice.sendText(TARGET, 'prepare the repo')).toBe(true)
+    expect(ctx.voice.sendText(TARGET, 'then explain index.js')).toBe(true)
+    expect(socket.sent.filter(frame => frame.type === 'response.create')).toHaveLength(0)
+    socket.frame({ type: 'response.done' })
+    expect(socket.sent.filter(frame => frame.type === 'response.create')).toHaveLength(1)
+    socket.frame({ type: 'response.done' })
+    expect(socket.sent.filter(frame => frame.type === 'response.create')).toHaveLength(1)
+  })
+
+  it('reports a failed typed delivery without silently retrying it', async () => {
+    const ctx = setup()
+    const socket = await goLive(ctx)
+    socket.send = () => { throw new Error('closed') }
+    expect(ctx.voice.sendText(TARGET, 'prepare the repo')).toBe(false)
+    expect(ctx.voice.status.error).toContain('could not be sent')
+    expect(ctx.voice.status.phase).toBe('idle')
+  })
+
   it('builds browser dependencies and idle channels without touching a device, socket or the network', () => {
     const getUserMedia = vi.fn()
     vi.stubGlobal('navigator', { mediaDevices: { getUserMedia, getDisplayMedia: getUserMedia } })

@@ -496,6 +496,7 @@ const IDLE_VOICE: VoiceStatus = { phase: 'idle', step: null, error: null, notice
 
 type VoiceRun = {
   projectId: string
+  conversationId: string
   operation: number
   abort: AbortController
   audio: VoiceAudio
@@ -510,6 +511,7 @@ type VoiceRun = {
   creating: boolean
   /** The run ended while its session-create request was still in flight. */
   orphaned: boolean
+  textResponsePending: boolean
 }
 
 export class VoiceChannel extends Store<VoiceStatus> {
@@ -531,7 +533,7 @@ export class VoiceChannel extends Store<VoiceStatus> {
   retryCleanup(): Promise<void> { return this.cleanup.retry() }
 
   /** Must be called from a click handler: the audio context and microphone prompt both need the gesture. */
-  async start(target: MediaTarget): Promise<void> {
+  async start(resolveTarget: MediaTarget | (() => Promise<MediaTarget | null>)): Promise<void> {
     if (this.run) return
     if (this.cleanup.unresolved) {
       this.set({ notice: 'The previous call is still being ended on Ranger. Wait for it, or retry ending it, before starting another.' })
@@ -550,8 +552,9 @@ export class VoiceChannel extends Store<VoiceStatus> {
     const operation = this.lifecycle.begin()
     if (operation === null) { audio.close(); return }
     const run: VoiceRun = {
-      projectId: target.projectId, operation, abort: new AbortController(), audio, socket: null, sessionId: null,
+      projectId: '', conversationId: '', operation, abort: new AbortController(), audio, socket: null, sessionId: null,
       stream: null, ready: false, discardAudio: false, serverError: null, readyTimer: null, creating: false, orphaned: false,
+      textResponsePending: false,
     }
     this.run = run
     this.reset({ ...IDLE_VOICE, phase: 'starting', step: 'permission' })
@@ -571,6 +574,15 @@ export class VoiceChannel extends Store<VoiceStatus> {
       })
     }
     this.set({ step: 'session' })
+
+    // Acquire devices in the click gesture, before asynchronous project creation.
+    let target: MediaTarget | null
+    try { target = typeof resolveTarget === 'function' ? await resolveTarget() : resolveTarget }
+    catch { this.fail(run, 'The project could not be opened for this call.'); return }
+    if (!this.isCurrent(run)) return
+    if (!target) { this.stop(); return }
+    run.projectId = target.projectId
+    run.conversationId = target.conversationId
 
     // Not tied to the run's abort signal: a session created after cancellation must be ended, not orphaned.
     run.creating = true
@@ -604,6 +616,31 @@ export class VoiceChannel extends Store<VoiceStatus> {
       return
     }
     run.readyTimer = this.deps.setTimer(() => this.fail(run, 'The call connection did not become ready in time, so it was ended.'), VOICE_READY_TIMEOUT_MS)
+  }
+
+  /** Preserve a new-project call only when its route has the same target. */
+  isFor(target: MediaTarget): boolean {
+    return this.run?.projectId === target.projectId && this.run.conversationId === target.conversationId
+  }
+
+  /** Stored chat messages must also reach the active provider conversation. */
+  sendText(target: MediaTarget, content: string): boolean {
+    const run = this.run
+    const text = content.trim()
+    if (!text || !run?.ready || run.projectId !== target.projectId || run.conversationId !== target.conversationId
+      || run.socket?.readyState !== RELAY_OPEN) return false
+    try {
+      run.socket.send(JSON.stringify({
+        type: 'conversation.item.create',
+        item: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
+      }))
+      if (this.status.responding) run.textResponsePending = true
+      else run.socket.send(JSON.stringify({ type: 'response.create' }))
+      return true
+    } catch {
+      this.fail(run, 'The message was saved but could not be sent to the call. Start a fresh call to continue.')
+      return false
+    }
   }
 
   /** Stops local playback immediately and asks Ranger to cancel only the in-flight voice response. */
@@ -678,6 +715,11 @@ export class VoiceChannel extends Store<VoiceStatus> {
         break
       case 'response.done':
         this.set({ responding: false })
+        if (run.textResponsePending) {
+          run.textResponsePending = false
+          try { run.socket?.send(JSON.stringify({ type: 'response.create' })) }
+          catch { this.fail(run, 'The call disconnected before Ranger could answer the saved message.') }
+        }
         break
       case 'response.cancelled':
       case 'input_audio_buffer.speech_started':

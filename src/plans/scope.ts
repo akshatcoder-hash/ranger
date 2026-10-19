@@ -136,7 +136,7 @@ function argvBasenames(argv: string[]): string[] {
 }
 
 const INTERPRETERS = new Set(['bash', 'sh', 'dash', 'zsh']);
-const PROHIBITED_WORD = /\b(sudo|su|doas|kubectl|helm|terraform|tofu|pulumi|aws|gcloud|az|heroku|vercel|netlify|curl|wget|http|nc|ncat|telnet|ssh|scp|sftp|rsync|sendmail|mail|mailx|useradd|adduser|usermod|groupadd)\b/;
+const PROHIBITED_WORD = new RegExp(`\\b(${[...PROHIBITED_COMMAND_BASENAMES].join('|')})\\b`);
 
 /**
  * Whether a tool command targets a prohibited class. Checked on the raw

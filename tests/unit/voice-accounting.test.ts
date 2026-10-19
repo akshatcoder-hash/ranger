@@ -15,7 +15,7 @@ import { openDatabase } from '../../src/db/db.js';
 import { runMigrations } from '../../src/db/migrate.js';
 import type { HandlerContext } from '../../src/http/handlers.js';
 import { createProjectRecord } from '../../src/projects/store.js';
-import { createConversationRow } from '../../src/conversations/store.js';
+import { appendMessageRow, createConversationRow } from '../../src/conversations/store.js';
 import { createVoiceSessionRow, getVoiceSessionRow } from '../../src/voice/store.js';
 import { endVoiceRelayForSession, handleVoiceRelayUpgrade, interruptVoiceResponse } from '../../src/voice/relay.js';
 import { setRealtimeProviderForTests } from '../../src/voice/runtime.js';
@@ -148,6 +148,17 @@ describe('voice text surcharge accounting (synthetic ledger, no network)', () =>
     client.emit('close');
     handlers.onClose(1000, 'closed');
     expect(readLedger(ledgerFile)).toEqual(settled);
+  });
+
+  it('admits saved call context before forwarding it and never repeats it on duplicate open', () => {
+    const session = getVoiceSessionRow(db, projectId, sessionId)!;
+    appendMessageRow(db, session.conversationId, 'user', 'Help adapt this repository.');
+    connect();
+    handlers.onOpen();
+    expect(textSends()).toHaveLength(1);
+    expect(textSends()[0]).toMatchObject({ observedUsd: 0.004, reservedUsd: 0.8 });
+    expect(JSON.stringify(textSends()[0]?.frame)).toContain('Help adapt this repository.');
+    expect(textOperations().map(op => op.kind)).toEqual(['reserve', 'observe']);
   });
 
   it('denies the next text before forwarding when duration plus text reaches the soft stop', () => {

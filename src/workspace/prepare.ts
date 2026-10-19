@@ -19,6 +19,7 @@ import type { PersistedIndexState } from '../retrieval/index-state.js';
 import type { JobHandler } from '../worker/loop.js';
 import { WorkspaceService } from './service.js';
 import { getWorkspace, listAllSourceFiles } from './store.js';
+import { diagnostic } from '../observability.js';
 
 /**
  * Read-only project preparation for a voice call: one isolated VM seeded
@@ -90,6 +91,12 @@ function appendPreparation(
     type: PREPARATION_EVENT_TYPE,
     data,
     requestId: input.requestId,
+  });
+  diagnostic('workspace.preparation', {
+    projectId: input.projectId, sessionId: input.sessionId, jobId: input.data.jobId,
+    phase: input.data.phase, errorCode: input.data.errorCode, elapsedMs: input.data.elapsedMs,
+    cloneElapsedMs: input.data.cloneElapsedMs, indexElapsedMs: input.data.indexElapsedMs,
+    fileCount: input.data.fileCount, byteCount: input.data.byteCount,
   });
 }
 
@@ -297,8 +304,11 @@ async function executePrepare(
     let message = typeof cause === 'string' ? cause : failureMessage(cause);
     if (created) {
       try {
+        diagnostic('workspace.cleanup.started', { projectId, jobId: job.id });
         await workspace.destroy(projectId);
+        diagnostic('workspace.cleanup.finished', { projectId, jobId: job.id, status: 'succeeded' });
       } catch {
+        diagnostic('workspace.cleanup.finished', { projectId, jobId: job.id, status: 'failed' });
         message = `${message} Workspace cleanup failed; the reconciliation sweep will reclaim it.`.slice(0, 400);
       }
     }
@@ -346,7 +356,9 @@ async function executePrepare(
       const cloneRoot = path.join(path.resolve(config.dataDir), 'repo-clones');
       const target = path.join(cloneRoot, projectId);
       try {
+        diagnostic('workspace.clone.started', { projectId, jobId: job.id });
         const cloned = await cloneRepository({ url: repository.url, ref: repository.ref, target });
+        diagnostic('workspace.clone.finished', { projectId, jobId: job.id, elapsedMs: cloned.elapsedMs });
         cloneElapsedMs = cloned.elapsedMs;
         repositoryCommit = cloned.commit;
         if (!recordResolvedCommit(db, projectId, repository, cloned.commit)) {
@@ -417,14 +429,18 @@ async function executePrepare(
 
     // 4. Exactly one create, then seed from the saved source, then index.
     try {
+      diagnostic('workspace.create.started', { projectId, jobId: job.id });
       await workspace.create(projectId, repository.commit, requestId);
       created = true;
+      diagnostic('workspace.create.finished', { projectId, jobId: job.id, status: 'succeeded' });
     } catch (cause) {
       await finishFailed(failureCode(cause, 'workspace_create_failed'), cause);
       return;
     }
     try {
+      diagnostic('workspace.seed.started', { projectId, jobId: job.id, fileCount, byteCount });
       await seedSavedSource(db, projectId, workspace);
+      diagnostic('workspace.seed.finished', { projectId, jobId: job.id, status: 'succeeded' });
     } catch (cause) {
       await finishFailed(failureCode(cause, 'workspace_seed_failed'), cause);
       return;

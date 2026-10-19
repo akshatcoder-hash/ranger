@@ -65,6 +65,13 @@ function optionalPositiveInt(args: Record<string, unknown>, key: string, max: nu
   return value;
 }
 
+/** Models may provide either executable + args or one complete shell command. */
+export function codingCommandArgv(args: Record<string, unknown>): string[] {
+  const command = requireString(args, 'command');
+  const argv = optionalStringArray(args, 'args') ?? [];
+  return argv.length === 0 && /[\s;&|<>]/.test(command) ? ['sh', '-lc', command] : [command, ...argv];
+}
+
 function capText(text: string, cap = TOOL_LOG_CAP_CHARS): { text: string; truncated: boolean } {
   return text.length > cap ? { text: text.slice(0, cap), truncated: true } : { text, truncated: false };
 }
@@ -160,7 +167,7 @@ export function codingTools(options: CodingToolsOptions): CodingToolDef[] {
     },
     {
       name: 'run_command',
-      description: 'Run a real foreground command in the guest workspace; the actual exit code is returned.',
+      description: 'Run a real foreground command. Supply executable + args, or a full shell command with args omitted. Use run_tests for verification checks. The actual exit code is returned.',
       parameters: {
         type: 'object',
         properties: { command: { type: 'string' }, args: { type: 'array', items: { type: 'string' } }, timeoutMs: { type: 'integer' } },
@@ -169,7 +176,7 @@ export function codingTools(options: CodingToolsOptions): CodingToolDef[] {
       },
       mutating: true,
       execute: async (args) => {
-        const argv = [requireString(args, 'command'), ...(optionalStringArray(args, 'args') ?? [])];
+        const argv = codingCommandArgv(args);
         const row = await workspace.runCommand(projectId, argv, optionalPositiveInt(args, 'timeoutMs', 300_000) ?? 60_000, false, attribution);
         const logs = capText(row.logs);
         return { commandId: row.id, state: row.state, exitCode: row.exitCode, timedOut: row.timedOut, logs: logs.text, logsTruncated: logs.truncated };
@@ -177,7 +184,7 @@ export function codingTools(options: CodingToolsOptions): CodingToolDef[] {
     },
     {
       name: 'run_tests',
-      description: 'Run the project tests as a real command. passed reflects the ACTUAL exit code (0), never a model claim.',
+      description: 'Run tests or verification checks. Supply executable + args, or a full shell command with args omitted. passed reflects the ACTUAL exit code (0), never a model claim.',
       parameters: {
         type: 'object',
         properties: { command: { type: 'string' }, args: { type: 'array', items: { type: 'string' } }, timeoutMs: { type: 'integer' } },
@@ -186,7 +193,7 @@ export function codingTools(options: CodingToolsOptions): CodingToolDef[] {
       },
       mutating: true,
       execute: async (args) => {
-        const argv = [requireString(args, 'command'), ...(optionalStringArray(args, 'args') ?? [])];
+        const argv = codingCommandArgv(args);
         const row = await workspace.runCommand(projectId, argv, optionalPositiveInt(args, 'timeoutMs', 300_000) ?? 120_000, false, {
           ...attribution,
           isTest: true,
@@ -214,7 +221,7 @@ export function codingTools(options: CodingToolsOptions): CodingToolDef[] {
       },
       mutating: true,
       execute: async (args) => {
-        const argv = [requireString(args, 'command'), ...(optionalStringArray(args, 'args') ?? [])];
+        const argv = codingCommandArgv(args);
         const row = await workspace.runCommand(projectId, argv, 60_000, true, attribution);
         return { commandId: row.id, state: row.state, pid: row.pid };
       },

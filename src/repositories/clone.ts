@@ -74,7 +74,7 @@ export function cloneArgs(input: Pick<CloneInput, 'url' | 'ref' | 'target'>): st
     '--no-tags',
     '--no-checkout',
     '--no-recurse-submodules',
-    '--branch', input.ref,
+    ...(input.ref === 'HEAD' ? [] : ['--branch', input.ref]),
     '--',
     input.url,
     input.target,

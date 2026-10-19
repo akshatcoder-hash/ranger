@@ -131,6 +131,8 @@ describe('tool approval checker', () => {
     );
     // launch_app is similarly fenced: a deploy CLI is not an app launch.
     await expect(checker({ projectId, tool: 'launch_app', args: { command: 'vercel' } })).rejects.toThrow(/prohibited/i);
+    await expect(checker({ projectId, tool: 'run_command', args: { command: 'fly deploy' } })).rejects.toThrow(/prohibited/i);
+    await expect(checker({ projectId, tool: 'run_command', args: { command: 'railway up', args: [] } })).rejects.toThrow(/prohibited/i);
   });
 
   it('refuses actions for a foreign project binding', async () => {

@@ -65,7 +65,7 @@ export function PreparationCard({ repositoryUrl, preparation, events, clock }: {
     {preparation && preparation.phase !== 'failed' && <ol className="prep-steps" aria-label="Preparation progress">{STEPS.map((step, index) => <li key={step.phase} data-state={index < stepIndex || preparation.phase === 'ready' ? 'done' : index === stepIndex ? 'current' : 'pending'}>{step.label}</li>)}</ol>}
     {tiles.length > 0 && <dl className="speed-grid" aria-label="Preparation speeds">{tiles.map(tile => <div className="speed-tile" key={tile.label}><dt>{tile.label}</dt><dd>{tile.value}</dd></div>)}</dl>}
     {preparation?.phase === 'failed' && <p role="alert" className="small-muted">{preparation.message ?? preparation.errorCode ?? 'Preparation failed. No files were marked ready.'}</p>}
-    {!preparation && <p className="small-muted">{repositoryUrl ? 'Start a call and ask Ranger to prepare this repository. Its VM and indexing progress will appear here.' : 'Connect a repository, then start a call to prepare its VM and code index.'}</p>}
+    {!preparation && <p className="small-muted">{repositoryUrl ? 'Start a call to prepare this repository automatically. Its VM and indexing progress will appear here.' : 'Connect a repository, then start a call to prepare its VM and code index.'}</p>}
   </article>
 }
 

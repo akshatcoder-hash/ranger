@@ -50,4 +50,11 @@ describe('remote clone URL policy', () => {
     expect(argv).toContain('core.hooksPath=/dev/null');
     expect(argv.slice(argv.indexOf('--') + 1)).toEqual(['https://github.com/acme/app.git', '/t']);
   });
+
+  it('uses the remote default branch for HEAD and preserves explicitly chosen refs', () => {
+    const input = { url: 'https://github.com/acme/app.git', target: '/t' };
+    expect(cloneArgs({ ...input, ref: 'HEAD' })).not.toContain('--branch');
+    const explicit = cloneArgs({ ...input, ref: 'master' });
+    expect(explicit.slice(explicit.indexOf('--branch'), explicit.indexOf('--branch') + 2)).toEqual(['--branch', 'master']);
+  });
 });
