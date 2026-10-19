@@ -3,9 +3,15 @@
 Ranger is a standalone AI forward-deployed engineer proof of work: a small
 TypeScript/Node backend (Fastify API + durable worker + preview gateway over
 SQLite) with xAI voice/vision/coding integrations, real Instabox Linux VM
-workspaces and pinned Trace retrieval. **Backend only** — there is no product
-frontend; see `docs/frontend-guide.md` for the contract a future frontend
-would use.
+workspaces and pinned Trace retrieval.
+
+On this `integration/full-stack` branch the backend lives at the repository
+root and the product frontend lives in `frontend/`; the deployed app is
+live at https://ranger.akshats.xyz — see `docs/deployment-handover.md` for
+the deployment architecture, login, redeploy/rollback, secrets/budget rules
+and known limitations. Local development is covered in
+`docs/local-full-stack.md`; the backend-only contract reference a future
+frontend would use remains in `docs/frontend-guide.md`.
 
 This is the **media-delivery milestone state** (foundation, identity,
 conversations/events, coding-workflow and the media features are
