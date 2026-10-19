@@ -14,7 +14,7 @@ npm run dev
 ```
 
 The dev server binds `127.0.0.1:5173`. Open `/` for live mode. Use
-**Explore sample walkthrough** to open the explicitly labelled demo mode, or
+**Explore demo** to open the explicitly labelled demo mode, or
 append `?mode=demo` to a route. Demo data is illustrative and never indicates
 a live repository, call, workspace, test run, or code change.
 
