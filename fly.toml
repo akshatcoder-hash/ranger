@@ -1,0 +1,49 @@
+# Single Fly Machine for the Ranger API and durable worker.
+# Both processes share one volume; do not scale this app past one Machine.
+# max_machines_running is not a current fly.toml field (Fly docs, 2026-10).
+# Keep the count at 1 with `fly scale count 1` and do not clone the Machine.
+app = 'ranger-backend-akshats'
+primary_region = 'sin'
+
+kill_signal = 'SIGTERM'
+kill_timeout = 30
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[deploy]
+  # First boot downloads the pinned Trace model before the port opens.
+  wait_timeout = '10m'
+
+[env]
+  RANGER_HOST = '0.0.0.0'
+  RANGER_PORT = '8080'
+  RANGER_DATA_DIR = '/data/ranger'
+  RANGER_SECRET_FILE = '/run/ranger/secrets.env'
+  RANGER_LIVE_BUDGET_FILE = '/data/provider-budget.json'
+  RANGER_CONFIG_FILE = '/run/ranger/ranger.config.json'
+  RANGER_LOG_LEVEL = 'info'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'off'
+  auto_start_machines = false
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    # Fly lowers any grace period above 60s. The port stays closed until ready.
+    grace_period = '60s'
+    interval = '15s'
+    timeout = '5s'
+    method = 'GET'
+    path = '/health'
+
+[mounts]
+  source = 'ranger_data'
+  destination = '/data'
+  initial_size = '1gb'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '2gb'

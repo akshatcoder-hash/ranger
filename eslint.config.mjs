@@ -2,7 +2,7 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'data/**', 'frontend/**'],
+    ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'data/**', 'frontend/**', '.wrangler/**'],
   },
   ...tseslint.configs.recommended,
   {
@@ -18,6 +18,18 @@ export default tseslint.config(
     files: ['scripts/**/*.ts', 'src/entrypoints/**/*.ts'],
     rules: {
       'no-console': 'off',
+    },
+  },
+  {
+    files: ['deploy/fly/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        Buffer: 'readonly',
+        process: 'readonly',
+        console: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+      },
     },
   },
 );

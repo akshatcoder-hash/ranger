@@ -24,3 +24,9 @@ data/
 .trace-home/
 trace-index/
 models/
+
+# Local Fly build staging (pinned Trace bundle; never the host cache)
+.fly-build/
+
+# Wrangler local state and generated types (regenerate with `npx wrangler types`)
+.wrangler/
