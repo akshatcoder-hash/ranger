@@ -35,6 +35,71 @@ export interface StartRunInput {
   approvalId: string;
 }
 
+/**
+ * Create ONE durable approved run: validates the exact-version approval,
+ * inserts the run and its pending job and appends the queued event — all
+ * inside the CALLER's open idempotent transaction. Shared by the public
+ * startRun route and the voice engineering function (both must never run
+ * engineering work inline; the worker executes the job).
+ */
+export function createApprovedRun(
+  db: DatabaseSync,
+  input: StartRunInput,
+  requestId: string,
+): RunRow {
+  // An identical retry never reaches here (the wrapper replayed the
+  // stored run first), so any active run is a genuine conflict.
+  const active = activeRunRow(db);
+  if (active !== null) {
+    throw Errors.conflict('Another run is already active; one run executes at a time', {
+      reason: 'run_already_active',
+      runId: active.id,
+    });
+  }
+  const conversation = getConversationRow(db, input.projectId, input.conversationId);
+  if (conversation === null) {
+    throw Errors.notFound(`Conversation ${input.conversationId} does not exist in this project`);
+  }
+  const approval = getApprovalRow(db, input.projectId, input.approvalId);
+  if (approval === null) {
+    throw Errors.notFound(`Approval ${input.approvalId} does not exist in this project`);
+  }
+  if (approval.status !== 'active') {
+    throw Errors.conflict('The plan approval is no longer active; a material change requires re-approval', {
+      reason: 'approval_invalidated',
+      approvalId: approval.id,
+    });
+  }
+  const latest = latestPlanRow(db, input.projectId);
+  if (latest === null || latest.id !== approval.planId) {
+    throw Errors.conflict('The approval is bound to a superseded plan version', {
+      reason: 'approval_superseded',
+      currentPlanId: latest?.id ?? null,
+    });
+  }
+  const jobId = `job_${randomUUID()}`;
+  const now = Date.now();
+  const run = insertRun(db, {
+    projectId: input.projectId,
+    conversationId: input.conversationId,
+    approvalId: approval.id,
+    planId: approval.planId,
+    planVersion: approval.version,
+    jobId,
+  });
+  db.prepare(
+    "INSERT INTO jobs (id, type, payload, status, created_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?)",
+  ).run(jobId, RUN_JOB_TYPE, JSON.stringify({ runId: run.runId }), now, now);
+  appendProjectEvent(db, {
+    projectId: input.projectId,
+    runId: run.runId,
+    type: 'run.state.changed',
+    data: { runId: run.runId, from: null, to: 'queued', reason: 'approved_plan' },
+    requestId,
+  });
+  return getRunRowForProject(db, input.projectId, run.runId)!;
+}
+
 /** Start one run from an approved plan (idempotent by scoped key). */
 export function startRun(db: DatabaseSync, req: FastifyRequest, input: StartRunInput): RunRow {
   return withIdempotentMutation(db, {
@@ -45,59 +110,7 @@ export function startRun(db: DatabaseSync, req: FastifyRequest, input: StartRunI
     // retry REPLAYS the stored result instead of tripping the one-active-run
     // check against the run the first attempt created. State + event + the
     // idempotency record commit atomically.
-    execute: () => {
-      // An identical retry never reaches here (the wrapper replayed the
-      // stored run first), so any active run is a genuine conflict.
-      const active = activeRunRow(db);
-      if (active !== null) {
-        throw Errors.conflict('Another run is already active; one run executes at a time', {
-          reason: 'run_already_active',
-          runId: active.id,
-        });
-      }
-      const conversation = getConversationRow(db, input.projectId, input.conversationId);
-      if (conversation === null) {
-        throw Errors.notFound(`Conversation ${input.conversationId} does not exist in this project`);
-      }
-      const approval = getApprovalRow(db, input.projectId, input.approvalId);
-      if (approval === null) {
-        throw Errors.notFound(`Approval ${input.approvalId} does not exist in this project`);
-      }
-      if (approval.status !== 'active') {
-        throw Errors.conflict('The plan approval is no longer active; a material change requires re-approval', {
-          reason: 'approval_invalidated',
-          approvalId: approval.id,
-        });
-      }
-      const latest = latestPlanRow(db, input.projectId);
-      if (latest === null || latest.id !== approval.planId) {
-        throw Errors.conflict('The approval is bound to a superseded plan version', {
-          reason: 'approval_superseded',
-          currentPlanId: latest?.id ?? null,
-        });
-      }
-      const jobId = `job_${randomUUID()}`;
-      const now = Date.now();
-      const run = insertRun(db, {
-        projectId: input.projectId,
-        conversationId: input.conversationId,
-        approvalId: approval.id,
-        planId: approval.planId,
-        planVersion: approval.version,
-        jobId,
-      });
-      db.prepare(
-        "INSERT INTO jobs (id, type, payload, status, created_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?)",
-      ).run(jobId, RUN_JOB_TYPE, JSON.stringify({ runId: run.runId }), now, now);
-      appendProjectEvent(db, {
-        projectId: input.projectId,
-        runId: run.runId,
-        type: 'run.state.changed',
-        data: { runId: run.runId, from: null, to: 'queued', reason: 'approved_plan' },
-        requestId: req.id,
-      });
-      return getRunRowForProject(db, input.projectId, run.runId)!;
-    },
+    execute: () => createApprovedRun(db, input, req.id),
   }).result;
 }
 

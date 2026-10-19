@@ -1,4 +1,4 @@
-import { arr, idField, int, nullable, obj, str, timestamp } from './schema.js';
+import { arr, idField, int, nullable, num, obj, str, timestamp } from './schema.js';
 
 /**
  * Realtime project event contract.
@@ -191,17 +191,101 @@ export const EVENT_TYPES: EventTypeDef[] = [
       reason: str({ maxLength: 300 }),
     }),
   },
-  { name: 'capture.session.started', description: 'Screen capture session started', dataSchema: { type: 'object' } },
-  { name: 'capture.session.ended', description: 'Screen capture session ended; generation invalidated', dataSchema: { type: 'object' } },
-  { name: 'capture.frame.ingested', description: 'Frame accepted and stored', dataSchema: { type: 'object' } },
-  { name: 'capture.frame.dropped', description: 'Frame dropped by a bound (names affected frameIds)', dataSchema: { type: 'object' } },
-  { name: 'capture.frame.deduplicated', description: 'Near-identical frame suppressed', dataSchema: { type: 'object' } },
-  { name: 'capture.inspection.completed', description: 'Structured inspection observation recorded', dataSchema: { type: 'object' } },
-  { name: 'capture.inspection.rejected-stale', description: 'Stale observation rejected', dataSchema: { type: 'object' } },
-  { name: 'voice.session.started', description: 'Voice session started', dataSchema: { type: 'object' } },
-  { name: 'voice.session.ended', description: 'Voice session ended (terminal, idempotent)', dataSchema: { type: 'object' } },
-  { name: 'voice.response.cancelled', description: 'In-flight voice response cancelled and flushed', dataSchema: { type: 'object' } },
-  { name: 'voice.usage.recorded', description: 'Observed provider usage recorded', dataSchema: { type: 'object' } },
+  {
+    name: 'capture.session.started',
+    description: 'Screen capture session started',
+    dataSchema: obj(['sessionId'], {
+      sessionId: idField('cap'),
+      conversationId: nullable(idField('cnv')),
+    }),
+  },
+  {
+    name: 'capture.session.ended',
+    description: 'Screen capture session ended; the generation advanced, invalidating late results',
+    dataSchema: obj(['sessionId', 'generation', 'reason'], {
+      sessionId: idField('cap'),
+      generation: int({ minimum: 1 }),
+      reason: str({ maxLength: 120 }),
+    }),
+  },
+  {
+    name: 'capture.frame.ingested',
+    description: 'Validated frame accepted as the current latest frame (metadata only, never bytes)',
+    dataSchema: obj(['sessionId', 'generation', 'frameId', 'byteSize', 'width', 'height', 'captureTimestamp', 'replacedFrameId'], {
+      sessionId: idField('cap'),
+      generation: int({ minimum: 1 }),
+      frameId: str({ maxLength: 200 }),
+      byteSize: int({ minimum: 1 }),
+      width: int({ minimum: 1 }),
+      height: int({ minimum: 1 }),
+      captureTimestamp: timestamp(),
+      replacedFrameId: nullable(str()),
+    }),
+  },
+  {
+    name: 'capture.frame.dropped',
+    description: 'Frame dropped by a bound (names the affected frameId and reason)',
+    dataSchema: obj(['sessionId', 'frameId', 'reason'], {
+      sessionId: idField('cap'),
+      frameId: str({ maxLength: 200 }),
+      reason: str({ maxLength: 64 }),
+      currentFrameId: nullable(str()),
+    }),
+  },
+  { name: 'capture.frame.deduplicated', description: 'Near-identical frame suppressed (optional exact-duplicate suppression detail)', dataSchema: { type: 'object' } },
+  {
+    name: 'capture.inspection.completed',
+    description: 'Structured inspection observation recorded against the validated source frame',
+    dataSchema: obj(['sessionId', 'frameId', 'observationCount'], {
+      sessionId: idField('cap'),
+      frameId: str({ maxLength: 200 }),
+      observationCount: int({ minimum: 0, maximum: 10 }),
+    }),
+  },
+  {
+    name: 'capture.inspection.rejected-stale',
+    description: 'A late or superseded inspection result was rejected and discarded',
+    dataSchema: obj(['sessionId', 'frameId', 'reason'], {
+      sessionId: idField('cap'),
+      frameId: str({ maxLength: 200 }),
+      reason: str({ enum: ['capture_ended', 'superseded_frame'] }),
+    }),
+  },
+  {
+    name: 'voice.session.started',
+    description: 'Voice session started (pinned provider model, explicit lifetime)',
+    dataSchema: obj(['sessionId', 'conversationId', 'model'], {
+      sessionId: idField('vcs'),
+      conversationId: idField('cnv'),
+      model: str({ maxLength: 120 }),
+    }),
+  },
+  {
+    name: 'voice.session.ended',
+    description: 'Voice session ended (terminal and idempotent; reconnect creates a NEW session)',
+    dataSchema: obj(['sessionId', 'conversationId', 'reason'], {
+      sessionId: idField('vcs'),
+      conversationId: idField('cnv'),
+      reason: str({ maxLength: 120 }),
+    }),
+  },
+  {
+    name: 'voice.response.cancelled',
+    description: 'In-flight voice response cancelled and flushed (voice output only, never a run)',
+    dataSchema: obj(['sessionId'], {
+      sessionId: idField('vcs'),
+    }),
+  },
+  {
+    name: 'voice.usage.recorded',
+    description: 'Observed provider usage recorded for a session',
+    dataSchema: obj(['sessionId', 'audioSeconds', 'textTokens', 'toolCalls'], {
+      sessionId: idField('vcs'),
+      audioSeconds: num({ minimum: 0 }),
+      textTokens: int({ minimum: 0 }),
+      toolCalls: int({ minimum: 0 }),
+    }),
+  },
   { name: 'workspace.command.finished', description: 'Supervised command finished with real exit status', dataSchema: { type: 'object' } },
   { name: 'workspace.artifact.created', description: 'Artifact collected', dataSchema: { type: 'object' } },
   { name: 'preview.session.updated', description: 'Preview or desktop session state changed', dataSchema: { type: 'object' } },

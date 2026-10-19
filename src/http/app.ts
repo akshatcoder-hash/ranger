@@ -12,6 +12,7 @@ import { toFastifyPathFor } from '../contracts/openapi.js';
 import { mutationHeaders } from '../contracts/schema.js';
 import { buildHandlerMaps, notConfiguredHandler, type HandlerContext, type OperationHandler, type WsOperationHandler } from './handlers.js';
 import { createPrincipalAuth } from './auth-middleware.js';
+import { DIAGNOSTIC_PAGE_HTML } from './diagnostic.js';
 
 /**
  * Fastify API application factory.
@@ -148,6 +149,13 @@ export async function buildApiServer(opts: ApiServerOptions): Promise<FastifyIns
       wsHandlerMap.get(op.id),
     );
   }
+
+  // Plain test diagnostic client: static, unstyled, secret-free TEST TOOLING
+  // (not part of the v1 contract — no auth at this route, and every
+  // authenticated action in the page calls the normal contract routes).
+  app.get('/diagnostic', async (_req, reply) => {
+    reply.type('text/html; charset=utf-8').send(DIAGNOSTIC_PAGE_HTML);
+  });
 
   return app;
 }

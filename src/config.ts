@@ -48,6 +48,8 @@ export interface LimitsConfig {
 export interface ProviderConfig {
   /** Optional explicit xAI realtime voice model override; pinned default below. */
   xaiVoiceModel: string;
+  /** Optional explicit xAI image-understanding model for on-demand inspection. */
+  xaiVisionModel: string;
   /** Optional explicit xAI Responses-API model for the coding loop. */
   xaiCodingModel: string;
   /** Sibling Trace repository root. */
@@ -100,6 +102,7 @@ export const LIMIT_CEILINGS: LimitsConfig = {
 
 export const DEFAULT_PROVIDERS: ProviderConfig = {
   xaiVoiceModel: 'grok-voice-3.0',
+  xaiVisionModel: 'grok-4.3',
   xaiCodingModel: 'grok-4.3',
   traceRoot: '/home/factory-user/repos/trace',
   tracePinnedCommit: 'bd7f255339a45a5bf41bcdc2be650626c497e2b2',

@@ -12,6 +12,8 @@ import { registerProjectHandlers } from './handlers-projects.js';
 import { registerRepositoryHandlers } from './handlers-repositories.js';
 import { registerConversationHandlers } from './handlers-conversations.js';
 import { registerEventHandlers } from './handlers-events.js';
+import { registerVoiceHandlers } from './handlers-voice.js';
+import { registerCaptureHandlers } from './handlers-capture.js';
 import { registerWorkspaceHandlers } from './handlers-workspace.js';
 import { registerRetrievalHandlers } from './handlers-retrieval.js';
 import { registerPlansHandlers } from './handlers-plans.js';
@@ -129,12 +131,15 @@ export function buildHandlerMaps(context: HandlerContext): HandlerMaps {
   handlers.set('getOpenApiDocument', async () => buildOpenApiDocument());
 
   // Implemented route families (identity, projects, repositories,
-  // conversations, events, workspace, retrieval, plans/approvals, runs).
+  // conversations, events, voice relay, capture/inspection, workspace,
+  // retrieval, plans/approvals, runs).
   registerIdentityHandlers(context, handlers);
   registerProjectHandlers(context, handlers);
   registerRepositoryHandlers(context, handlers);
   registerConversationHandlers(context, handlers);
   registerEventHandlers(context, handlers, wsHandlers);
+  registerVoiceHandlers(context, handlers, wsHandlers);
+  registerCaptureHandlers(context, handlers);
   registerWorkspaceHandlers(context, handlers);
   registerRetrievalHandlers(context, handlers);
   registerPlansHandlers(context, handlers);

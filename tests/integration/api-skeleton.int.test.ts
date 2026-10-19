@@ -32,10 +32,7 @@ async function makeApp(env: Record<string, string>, existingDataDir?: string): P
 }
 
 /** One sampled operation per family that must report an explicit capability error. */
-const FAMILY_SAMPLES: Record<string, { method: 'GET' | 'POST'; url: string; body?: Record<string, unknown> }> = {
-  voice: { method: 'POST', url: `/v1/projects/${PRJ}/voice/sessions`, body: { conversationId: CNV } },
-  capture: { method: 'POST', url: `/v1/projects/${PRJ}/capture/sessions`, body: {} },
-};
+const FAMILY_SAMPLES: Record<string, { method: 'GET' | 'POST'; url: string; body?: Record<string, unknown> }> = {};
 
 /** Families with real handlers now: unauthenticated requests get unauthorized, not not_configured. */
 const IMPLEMENTED_FAMILY_SAMPLES: Record<string, { method: 'GET' | 'POST'; url: string; body?: Record<string, unknown> }> = {
@@ -44,6 +41,8 @@ const IMPLEMENTED_FAMILY_SAMPLES: Record<string, { method: 'GET' | 'POST'; url: 
   repositories: { method: 'GET', url: `/v1/projects/${PRJ}/repository` },
   'conversations-requirements': { method: 'GET', url: `/v1/projects/${PRJ}/conversations` },
   events: { method: 'GET', url: `/v1/projects/${PRJ}/events` },
+  voice: { method: 'POST', url: `/v1/projects/${PRJ}/voice/sessions`, body: { conversationId: CNV } },
+  capture: { method: 'POST', url: `/v1/projects/${PRJ}/capture/sessions`, body: {} },
   workspace: { method: 'GET', url: `/v1/projects/${PRJ}/workspace/status` },
   'plans-approvals': { method: 'GET', url: `/v1/projects/${PRJ}/plans` },
   runs: { method: 'GET', url: `/v1/projects/${PRJ}/runs` },
@@ -183,18 +182,18 @@ describe('api skeleton', () => {
     expect(body.error.code).toBe('not_found');
   });
 
-  it('closes declared websocket routes without handlers with the stable not_configured code 4501', async () => {
+  it('closes the declared voice relay ws route with the documented unauthorized code 4401 when unauthenticated', async () => {
     await app.listen({ host: '127.0.0.1', port: 3905 });
     try {
-      // The events subscription is implemented (ticket-gated); the voice
-      // relay is still a declared-not-configured ws route.
+      // The events subscription and the voice relay are both implemented
+      // (ticket-gated); an unauthenticated upgrade closes 4401.
       const closed = new Promise<{ code: number; reason: string }>((resolve) => {
         const socket = new WebSocket(`ws://127.0.0.1:3905/v1/projects/${PRJ}/voice/sessions/${VCS}/relay`);
         socket.on('close', (code, reason) => resolve({ code, reason: reason.toString() }));
       });
       const result = await closed;
-      expect(result.code).toBe(4501);
-      expect(result.reason).toBe('not_configured');
+      expect(result.code).toBe(4401);
+      expect(result.reason).toBe('unauthorized');
     } finally {
       await app.close();
     }

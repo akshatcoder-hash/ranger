@@ -527,77 +527,331 @@
       "name": "capture.session.started",
       "description": "Screen capture session started",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "sessionId"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "pattern": "^cap_[0-9a-fA-F-]+$",
+            "description": "Prefixed cap identifier"
+          },
+          "conversationId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^cnv_[0-9a-fA-F-]+$",
+                "description": "Prefixed cnv identifier"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "capture.session.ended",
-      "description": "Screen capture session ended; generation invalidated",
+      "description": "Screen capture session ended; the generation advanced, invalidating late results",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "sessionId",
+          "generation",
+          "reason"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "pattern": "^cap_[0-9a-fA-F-]+$",
+            "description": "Prefixed cap identifier"
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 120
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "capture.frame.ingested",
-      "description": "Frame accepted and stored",
+      "description": "Validated frame accepted as the current latest frame (metadata only, never bytes)",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "sessionId",
+          "generation",
+          "frameId",
+          "byteSize",
+          "width",
+          "height",
+          "captureTimestamp",
+          "replacedFrameId"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "pattern": "^cap_[0-9a-fA-F-]+$",
+            "description": "Prefixed cap identifier"
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "frameId": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "byteSize": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "captureTimestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "replacedFrameId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "capture.frame.dropped",
-      "description": "Frame dropped by a bound (names affected frameIds)",
+      "description": "Frame dropped by a bound (names the affected frameId and reason)",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "sessionId",
+          "frameId",
+          "reason"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "pattern": "^cap_[0-9a-fA-F-]+$",
+            "description": "Prefixed cap identifier"
+          },
+          "frameId": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "currentFrameId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "capture.frame.deduplicated",
-      "description": "Near-identical frame suppressed",
+      "description": "Near-identical frame suppressed (optional exact-duplicate suppression detail)",
       "dataSchema": {
         "type": "object"
       }
     },
     {
       "name": "capture.inspection.completed",
-      "description": "Structured inspection observation recorded",
+      "description": "Structured inspection observation recorded against the validated source frame",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "sessionId",
+          "frameId",
+          "observationCount"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "pattern": "^cap_[0-9a-fA-F-]+$",
+            "description": "Prefixed cap identifier"
+          },
+          "frameId": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "observationCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "capture.inspection.rejected-stale",
-      "description": "Stale observation rejected",
+      "description": "A late or superseded inspection result was rejected and discarded",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "sessionId",
+          "frameId",
+          "reason"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "pattern": "^cap_[0-9a-fA-F-]+$",
+            "description": "Prefixed cap identifier"
+          },
+          "frameId": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "capture_ended",
+              "superseded_frame"
+            ]
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "voice.session.started",
-      "description": "Voice session started",
+      "description": "Voice session started (pinned provider model, explicit lifetime)",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "sessionId",
+          "conversationId",
+          "model"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "pattern": "^vcs_[0-9a-fA-F-]+$",
+            "description": "Prefixed vcs identifier"
+          },
+          "conversationId": {
+            "type": "string",
+            "pattern": "^cnv_[0-9a-fA-F-]+$",
+            "description": "Prefixed cnv identifier"
+          },
+          "model": {
+            "type": "string",
+            "maxLength": 120
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "voice.session.ended",
-      "description": "Voice session ended (terminal, idempotent)",
+      "description": "Voice session ended (terminal and idempotent; reconnect creates a NEW session)",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "sessionId",
+          "conversationId",
+          "reason"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "pattern": "^vcs_[0-9a-fA-F-]+$",
+            "description": "Prefixed vcs identifier"
+          },
+          "conversationId": {
+            "type": "string",
+            "pattern": "^cnv_[0-9a-fA-F-]+$",
+            "description": "Prefixed cnv identifier"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 120
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "voice.response.cancelled",
-      "description": "In-flight voice response cancelled and flushed",
+      "description": "In-flight voice response cancelled and flushed (voice output only, never a run)",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "sessionId"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "pattern": "^vcs_[0-9a-fA-F-]+$",
+            "description": "Prefixed vcs identifier"
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
       "name": "voice.usage.recorded",
-      "description": "Observed provider usage recorded",
+      "description": "Observed provider usage recorded for a session",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "sessionId",
+          "audioSeconds",
+          "textTokens",
+          "toolCalls"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "pattern": "^vcs_[0-9a-fA-F-]+$",
+            "description": "Prefixed vcs identifier"
+          },
+          "audioSeconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "textTokens": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "toolCalls": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       }
     },
     {
