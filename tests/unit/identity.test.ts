@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -490,6 +491,37 @@ describe('local repository snapshot', () => {
     rmSync(path.join(sharer.root, '.git'), { recursive: true, force: true });
     symlinkSync(path.join(target.root, '.git'), path.join(sharer.root, '.git'));
     await expect(resolveLocalSnapshot(`file://${sharer.root}`, 'main', [baseDir])).rejects.toMatchObject(notApproved);
+  });
+
+  it('accepts an approved root and candidate that reach the same directory through different aliases', async () => {
+    // macOS tmpdir() is /var/folders/... while its realpath is
+    // /private/var/folders/...; a symlinked alias reproduces the same shape on
+    // every platform.
+    const aliasParent = mkdtempSync(path.join(tmpdir(), 'ranger-alias-'));
+    const alias = path.join(aliasParent, 'approved-alias');
+    symlinkSync(baseDir, alias);
+    const head = execFileSync('git', ['-C', fixture.root, 'rev-parse', 'HEAD']).toString().trim();
+    const aliasedUrl = `file://${path.join(alias, 'fixture-app')}`;
+
+    // Approved root and candidate both spelled through the alias.
+    const viaAlias = await resolveLocalSnapshot(aliasedUrl, 'main', [alias]);
+    expect(viaAlias!.commit).toBe(head);
+    // Approved root spelled through the alias, candidate spelled canonically.
+    const canonicalCandidate = await resolveLocalSnapshot(`file://${realpathSync(fixture.root)}`, 'main', [alias]);
+    expect(canonicalCandidate!.commit).toBe(head);
+
+    // The alias widens nothing: a sibling outside the approved root stays denied,
+    // as does a symlink under the alias that escapes the canonical approved root.
+    const notApproved = { code: 'validation_failed', details: { reason: 'local_path_not_approved' } };
+    const outsideRepo = createFixtureRepo(mkdtempSync(path.join(tmpdir(), 'ranger-alias-out-')), 'outside-app');
+    await expect(resolveLocalSnapshot(outsideRepo.fileUrl, 'main', [alias])).rejects.toMatchObject(notApproved);
+    symlinkSync(outsideRepo.root, path.join(baseDir, 'escape-via-alias'));
+    await expect(
+      resolveLocalSnapshot(`file://${path.join(alias, 'escape-via-alias')}`, 'main', [alias]),
+    ).rejects.toMatchObject(notApproved);
+    await expect(
+      resolveLocalSnapshot(`file://${path.join(alias, '..', 'ranger-nonexistent')}`, 'main', [alias]),
+    ).rejects.toMatchObject(notApproved);
   });
 
   it('refuses gitfile and core.worktree redirection outside the approved root before inspection', async () => {

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import WebSocket from 'ws';
@@ -23,6 +24,25 @@ import { RangerClient } from '../../src/clients/ranger-client.js';
 
 const REPO = process.cwd();
 const started: ChildProcess[] = [];
+
+/**
+ * Ask the OS for an unused loopback port. Fixed ports collide with other
+ * suites (3908 is also used by capture-inspection and the events e2e) and with
+ * stray local listeners; a foreign listener that answers /health makes the
+ * readiness probe pass against the wrong process, which then rejects the
+ * freshly created bootstrap credential as unauthorized.
+ */
+function freeLoopbackPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const picked = typeof address === 'object' && address !== null ? address.port : 0;
+      server.close(() => (picked > 0 ? resolve(picked) : reject(new Error('no free port'))));
+    });
+  });
+}
 
 function spawnBootstrap(args: string[], env: Record<string, string>): ChildProcess {
   const proc = spawn('node', ['dist/scripts/bootstrap.js', ...args], {
@@ -123,8 +143,8 @@ describe('compiled bootstrap credential containment', () => {
 });
 
 describe('info-level request logs redact connection tickets', () => {
-  const port = 3908;
-  const base = `http://127.0.0.1:${port}`;
+  let port = 0;
+  let base = '';
   let api: ChildProcess | undefined;
   let logs = '';
   let client: RangerClient;
@@ -137,6 +157,8 @@ describe('info-level request logs redact connection tickets', () => {
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
     logs = '';
+    port = await freeLoopbackPort();
+    base = `http://127.0.0.1:${port}`;
     const dataDir = mkdtempSync(path.join(tmpdir(), 'ranger-log-api-'));
     writeFileSync(path.join(dataDir, '.keep'), '');
     api = spawn('node', ['dist/src/entrypoints/api.js'], {
@@ -211,6 +233,7 @@ describe('info-level request logs redact connection tickets', () => {
     expect(missingBody).toContain('cursor=keep-me');
     expect(missingBody).toContain('ticket=%5Bredacted%5D');
 
+    const previewPort = await freeLoopbackPort();
     const previewData = mkdtempSync(path.join(tmpdir(), 'ranger-log-preview-'));
     const preview = spawn('node', ['dist/src/entrypoints/preview.js'], {
       cwd: REPO,
@@ -218,7 +241,7 @@ describe('info-level request logs redact connection tickets', () => {
         ...process.env,
         RANGER_DATA_DIR: previewData,
         RANGER_HOST: '127.0.0.1',
-        RANGER_PREVIEW_PORT: '3909',
+        RANGER_PREVIEW_PORT: String(previewPort),
         RANGER_LOG_LEVEL: 'info',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -233,14 +256,14 @@ describe('info-level request logs redact connection tickets', () => {
     const previewDeadline = Date.now() + 15000;
     while (Date.now() < previewDeadline) {
       try {
-        const health = await fetch('http://127.0.0.1:3909/health');
+        const health = await fetch(`http://127.0.0.1:${previewPort}/health`);
         if (health.ok) break;
       } catch {
         // still starting
       }
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
-    const previewRes = await fetch(`http://127.0.0.1:3909/desktop?ticket=${encodeURIComponent(ticket)}`);
+    const previewRes = await fetch(`http://127.0.0.1:${previewPort}/desktop?ticket=${encodeURIComponent(ticket)}`);
     expect(previewRes.status).toBe(404);
     const previewBody = await previewRes.text();
     expect(previewBody).not.toContain(ticket);

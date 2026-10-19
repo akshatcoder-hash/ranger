@@ -138,7 +138,15 @@ function canonicalApprovedRoots(approvedRoots: string[]): string[] {
 export function requireApprovedSnapshotRoot(candidate: string, approvedRoots: string[]): string {
   const roots = canonicalApprovedRoots(approvedRoots);
   const lexical = path.normalize(candidate);
-  if (!roots.some((root) => isInsideOrEqual(lexical, root))) notApproved();
+  // An existing approved root may be spelled through an alias (macOS tmpdir()
+  // is /var/..., whose realpath is /private/var/...). The lexical gate accepts
+  // either spelling of an approved root so it still runs before any probing of
+  // the candidate; the canonical containment check below remains the authority.
+  const lexicalRoots = approvedRoots
+    .filter((root) => realpathOrNull(root) !== null)
+    .map((root) => path.normalize(root))
+    .concat(roots);
+  if (!lexicalRoots.some((root) => isInsideOrEqual(lexical, root))) notApproved();
   const real = realpathOrNull(lexical);
   if (real === null || !roots.some((root) => isInsideOrEqual(real, root))) notApproved();
   const gitEntry = path.join(real, '.git');
