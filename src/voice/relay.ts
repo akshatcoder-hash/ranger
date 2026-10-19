@@ -18,10 +18,12 @@ import {
   PROVIDER_MAX_BUFFERED_BYTES,
   xaiRealtimeProviderFactory,
   type RealtimeProviderConnection,
+  type RealtimeProviderFailure,
 } from './realtime.js';
-import { ENGINEERING_RUN_TOOL_NAME, VOICE_INSTRUCTIONS, VOICE_TOOLS, enqueueVoiceEngineeringRun, isVoiceToolName, runVoiceWorkspaceTool } from './tools.js';
+import { ENGINEERING_RUN_TOOL_NAME, INSPECT_SHARED_SCREEN_TOOL_NAME, DRAFT_PROJECT_PLAN_TOOL_NAME, VOICE_INSTRUCTIONS, VOICE_TOOLS, enqueueVoiceEngineeringRun, isVoiceToolName, runVoiceWorkspaceTool, runVoiceScreenTool, runVoicePlanTool } from './tools.js';
 import { retrievalServiceFor } from '../http/handlers-retrieval.js';
 import { releaseXaiReservation, reserveXaiSpend, observeXaiSpend } from '../budget/ledger.js';
+import { accountVoiceTextInputs, voiceTextInputCount } from './accounting.js';
 
 /**
  * The authenticated server-side realtime relay (VAL-MEDIA-001/002).
@@ -55,6 +57,7 @@ import { releaseXaiReservation, reserveXaiSpend, observeXaiSpend } from '../budg
  *   4503 provider_unavailable / provider_disconnected /
  *          provider_protocol_error (dial failed, upstream dropped or spoke
  *          protocol garbage, or the provider is not configured)
+ *   4503 budget_exceeded (text-input admission refused before forwarding)
  *   4502 slow_consumer (outbound buffer exceeded its bound; frame-less)
  */
 
@@ -72,7 +75,8 @@ const PENDING_CLIENT_FRAME_MAX = 64;
 const VOICE_DOCUMENTED_USD_PER_MIN = 0.08;
 /**
  * Reservation headroom for one relay session: the documented rate applied to
- * the full session duration bound (the worst case the session can bill).
+ * the full session duration bound. Additional text inputs are admitted and
+ * conservatively settled separately BEFORE each forwarding attempt.
  */
 const VOICE_RESERVE_USD =
   Math.round((VOICE_SESSION_MAX_MS / 60_000) * VOICE_DOCUMENTED_USD_PER_MIN * 100) / 100;
@@ -248,7 +252,8 @@ export function handleVoiceRelayUpgrade(
     });
     // Settle the live budget reservation exactly once, conservatively: the
     // documented rate for the bounded session wall time (an upper bound on
-    // what the provider could bill when usage frames are unobserved).
+    // duration charges when usage frames are unobserved). Text surcharges
+    // were already admitted/settled per forwarded input; do not count twice.
     if (reservationId !== null && config.liveBudgetFile !== null) {
       try {
         const endedRow = getVoiceSessionRow(db, projectId, sessionId);
@@ -260,7 +265,7 @@ export function handleVoiceRelayUpgrade(
         observeXaiSpend(config.liveBudgetFile, {
           reservationId,
           observedUsd: Math.max(conservativeUsd, 0.0001),
-          note: `voice usage unobserved at the provider; settled conservatively at the documented rate for the bounded session duration; observed audioSeconds=${observed.audioSeconds.toFixed(3)} textTokens=${observed.textTokens}`,
+          note: `voice usage unobserved at the provider; duration-only settlement at the documented rate for the bounded session duration; text-input surcharges accounted separately before forwarding; observed audioSeconds=${observed.audioSeconds.toFixed(3)} textTokens=${observed.textTokens}`,
         });
       } catch {
         // The ledger refuses a double settlement; never loop retries.
@@ -271,6 +276,24 @@ export function handleVoiceRelayUpgrade(
       provider?.close(1000, 'session_ended');
     } catch {
       // Already closed.
+    }
+  };
+
+  const admitTextInputs = (count: number, source: 'user_text' | 'tool_output'): boolean => {
+    if (ended) return false;
+    // Injected offline providers never consume the mission's paid ledger.
+    if (testFactory !== null || count === 0) return true;
+    try {
+      if (config.liveBudgetFile === null || session === null) throw new Error('Voice budget accounting is unavailable');
+      accountVoiceTextInputs(config.liveBudgetFile, session.model, count, source);
+      return true;
+    } catch {
+      endSession('budget_exceeded');
+      fail(
+        { code: 4503, reason: 'budget_exceeded', errorCode: 'budget_exceeded' },
+        'Voice text-input budget admission failed; the input was not forwarded and the session ended',
+      );
+      return false;
     }
   };
 
@@ -300,6 +323,15 @@ export function handleVoiceRelayUpgrade(
   /** The one server-declared engineering function: durable run, prompt return. */
   const handleFunctionCall = async (frame: Record<string, unknown>): Promise<void> => {
     const callId = typeof frame['call_id'] === 'string' ? frame['call_id'] : typeof frame['item_id'] === 'string' ? frame['item_id'] : '';
+    // Claim the id before any async work. Duplicate provider deliveries must never dial twice or start a response loop.
+    if (callId !== '' && seenCallIds.has(callId)) return;
+    if (callId !== '') {
+      seenCallIds.add(callId);
+      if (seenCallIds.size > SEEN_CALL_IDS_MAX) {
+        const oldest = seenCallIds.values().next().value;
+        if (oldest !== undefined) seenCallIds.delete(oldest);
+      }
+    }
     let args: unknown = frame['arguments'];
     if (typeof args === 'string') {
       try {
@@ -310,7 +342,7 @@ export function handleVoiceRelayUpgrade(
     }
     let output: string;
     try {
-      if (callId === '' || seenCallIds.has(callId)) {
+      if (callId === '') {
         throw Errors.conflict('The function call id is missing or was already served', {
           reason: 'function_call_replayed',
         });
@@ -326,6 +358,7 @@ export function handleVoiceRelayUpgrade(
           reason: 'session_limit',
         });
       }
+      requireMembership(db, projectId, session.principalId);
       const toolName = String(frame['name']);
       let result: { output: Record<string, unknown>; replayed: boolean };
       if (toolName === ENGINEERING_RUN_TOOL_NAME) {
@@ -338,7 +371,7 @@ export function handleVoiceRelayUpgrade(
         });
         result = { output: { runId: reference.runId }, replayed: reference.replayed };
       } else {
-        result = await runVoiceWorkspaceTool(toolName, {
+        const toolInput = {
           db,
           retrieval: retrievalServiceFor(ctx),
           projectId,
@@ -348,12 +381,11 @@ export function handleVoiceRelayUpgrade(
           callId,
           requestId,
           args,
-        });
-      }
-      seenCallIds.add(callId);
-      if (seenCallIds.size > SEEN_CALL_IDS_MAX) {
-        const oldest = seenCallIds.values().next().value;
-        if (oldest !== undefined) seenCallIds.delete(oldest);
+        };
+        result = toolName === INSPECT_SHARED_SCREEN_TOOL_NAME
+          ? await runVoiceScreenTool(ctx, toolInput)
+          : toolName === DRAFT_PROJECT_PLAN_TOOL_NAME ? await runVoicePlanTool(ctx, toolInput)
+          : await runVoiceWorkspaceTool(toolName, toolInput);
       }
       if (!result.replayed) observed.toolCalls += 1;
       // Persist the durable tool evidence promptly, not only at session end.
@@ -367,7 +399,10 @@ export function handleVoiceRelayUpgrade(
     }
     // Feed the validated result back per the documented protocol, then ask
     // for the next provider turn. Tool results are untrusted data.
-    if (ended) return;
+    if (ended || provider === null || !provider.isOpen) return;
+    // Conservatively treat every tool result (including errors) as another
+    // paid text input; the provider's precise tool-output billing is unknown.
+    if (!admitTextInputs(1, 'tool_output')) return;
     try {
       provider?.send(
         JSON.stringify({
@@ -420,7 +455,7 @@ export function handleVoiceRelayUpgrade(
 
   const handleClientFrame = (data: Buffer): void => {
     if (ended) return;
-    const raw = data.toString('utf8');
+    let raw = data.toString('utf8');
     if (Buffer.byteLength(raw, 'utf8') > CLIENT_FRAME_MAX_BYTES) {
       fail(
         { code: 4400, reason: 'message_too_large', errorCode: 'validation_failed' },
@@ -437,6 +472,31 @@ export function handleVoiceRelayUpgrade(
       return;
     }
     frameKind(parsed.type);
+    if (parsed.type === 'session.update') {
+      const requested = parsed.frame['session'];
+      const sessionOptions = requested !== null && typeof requested === 'object' && !Array.isArray(requested)
+        ? requested as Record<string, unknown> : {};
+      raw = JSON.stringify({
+        type: 'session.update',
+        session: {
+          // Only media presentation options are client-configurable. Authority stays server-owned.
+          ...(sessionOptions['voice'] === undefined ? {} : { voice: sessionOptions['voice'] }),
+          instructions: VOICE_INSTRUCTIONS,
+          tools: VOICE_TOOLS,
+          turn_detection: { type: 'server_vad' },
+          audio: { input: { format: { type: 'audio/pcm', rate: 24000 } }, output: { format: { type: 'audio/pcm', rate: 24000 } } },
+        },
+      });
+    } else if (parsed.type === 'response.create') {
+      // Per-response overrides must not replace the server's instructions or tools.
+      raw = JSON.stringify({ type: 'response.create' });
+    } else if (parsed.type === 'conversation.item.create') {
+      const item = parsed.frame['item'] as Record<string, unknown> | undefined;
+      if (item?.['type'] !== 'message' || item['role'] !== 'user') {
+        fail({ code: 4400, reason: 'invalid_frame', errorCode: 'validation_failed' }, 'Clients may submit user messages only; tool outputs and instructions are server-owned');
+        return;
+      }
+    }
     // Observed audio transport volume from client frames carrying audio.
     const audio = parsed.frame['audio'];
     if (typeof audio === 'string') {
@@ -455,7 +515,7 @@ export function handleVoiceRelayUpgrade(
         );
         return;
       }
-      pendingClientFrames.push(raw);
+      pendingClientFrames.push({ raw, textInputCount: voiceTextInputCount(parsed.frame) });
       return;
     }
     if (provider.bufferedAmount > PROVIDER_MAX_BUFFERED_BYTES) {
@@ -466,6 +526,7 @@ export function handleVoiceRelayUpgrade(
       );
       return;
     }
+    if (!admitTextInputs(voiceTextInputCount(parsed.frame), 'user_text')) return;
     provider.send(raw);
   };
 
@@ -480,9 +541,12 @@ export function handleVoiceRelayUpgrade(
   };
 
   /** The dial never came up: end the session honestly without a settle. */
-  const dialFailed = (message: string): void => {
+  const dialFailed = (message: string, failure?: RealtimeProviderFailure): void => {
     if (ended) return;
     ended = true;
+    if (usageTimer !== null) clearInterval(usageTimer);
+    if (limitTimer !== null) clearInterval(limitTimer);
+    activeRelays.delete(sessionId);
     releaseReservation();
     withTransaction(db, () => {
       const before = getVoiceSessionRow(db, projectId, sessionId);
@@ -497,7 +561,7 @@ export function handleVoiceRelayUpgrade(
         });
       }
     });
-    fail({ code: 4503, reason: 'provider_unavailable', errorCode: 'not_configured' }, message);
+    fail({ code: 4503, reason: 'provider_unavailable', errorCode: 'conflict' }, message, { reason: 'provider_dial_failed', ...failure });
   };
 
   // -- upgrade authentication (mirrors the events stream) -------------------
@@ -598,7 +662,7 @@ export function handleVoiceRelayUpgrade(
 
   const factory = testFactory ?? xaiRealtimeProviderFactory;
   /** Client frames received before the upstream opened (flushed in order). */
-  const pendingClientFrames: string[] = [];
+  const pendingClientFrames: Array<{ raw: string; textInputCount: number }> = [];
   /** An interrupt that arrived while the provider dial was still opening. */
   let pendingInterrupt = false;
   try {
@@ -619,6 +683,11 @@ export function handleVoiceRelayUpgrade(
                 session: {
                   instructions: VOICE_INSTRUCTIONS,
                   tools: VOICE_TOOLS,
+                  turn_detection: { type: 'server_vad' },
+                  audio: {
+                    input: { format: { type: 'audio/pcm', rate: 24000 } },
+                    output: { format: { type: 'audio/pcm', rate: 24000 } },
+                  },
                 },
               }),
             );
@@ -642,7 +711,7 @@ export function handleVoiceRelayUpgrade(
           // Flush frames the client streamed during the dial, in order,
           // after the server-side tool declaration.
           const buffered = pendingClientFrames.splice(0, pendingClientFrames.length);
-          for (const raw of buffered) {
+          for (const { raw, textInputCount } of buffered) {
             if (ended || provider === null || !provider.isOpen) break;
             if (provider.bufferedAmount > PROVIDER_MAX_BUFFERED_BYTES) {
               endSession('slow_consumer');
@@ -652,6 +721,7 @@ export function handleVoiceRelayUpgrade(
               );
               return;
             }
+            if (!admitTextInputs(textInputCount, 'user_text')) return;
             try {
               provider.send(raw);
             } catch {
@@ -670,10 +740,10 @@ export function handleVoiceRelayUpgrade(
             'The provider connection dropped; the voice session ended. Create a fresh session with a fresh ticket to reconnect.',
           );
         },
-        onError: () => {
+        onError: (_message, failure) => {
           if (ended) return;
           if (!providerOpened) {
-            dialFailed('The provider realtime dial failed; the voice session did not start');
+            dialFailed('The provider realtime dial failed; the voice session did not start', failure);
           }
           // After open: the subsequent close event carries the disconnect.
         },

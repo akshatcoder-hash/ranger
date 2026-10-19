@@ -249,7 +249,7 @@ export class PlanningService {
       throw Errors.notConfigured('Live budget ledger is not configured; paid planning is refused', { reason: 'ledger_unset' });
     }
     const ledgerFile = this.config.liveBudgetFile;
-    const secrets = new SecretResolver(this.config.secretFile);
+    const secrets = SecretResolver.fromConfig(this.config);
     const transport = new OpenAiResponsesTransport(secrets.get('XAI_API_KEY'));
     const admission = reserveXaiSpend(ledgerFile, {
       feature: 'lean-approved-run-workflow:planning',

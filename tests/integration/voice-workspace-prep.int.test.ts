@@ -164,6 +164,9 @@ describe('voice project preparation (worker index -> fresh API retrieval)', () =
       'prepare_project_workspace',
       'search_project_code',
       'read_project_source',
+      'inspect_shared_screen',
+      'get_project_status',
+      'draft_project_plan',
     ]);
     const api = new RetrievalService({ db: f.db, config: f.config });
 
@@ -187,7 +190,7 @@ describe('voice project preparation (worker index -> fresh API retrieval)', () =
     // The worker (a separate retrieval instance) does the VM + index work.
     await runPrepJob(f, new RetrievalService({ db: f.db, config: f.config }));
     expect(f.provider.creates).toHaveLength(1);
-    expect(f.provider.kills).toHaveLength(0);
+    expect(f.provider.kills, JSON.stringify(phases(f))).toHaveLength(0);
     const seen = phases(f);
     expect(seen.map((data) => data['phase'])).toEqual(['queued', 'preparing', 'indexing', 'ready']);
     const ready = seen[3]!;

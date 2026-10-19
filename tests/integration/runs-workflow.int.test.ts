@@ -15,6 +15,7 @@ import { FakeInstabox } from '../../src/workspace/instabox.js';
 import { setPlanningTransportForTests } from '../../src/planning/runtime.js';
 import type { ResponsesCall, ResponsesResult } from '../../src/agent/transport.js';
 import type { RangerProjectEvent } from '../../src/contracts/types.js';
+import { insertRunToolOutcome } from '../../src/runs/store.js';
 
 /**
  * Approved-run workflow integration tests over the PUBLIC API with real
@@ -279,6 +280,25 @@ async function startRun(h: TestHarness, approvalId: string, key: string): Promis
 }
 
 describe('approved run workflow (deterministic providers, public API)', () => {
+  it('keeps tool evidence readable when one historical result was truncated or is not an object', async () => {
+    const h = await openHarness();
+    try {
+      await seedConversation(h, 'Inspect saved execution results.');
+      const approval = await planAndApproveDirectly(h, ['command']);
+      const runId = await startRun(h, approval, 'read-evidence-only');
+      insertRunToolOutcome(h.db, { runId, callId: 'valid-result', name: 'edit_file', status: 'ok', resultJson: JSON.stringify({ path: 'src/greeting.ts', saved: true }), error: null });
+      for (const [index, json] of ['{"logs":"truncated', 'null', '[]'].entries()) {
+        insertRunToolOutcome(h.db, { runId, callId: `invalid-${index}`, name: 'run_tests', status: 'ok', resultJson: json, error: null });
+      }
+      const response = await h.app.inject({ method: 'GET', url: `/v1/projects/${h.projectId}/runs/${runId}/tools`, headers: h.bearer });
+      expect(response.statusCode, response.body).toBe(200);
+      const tools = response.json().tools as Array<{ callId: string; result: Record<string, unknown> }>;
+      expect(tools.find(tool => tool.callId === 'valid-result')?.result).toEqual({ path: 'src/greeting.ts', saved: true });
+      expect(tools.filter(tool => tool.callId.startsWith('invalid-')).map(tool => tool.result)).toEqual(Array(3).fill({ evidenceUnavailable: true, reason: 'stored_result_invalid' }));
+      expect(h.db.prepare('SELECT COUNT(*) AS c FROM workspaces').get()).toMatchObject({ c: 0 });
+    } finally { h.close(); rmSync(h.dataDir, { recursive: true, force: true }); }
+  });
+
   it('rejects a run started before any approval with the standard envelope and no job', async () => {
     const h = await openHarness();
     try {

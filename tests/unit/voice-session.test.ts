@@ -16,7 +16,8 @@ import {
   endVoiceSessionRow,
   getVoiceSessionRow,
 } from '../../src/voice/store.js';
-import { enqueueVoiceEngineeringRun } from '../../src/voice/tools.js';
+import { insertRunToolOutcome } from '../../src/runs/store.js';
+import { enqueueVoiceEngineeringRun, runVoiceWorkspaceTool } from '../../src/voice/tools.js';
 
 /**
  * Deterministic voice session behavior: explicit start/end, terminal
@@ -196,5 +197,64 @@ describe('voice engineering function', () => {
     ).toThrowError(/does not exist/);
     const after = (db.prepare('SELECT COUNT(*) AS c FROM runs').get() as { c: number }).c;
     expect(after).toBe(before);
+  });
+});
+
+
+describe('voice project status and human approval handoff', () => {
+  function status(overrides: Record<string, unknown> = {}) {
+    return runVoiceWorkspaceTool('get_project_status', {
+      db, projectId, conversationId, principalId: ownerPrincipalId, sessionId: makeSession(),
+      retrieval: null, callId: `status_${randomUUID()}`, requestId: 'req-status', args: {}, ...overrides,
+    });
+  }
+
+  it('finds the existing active approval without requiring it to be read out or starting a run', async () => {
+    const before = db.prepare('SELECT COUNT(*) AS n FROM plan_approvals').get();
+    const result = await status();
+    expect(result.output).toMatchObject({ approval: { approvalId }, plan: { status: 'approved' }, latestRun: null });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM plan_approvals').get()).toEqual(before);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM runs').get()).toMatchObject({ n: 0 });
+  });
+
+  it('requires UI approval for a new plan version, and does not return the superseded approval', async () => {
+    withTransaction(db, () => createPlanVersionRow(db, projectId, {
+      items: ['New requested change'], acceptanceCriteria: ['New test passes'], permittedScope: ['command'],
+    }, 'req-next-plan'));
+    const result = await status();
+    expect(result.output).toMatchObject({ approval: null, plan: { version: 2, status: 'draft' } });
+    expect(String(result.output.nextAction)).toContain('approve it in the UI');
+    expect(db.prepare('SELECT COUNT(*) AS n FROM plan_approvals').get()).toMatchObject({ n: 1 });
+  });
+
+  it('reports durable run state and real recorded outcomes instead of claiming queued work has finished', async () => {
+    const found = await status();
+    const approved = found.output.approval as { approvalId: string };
+    const run = enqueueVoiceEngineeringRun(db, { projectId, conversationId, callId: 'start-from-status', requestId: 'req-start', args: { approvalId: approved.approvalId } });
+    expect((await status()).output).toMatchObject({ latestRun: { runId: run.runId, state: 'queued', evidence: [] } });
+    insertRunToolOutcome(db, { runId: run.runId, callId: 'test-result', name: 'run_tests', status: 'succeeded', resultJson: JSON.stringify({ exitCode: 1, passed: false, timedOut: false, commandId: 'cmd_test', logs: 'API_KEY=private-secret-should-not-leak' }) });
+    db.prepare("UPDATE runs SET state = 'failed', failure_code = 'checks_failed', failure_message = 'Tests failed' WHERE id = ?").run(run.runId);
+    const completed = await status();
+    expect(completed.output).toMatchObject({ latestRun: { state: 'failed', failureCode: 'checks_failed', evidence: [{ tool: 'run_tests', exitCode: 1, passed: false }] } });
+    expect(JSON.stringify(completed.output)).not.toContain('private-secret');
+  });
+
+  it('preserves run status when a historical outcome contains truncated or non-object JSON', async () => {
+    const run = enqueueVoiceEngineeringRun(db, { projectId, conversationId, callId: 'malformed-outcome', requestId: 'req-outcome', args: { approvalId } });
+    insertRunToolOutcome(db, { runId: run.runId, callId: 'truncated', name: 'run_tests', status: 'succeeded', resultJson: '{"logs":"truncated' });
+    insertRunToolOutcome(db, { runId: run.runId, callId: 'null-json', name: 'run_command', status: 'succeeded', resultJson: 'null' });
+    const result = await status();
+    expect(result.output).toMatchObject({ latestRun: { runId: run.runId, state: 'queued', evidence: [
+      { tool: 'run_tests', evidenceUnavailable: true }, { tool: 'run_command', evidenceUnavailable: true },
+    ] } });
+    expect(JSON.stringify(result.output)).not.toContain('truncated');
+  });
+
+  it('does not reveal another conversation’s run, accept identity overrides, or serve nonmembers', async () => {
+    const otherConversationId = createConversationRow(db, projectId, 'Other conversation').id;
+    enqueueVoiceEngineeringRun(db, { projectId, conversationId: otherConversationId, callId: 'other-run', requestId: 'req-other', args: { approvalId } });
+    expect((await status()).output.latestRun).toBeNull();
+    await expect(status({ args: { projectId: 'other' } })).rejects.toMatchObject({ code: 'validation_failed' });
+    await expect(status({ principalId: 'unrelated-principal' })).rejects.toMatchObject({ code: 'forbidden' });
   });
 });

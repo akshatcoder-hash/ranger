@@ -1,7 +1,7 @@
 import type { FastifyRequest } from 'fastify';
 import { requireMembership, requirePrincipalId } from '../auth/authorization.js';
 import { withTransaction } from '../db/db.js';
-import { withIdempotentMutation, requestHash, idempotencyKeyFrom, peekIdempotentResult } from './idempotency.js';
+import { withIdempotentMutation, requestHash, idempotencyKeyFrom } from './idempotency.js';
 import { iso } from './serialize.js';
 import { appendProjectEvent } from '../events/store.js';
 import { Errors, isAppError } from '../errors.js';
@@ -17,10 +17,8 @@ import {
   latestFrameCache,
   validateFrameEnvelope,
 } from '../capture/frames.js';
-import { visionTransportForTests } from '../capture/runtime.js';
-import { XaiVisionTransport, VISION_MAX_IMAGE_BYTES, type VisionCallResult } from '../capture/vision.js';
-import { reserveXaiSpend, releaseXaiReservation, observeXaiSpend } from '../budget/ledger.js';
-import { costFromUsage } from '../agent/pricing.js';
+import { VISION_MAX_IMAGE_BYTES } from '../capture/vision.js';
+import { inspectCaptureFrame } from '../capture/inspection.js';
 import type { HandlerContext, OperationHandler } from './handlers.js';
 
 /**
@@ -41,10 +39,6 @@ import type { HandlerContext, OperationHandler } from './handlers.js';
  *   unsupported capability: there are no recordings and no retained media.
  */
 
-const INSPECTION_RESERVE_USD = 0.05;
-const INSPECTION_FEATURE = 'lean-voice-latest-frame:inspection';
-const DEFAULT_FRESHNESS_MAX_AGE_MS = 30_000;
-
 function captureSessionPayload(row: CaptureSessionRow): Record<string, unknown> {
   return {
     sessionId: row.id,
@@ -57,7 +51,7 @@ function captureSessionPayload(row: CaptureSessionRow): Record<string, unknown> 
 }
 
 export function registerCaptureHandlers(ctx: HandlerContext, handlers: Map<string, OperationHandler>): void {
-  const { db, config, secrets } = ctx;
+  const { db, config } = ctx;
 
   const authorize = (req: FastifyRequest): string => {
     const principalId = requirePrincipalId(req);
@@ -236,180 +230,16 @@ export function registerCaptureHandlers(ctx: HandlerContext, handlers: Map<strin
   handlers.set('requestInspection', async (req) => {
     const projectId = authorize(req);
     const params = req.params as { sessionId: string };
-    const body = (req.body ?? {}) as { prompt?: unknown; freshnessMaxAgeMs?: unknown };
-    const prompt = typeof body.prompt === 'string' && body.prompt !== ''
-      ? body.prompt.slice(0, 4000)
-      : 'Describe the current screen for the engineering conversation.';
-    const freshnessMaxAgeMs = typeof body.freshnessMaxAgeMs === 'number' ? body.freshnessMaxAgeMs : DEFAULT_FRESHNESS_MAX_AGE_MS;
-
-    const session = getCaptureSessionRow(db, projectId, params.sessionId);
-    if (session === null) throw Errors.notFound('Capture session not found in this project');
-    if (session.state !== 'active') {
-      throw Errors.conflict('The capture session has ended; inspection is refused', { reason: 'capture_ended' });
-    }
-
-    const scope = `requestInspection:${projectId}:${req.principalId ?? 'unauthenticated'}`;
-    const hash = requestHash({ params, body });
-    const key = idempotencyKeyFrom(req);
-    const replayed = peekIdempotentResult<{ inspection: unknown }>(db, { scope, key, requestHash: hash });
-    if (replayed !== undefined) return replayed;
-
-    // The latest VALIDATED in-memory frame is the only inspection source.
-    const latest = latestFrameCache.get(params.sessionId);
-    if (latest === null) {
-      return {
-        inspection: {
-          state: 'fresh-frame-requested',
-          observations: [],
-          sourceFrameId: null,
-          sourceTimestamp: null,
-          freshness: 'absent',
-        },
-      };
-    }
-    if (Date.now() - latest.captureTimestamp > freshnessMaxAgeMs) {
-      // No guessed observation: ask the client for a fresh frame.
-      return {
-        inspection: {
-          state: 'fresh-frame-requested',
-          observations: [],
-          sourceFrameId: latest.frameId,
-          sourceTimestamp: iso(latest.captureTimestamp),
-          freshness: 'stale',
-        },
-      };
-    }
-
-    // -- paid dial outside any transaction; never retried -------------------
-    const sourceGeneration = latest.generation;
-    const sourceFrameId = latest.frameId;
-    const sourceTimestampMs = latest.captureTimestamp;
-    const imageBase64 = latest.bytes.toString('base64');
-    const mimeType = latest.mimeType;
-    const injected = visionTransportForTests();
-    const inspectInput = { model: config.providers.xaiVisionModel, imageBase64, mimeType, prompt };
-    let reservationId: string | null = null;
-    let visionResult: VisionCallResult;
-    if (injected !== null) {
-      // Deterministic fake: no ledger, no real dial.
-      visionResult = await injected().inspect(inspectInput);
-    } else {
-      if (!secrets.isConfigured() || config.liveBudgetFile === null) {
-        throw Errors.notConfigured('The vision provider is not configured for this process', { provider: 'xai' });
-      }
-      const apiKey = secrets.get('XAI_API_KEY');
-      const admission = reserveXaiSpend(config.liveBudgetFile, {
-        feature: INSPECTION_FEATURE,
-        estimateUsd: INSPECTION_RESERVE_USD,
-        model: inspectInput.model,
-      });
-      reservationId = admission.reservationId;
-      const release = (): void => {
-        if (reservationId === null || config.liveBudgetFile === null) return;
-        try {
-          releaseXaiReservation(config.liveBudgetFile, reservationId);
-        } catch {
-          // Idempotent by id.
-        }
-        reservationId = null;
-      };
-      const settle = (observedUsd: number, note: string): void => {
-        if (reservationId === null || config.liveBudgetFile === null) return;
-        observeXaiSpend(config.liveBudgetFile, { reservationId, observedUsd, note });
-        reservationId = null;
-      };
-      let result;
-      try {
-        result = await new XaiVisionTransport(apiKey).inspect(inspectInput);
-      } catch (cause) {
-        release();
-        throw Errors.conflict('The vision provider call failed; no retry is performed', {
-          reason: 'vision_provider_failed',
-          detail: String(cause instanceof Error ? cause.message : cause).slice(0, 300),
-        });
-      }
-      if (result.usage === null) {
-        settle(INSPECTION_RESERVE_USD, 'vision usage unobserved; settled at the conservative estimate');
-        throw Errors.conflict('Vision provider usage could not be observed; paid work stopped', {
-          reason: 'usage_unobserved',
-        });
-      }
-      const cost = costFromUsage(inspectInput.model, result.usage);
-      if (cost === null) {
-        settle(INSPECTION_RESERVE_USD, 'vision model has no documented rate; settled at the conservative estimate');
-        throw Errors.conflict('The vision model has no documented rate; paid work stopped', {
-          reason: 'usage_rate_unknown',
-        });
-      }
-      settle(cost, 'observed vision usage');
-      visionResult = result;
-    }
-
-    const result = withIdempotentMutation(db, {
-      scope,
-      key,
-      requestHash: hash,
-      execute: () => {
-        // Late-result invalidation: the session must still be active with
-        // the SAME generation, and the source frame must still be current.
-        const current = getCaptureSessionRow(db, projectId, params.sessionId);
-        const stillCurrent = latestFrameCache.get(params.sessionId);
-        if (current === null || current.state !== 'active' || current.generation !== sourceGeneration) {
-          appendProjectEvent(db, {
-            projectId,
-            sessionId: params.sessionId,
-            type: 'capture.inspection.rejected-stale',
-            data: { sessionId: params.sessionId, frameId: sourceFrameId, reason: 'capture_ended' },
-            requestId: req.id,
-          });
-          // The rejected marker is stored as this call's idempotent result;
-          // the caller converts it to the stable 409 AFTER the commit so the
-          // rejection event survives.
-          return { rejected: 'capture_ended' as const };
-        }
-        if (stillCurrent === null || stillCurrent.frameId !== sourceFrameId) {
-          appendProjectEvent(db, {
-            projectId,
-            sessionId: params.sessionId,
-            type: 'capture.inspection.rejected-stale',
-            data: { sessionId: params.sessionId, frameId: sourceFrameId, reason: 'superseded_frame' },
-            requestId: req.id,
-          });
-          return { rejected: 'superseded_frame' as const };
-        }
-        const observations = visionResult.observations.map((observation) => ({
-          text: observation.text,
-          uncertainty: observation.uncertainty,
-          sourceFrameId,
-          sourceTimestamp: iso(sourceTimestampMs),
-        }));
-        appendProjectEvent(db, {
-          projectId,
-          sessionId: params.sessionId,
-          type: 'capture.inspection.completed',
-          data: { sessionId: params.sessionId, frameId: sourceFrameId, observationCount: observations.length },
-          requestId: req.id,
-        });
-        return {
-          rejected: null,
-          payload: {
-            inspection: {
-              state: 'observed',
-              observations,
-              sourceFrameId,
-              sourceTimestamp: iso(sourceTimestampMs),
-              freshness: 'current',
-            },
-          } as { inspection: Record<string, unknown> },
-        };
-      },
-    }).result;
-    if (result.rejected !== null) {
-      throw Errors.conflict('The inspection result was discarded: the capture state changed while it ran', {
-        reason: result.rejected,
-      });
-    }
-    return result.payload;
+    const body = (req.body ?? {}) as { prompt?: string; freshnessMaxAgeMs?: number };
+    return inspectCaptureFrame(ctx, {
+      projectId,
+      principalId: requirePrincipalId(req),
+      sessionId: params.sessionId,
+      requestId: req.id,
+      prompt: body.prompt,
+      freshnessMaxAgeMs: body.freshnessMaxAgeMs,
+      idempotencyKey: idempotencyKeyFrom(req),
+    });
   });
 
   handlers.set('listRetainedEvidence', async (req) => {

@@ -52,6 +52,13 @@ export function getCaptureSessionRow(db: DatabaseSync, projectId: string, sessio
   return row === undefined ? null : mapCaptureSession(row);
 }
 
+/** Capture access stays inside the voice call's project and conversation. */
+export function activeConversationCaptures(db: DatabaseSync, projectId: string, conversationId: string): CaptureSessionRow[] {
+  return (db.prepare(
+    "SELECT * FROM capture_sessions WHERE project_id = ? AND conversation_id = ? AND state = 'active' ORDER BY created_at DESC LIMIT 2",
+  ).all(projectId, conversationId) as unknown as CaptureSessionSqlRow[]).map(mapCaptureSession);
+}
+
 /** Create one active capture session (generation 1). Caller's transaction. */
 export function createCaptureSessionRow(
   db: DatabaseSync,

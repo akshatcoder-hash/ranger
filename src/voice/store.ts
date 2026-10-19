@@ -27,6 +27,7 @@ export type VoiceSessionEndReason =
   | 'provider_protocol_error'
   | 'slow_consumer'
   | 'session_limit'
+  | 'budget_exceeded'
   | 'dial_failed';
 
 export interface VoiceSessionRow {

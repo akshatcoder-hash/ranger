@@ -210,6 +210,44 @@ describe('on-demand inspection', () => {
     expect(events.some((event) => event.type === 'capture.inspection.completed')).toBe(true);
   });
 
+  it('returns the inspected snapshot during continuous uploads, labelled with its original time and stale freshness', async () => {
+    captureId = await startCapture();
+    await ingest(captureId, { frameId: 'snapshot-before', imageBase64: await pngBase64(64, 64) });
+    visionScript = [{ delayMs: 150, observations: [{ text: 'The original frame shows a compiler error', uncertainty: 0.2 }] }];
+    const pending = api('POST', `/v1/projects/${projectId}/capture/sessions/${captureId}/inspection`, {});
+    const deadline = Date.now() + 5000;
+    while (visionCalls.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    const newer = await ingest(captureId, { frameId: 'snapshot-after', imageBase64: await pngBase64(64, 64) });
+    expect(newer.status).toBe(200);
+    const result = await pending;
+    expect(result.status).toBe(200);
+    expect(result.json.inspection).toMatchObject({ state: 'observed', sourceFrameId: 'snapshot-before', freshness: 'stale' });
+    expect(latestFrameCache.get(captureId)?.frameId).toBe('snapshot-after');
+    expect(visionCalls).toHaveLength(1);
+  });
+
+  it('replays the same inspection response without a second provider call, including concurrent identical requests', async () => {
+    captureId = await startCapture();
+    await ingest(captureId, { frameId: 'idempotent-snapshot', imageBase64: await pngBase64(64, 64) });
+    visionScript = [{ delayMs: 100, observations: [{ text: 'A build error', uncertainty: 0.1 }] }];
+    const url = `/v1/projects/${projectId}/capture/sessions/${captureId}/inspection`;
+    const headers = { ...bearer, 'idempotency-key': `inspect-${captureId}` };
+    const [first, concurrent] = await Promise.all([
+      api('POST', url, { prompt: 'Find the error' }, headers),
+      api('POST', url, { prompt: 'Find the error' }, headers),
+    ]);
+    expect(first.status).toBe(200);
+    expect(concurrent.status).toBe(200);
+    expect(concurrent.json.inspection).toEqual(first.json.inspection);
+    const replay = await api('POST', url, { prompt: 'Find the error' }, headers);
+    expect(replay.status).toBe(200);
+    expect(replay.json.inspection).toEqual(first.json.inspection);
+    expect(visionCalls).toHaveLength(1);
+    const conflict = await api('POST', url, { prompt: 'A different question' }, headers);
+    expect(conflict.status).toBe(409);
+    expect(visionCalls).toHaveLength(1);
+  });
+
   it('a stale frame requests a fresh frame instead of a guessed observation', async () => {
     captureId = await startCapture();
     await ingest(captureId, { frameId: 'stale-frame', imageBase64: await pngBase64(64, 64), captureTimestamp: new Date(Date.now() - 60_000).toISOString() });

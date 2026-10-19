@@ -18,14 +18,18 @@ import { createConversationRow } from '../../src/conversations/store.js';
 import { createPlanVersionRow, approvePlanVersionRow } from '../../src/plans/store.js';
 import { readLedger } from '../../src/budget/ledger.js';
 import { ENGINEERING_RUN_TOOL } from '../../src/voice/tools.js';
+import { waitForSessionCreated, waitForSocketClose, waitForNewPlan } from '../helpers/voice-events.js';
 
 /**
  * LIVE xAI media evidence (opt-in; not part of npm test).
  *
- * Requires RANGER_LIVE_MEDIA=1 plus RANGER_SECRET_FILE and
+ * Requires RANGER_LIVE_MEDIA=1 plus an explicit secret source and
  * RANGER_LIVE_BUDGET_FILE. ONE short synthetic audio/text/tool voice session
- * and ONE synthetic-image vision inspection against the REAL xAI provider,
- * sharing the mission budget: reserve before dial, settle once, no hidden
+ * two short readiness-only reconnect sessions, and ONE synthetic-image
+ * vision inspection against the REAL xAI provider. RANGER_LIVE_VOICE_DRAFT=1
+ * additionally opts into one synthetic confirmed-request voice session and
+ * its real planning call, with no worker, VM, approval or engineering run.
+ * All share the mission budget: reserve before dial, settle once, no hidden
  * retry, no fallback model. Evidence records statuses, counts, model ids and
  * usage numbers only — never keys, bearer URLs, tickets or raw audio.
  */
@@ -58,7 +62,7 @@ function pcmToneChunks(): string[] {
   return chunks;
 }
 
-describeLive('live xAI voice relay and vision (shared budget, one session each)', () => {
+describeLive('live xAI voice relay and vision (shared budget, bounded sessions)', () => {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'ranger-live-media-'));
   let app: FastifyInstance;
   let db: DatabaseSync;
@@ -131,11 +135,9 @@ describeLive('live xAI voice relay and vision (shared budget, one session each)'
       { headers: { origin: BASE } },
     );
     socket.on('open', () => {
-      // Provider-documented session config (client-side): explicit
-      // instructions to call the engineering tool, reasoning disabled for
-      // latency, server VAD. The relay's own server-side declaration of the
-      // one tool is authority; this repeats it because partial session
-      // updates may reset omitted fields.
+      // Deliberately attempt client overrides. The relay normalizes these
+      // to server instructions/tools/VAD; only the user request below can
+      // legitimately request the approved engineering work.
       socket.send(JSON.stringify({
         type: 'session.update',
         session: {
@@ -300,11 +302,15 @@ describeLive('live xAI voice relay and vision (shared budget, one session each)'
       `${BASE.replace('http', 'ws')}/v1/projects/${projectId}/voice/sessions/${firstSession}/relay?ticket=${encodeURIComponent(firstTicket.json.ticket as string)}`,
       { headers: { origin: BASE } },
     );
-    await new Promise<void>((resolve, reject) => {
-      firstSocket.on('open', () => resolve());
-      firstSocket.on('error', reject);
-    });
-    firstSocket.close();
+    try {
+      await waitForSessionCreated(firstSocket);
+      const firstClosed = waitForSocketClose(firstSocket);
+      firstSocket.close();
+      await firstClosed;
+    } finally {
+      firstSocket.close();
+      await api('POST', `/v1/projects/${projectId}/voice/sessions/${firstSession}/end`);
+    }
 
     // Session B: a FRESH ticket starts a FRESH live session. Nothing
     // reconstructs upstream state and no past tool executes.
@@ -319,31 +325,80 @@ describeLive('live xAI voice relay and vision (shared budget, one session each)'
       `${BASE.replace('http', 'ws')}/v1/projects/${projectId}/voice/sessions/${secondSession}/relay?ticket=${encodeURIComponent(secondTicket.json.ticket as string)}`,
       { headers: { origin: BASE } },
     );
-    secondSocket.on('message', (data) => {
-      replayed.push(data.toString());
-    });
-    await new Promise<void>((resolve, reject) => {
-      secondSocket.on('open', () => resolve());
-      secondSocket.on('error', reject);
-    });
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    expect(replayed.some((raw) => raw.includes('session.created'))).toBe(true);
-    expect(replayed.some((raw) => raw.includes('function_call_output'))).toBe(false);
-    // A reconnect against the ENDED first session is refused (fresh ticket).
-    const endedTicket = await api('POST', '/v1/auth/connection-tickets', { projectId, purpose: 'voice-relay', origin: BASE });
-    const refused = await new Promise<{ code: number }>((resolve) => {
-      const socket = new WebSocket(
+    try {
+      secondSocket.on('message', (data) => {
+        replayed.push(data.toString());
+      });
+      // An open local relay is not yet an open provider session. Wait for
+      // actual provider readiness, or fail promptly on error/close. No retry.
+      await waitForSessionCreated(secondSocket);
+      expect(replayed.some((raw) => raw.includes('session.created'))).toBe(true);
+      expect(replayed.some((raw) => raw.includes('function_call_output'))).toBe(false);
+      // A reconnect against the ENDED first session is refused (fresh ticket).
+      const endedTicket = await api('POST', '/v1/auth/connection-tickets', { projectId, purpose: 'voice-relay', origin: BASE });
+      expect(endedTicket.status).toBe(200);
+      const refusedSocket = new WebSocket(
         `${BASE.replace('http', 'ws')}/v1/projects/${projectId}/voice/sessions/${firstSession}/relay?ticket=${encodeURIComponent(endedTicket.json.ticket as string)}`,
         { headers: { origin: BASE } },
       );
-      socket.on('close', (code) => resolve({ code }));
-      socket.on('open', () => {
-        socket.close();
-      });
-    });
-    expect(refused.code).toBe(4409);
-    secondSocket.close();
-    await api('POST', `/v1/projects/${projectId}/voice/sessions/${secondSession}/end`);
+      try {
+        // Let the server send its refusal; do not close on the local open event.
+        expect(await waitForSocketClose(refusedSocket)).toBe(4409);
+      } finally {
+        refusedSocket.close();
+      }
+    } finally {
+      secondSocket.close();
+      await api('POST', `/v1/projects/${projectId}/voice/sessions/${secondSession}/end`);
+    }
+  });
+
+  it.skipIf(process.env['RANGER_LIVE_VOICE_DRAFT'] !== '1')('drafts a real unapproved plan from a synthetic confirmed request without starting a run or VM', async () => {
+    const beforePlans = await api('GET', `/v1/projects/${projectId}/plans`);
+    const previousVersion = Math.max(0, ...(beforePlans.json.plans as Array<{ version: number }>).map((plan) => plan.version));
+    const beforeRuns = await api('GET', `/v1/projects/${projectId}/runs`);
+    const session = await api('POST', `/v1/projects/${projectId}/voice/sessions`, { conversationId });
+    expect(session.status).toBe(200);
+    const sessionId = (session.json.session as { sessionId: string }).sessionId;
+    const ticket = await api('POST', '/v1/auth/connection-tickets', { projectId, purpose: 'voice-relay', origin: BASE });
+    expect(ticket.status).toBe(200);
+    const voice = new WebSocket(
+      `${BASE.replace('http', 'ws')}/v1/projects/${projectId}/voice/sessions/${sessionId}/relay?ticket=${encodeURIComponent(ticket.json.ticket as string)}`,
+      { headers: { origin: BASE } },
+    );
+    let events: WebSocket | null = null;
+    try {
+      await waitForSessionCreated(voice);
+      const eventTicket = await api('POST', '/v1/auth/connection-tickets', { projectId, purpose: 'events', origin: BASE });
+      expect(eventTicket.status).toBe(200);
+      events = new WebSocket(
+        `${BASE.replace('http', 'ws')}/v1/projects/${projectId}/events/subscribe?ticket=${encodeURIComponent(eventTicket.json.ticket as string)}`,
+        { headers: { origin: BASE } },
+      );
+      const created = waitForNewPlan(events, voice, previousVersion);
+      voice.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text:
+        'This is a synthetic planning-only customer request. Please draft a new plan for adding a new WELCOME.md file containing exactly "Welcome to Ranger" and a newline. ' +
+        'I explicitly confirm this request and these requirements: only edit WELCOME.md, verify its exact contents with a sandbox command, preserve all other files, and do not deploy or launch anything. ' +
+        'There is no existing file content to investigate for this new-file proposal; do not load a repository or prepare a VM. ' +
+        'Use draft_project_plan to save the unapproved proposal for my later UI review. Do not approve it and do not start any engineering run.'
+      }] } }));
+      voice.send(JSON.stringify({ type: 'response.create' }));
+      const observed = await created;
+      const saved = await api('GET', `/v1/projects/${projectId}/plans/${observed.planId}`);
+      expect(saved.status).toBe(200);
+      expect(saved.json.plan).toMatchObject({ planId: observed.planId, version: observed.version, status: 'draft' });
+      expect((saved.json.plan as { items: string[] }).items.length).toBeGreaterThan(0);
+      const approvals = await api('GET', `/v1/projects/${projectId}/approvals`);
+      expect((approvals.json.approvals as Array<{ planId: string; status: string }>).some((approval) => approval.planId === observed.planId && approval.status === 'active')).toBe(false);
+      const afterRuns = await api('GET', `/v1/projects/${projectId}/runs`);
+      expect(afterRuns.json.runs).toEqual(beforeRuns.json.runs);
+      expect(db.prepare('SELECT COUNT(*) AS c FROM workspaces').get()).toMatchObject({ c: 0 });
+      console.log(`LIVE_VOICE_DRAFT ${JSON.stringify({ version: observed.version, status: 'draft', approved: false, newRuns: 0, workspaces: 0 })}`);
+    } finally {
+      events?.close();
+      voice.close();
+      await api('POST', `/v1/projects/${projectId}/voice/sessions/${sessionId}/end`);
+    }
   });
 
   it('stays within the conservative shared-budget increment for standalone media', async () => {

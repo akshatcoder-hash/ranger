@@ -116,13 +116,23 @@ export function registerRunsHandlers(ctx: HandlerContext, handlers: Map<string, 
         callId: outcome.callId,
         name: outcome.name,
         status: outcome.status,
-        ...(outcome.resultJson !== null ? { result: JSON.parse(outcome.resultJson) as unknown } : {}),
+        ...(outcome.resultJson !== null ? { result: readableToolResult(outcome.resultJson) } : {}),
         ...(outcome.error !== null ? { error: outcome.error } : {}),
         createdAt: iso(outcome.createdAt),
       })),
       nextCursor: null,
     };
   });
+}
+
+function readableToolResult(json: string): Record<string, unknown> {
+  try {
+    const value: unknown = JSON.parse(json);
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
+  } catch {
+    // Older executor records may contain JSON truncated at the stored-result cap.
+  }
+  return { evidenceUnavailable: true, reason: 'stored_result_invalid' };
 }
 
 function runningCommandsOfRun(db: HandlerContext['db'], runId: string): string[] {
