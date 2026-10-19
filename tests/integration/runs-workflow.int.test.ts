@@ -1,4 +1,4 @@
-import { execFile, type ChildProcess } from 'node:child_process';
+import { execFile, execFileSync, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -212,6 +212,70 @@ async function allEvents(h: TestHarness): Promise<RangerProjectEvent[]> {
   });
   expect(response.statusCode, response.body).toBe(200);
   return (response.json() as { events: RangerProjectEvent[] }).events;
+}
+
+/** Connect a repository through the public API (the same path the live driver uses). */
+async function connectRepositoryViaApi(h: TestHarness, url: string, ref = 'main'): Promise<{ status: number; commit: string | null }> {
+  const response = await h.app.inject({
+    method: 'PUT',
+    url: `/v1/projects/${h.projectId}/repository`,
+    headers: h.bearer,
+    payload: { url, ref },
+  });
+  const body = response.json() as { repository?: { commit?: string } };
+  return { status: response.statusCode, commit: body.repository?.commit ?? null };
+}
+
+/** Create a plan and approval directly (deterministic; no planning transport). */
+async function planAndApproveDirectly(h: TestHarness, scope: string[]): Promise<string> {
+  const plan = await h.app.inject({
+    method: 'POST',
+    url: `/v1/projects/${h.projectId}/plans`,
+    headers: h.bearer,
+    payload: { items: ['work'], acceptanceCriteria: ['done'], permittedScope: scope },
+  });
+  expect(plan.statusCode, plan.body).toBe(200);
+  const planId = (plan.json() as { plan: { planId: string } }).plan.planId;
+  const approved = await h.app.inject({
+    method: 'POST',
+    url: `/v1/projects/${h.projectId}/plans/${planId}/approvals`,
+    headers: h.bearer,
+    payload: { permittedScope: scope },
+  });
+  expect(approved.statusCode, approved.body).toBe(200);
+  return (approved.json() as { approval: { approvalId: string } }).approval.approvalId;
+}
+
+/** Invoke the engineering-run handler directly and return the terminal run row. */
+async function runHandlerToTerminal(
+  h: TestHarness,
+  runId: string,
+  coding: { create(call: ResponsesCall): Promise<ResponsesResult> },
+): Promise<{ state: string; failureCode: string | null }> {
+  const { engineeringRunHandler } = await import('../../src/runs/executor.js');
+  const job = h.db.prepare('SELECT job_id FROM runs WHERE id = ?').get(runId) as { job_id: string };
+  await engineeringRunHandler({ db: h.db, config: h.config, retrieval: null, transportFactory: () => coding })({
+    id: job.job_id,
+    type: 'engineering_run',
+    payload: { runId },
+    claimEpoch: 1,
+  });
+  const run = h.db.prepare('SELECT state, failure_code FROM runs WHERE id = ?').get(runId) as {
+    state: string;
+    failure_code: string | null;
+  };
+  return { state: run.state, failureCode: run.failure_code };
+}
+
+async function startRun(h: TestHarness, approvalId: string, key: string): Promise<string> {
+  const started = await h.app.inject({
+    method: 'POST',
+    url: `/v1/projects/${h.projectId}/runs`,
+    headers: { ...h.bearer, 'idempotency-key': key },
+    payload: { conversationId: h.conversationId, approvalId },
+  });
+  expect(started.statusCode, started.body).toBe(200);
+  return (started.json() as { run: { runId: string } }).run.runId;
 }
 
 describe('approved run workflow (deterministic providers, public API)', () => {
@@ -1014,6 +1078,213 @@ describe('approved run workflow (deterministic providers, public API)', () => {
       const disconnects = events.filter((e) => e.type === 'repository.disconnected');
       expect(disconnects).toHaveLength(1);
       expect(disconnects[0]!.data['commit']).toBeTruthy();
+    } finally {
+      h.close();
+      rmSync(h.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('materializes the connected approved repository into persisted source BEFORE any VM create, at the recorded revision', async () => {
+    const { createFixtureRepo } = await import('../helpers/fixture-repo.js');
+    const baseDir = mkdtempSync(path.join(tmpdir(), 'ranger-initial-src-'));
+    tempDirs.push(baseDir);
+    const fixture = createFixtureRepo(baseDir);
+    setPlanningTransportForTests(() => {
+      throw new Error('no planning in this test');
+    });
+    const h = await openHarness({ RANGER_APPROVED_SNAPSHOT_ROOTS: baseDir });
+    try {
+      await seedConversation(h, 'Build the integration per the connected repository.');
+      const connected = await connectRepositoryViaApi(h, fixture.fileUrl);
+      expect(connected.status).toBe(200);
+      const commit = connected.commit;
+      expect(commit).toMatch(/^[0-9a-f]{40}$/);
+      const approvalId = await planAndApproveDirectly(h, ['edit:src/', 'command']);
+
+      // Same idempotency key on the original call and the identical replay:
+      // one run, one job (the deterministic one-creation rehearsal).
+      const runId = await startRun(h, approvalId, 'initial-source-once');
+      const replayId = await startRun(h, approvalId, 'initial-source-once');
+      expect(replayId).toBe(runId);
+
+      const coding = scriptedTransport([
+        { output: [functionCallItem('edit_file', { path: 'src/integration.ts', content: 'export const integration = true;\n' }, 'call_1')] },
+        { output: [messageItem('done')] },
+      ]);
+      const outcome = await runHandlerToTerminal(h, runId, coding.transport);
+      expect(outcome.state, outcome.failureCode ?? '').toBe('succeeded');
+
+      // Deterministic one-creation rehearsal: exactly ONE provider create.
+      expect(h.provider.creates).toHaveLength(1);
+      // The recorded repository revision rode the workspace create.
+      const ws = h.db.prepare('SELECT machine_id, source_revision FROM workspaces WHERE project_id = ?').get(h.projectId) as {
+        machine_id: string;
+        source_revision: string | null;
+      };
+      expect(ws.source_revision).toBe(commit);
+
+      // The verified initial base is persisted with its own semantic origin
+      // (distinct from successful guest edits) and exact bytes.
+      const initial = h.db
+        .prepare("SELECT origin, content FROM workspace_source_files WHERE project_id = ? AND relative_path = 'index.ts'")
+        .get(h.projectId) as { origin: string; content: Uint8Array };
+      expect(initial.origin).toBe('initial_checkout');
+      expect(Buffer.from(initial.content).toString('utf8')).toBe('export const version = 1;\n');
+      // A successful guest edit persists with the guest-edit origin.
+      const edited = h.db
+        .prepare("SELECT origin FROM workspace_source_files WHERE project_id = ? AND relative_path = 'src/integration.ts'")
+        .get(h.projectId) as { origin: string };
+      expect(edited.origin).toBe('guest_edit');
+
+      // Readback through the public API matches the connected checkout.
+      const read = await h.app.inject({
+        method: 'GET',
+        url: `/v1/projects/${h.projectId}/workspace/file`,
+        query: { path: 'index.ts' },
+        headers: h.bearer,
+      });
+      expect(read.statusCode, read.body).toBe(200);
+      expect(Buffer.from((read.json() as { contentBase64: string }).contentBase64, 'base64').toString('utf8')).toBe(
+        'export const version = 1;\n',
+      );
+
+      // The materialized source reached the VM BEFORE the coding loop: the
+      // fresh fake machine already holds the file when the agent runs.
+      expect(h.provider.machineFile(ws.machine_id, 'index.ts') ?? '<missing>').toBe('export const version = 1;\n');
+    } finally {
+      h.close();
+      rmSync(h.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves generated saved source on a subsequent run instead of re-materializing the repository', async () => {
+    const { createFixtureRepo } = await import('../helpers/fixture-repo.js');
+    const baseDir = mkdtempSync(path.join(tmpdir(), 'ranger-initial-src-'));
+    tempDirs.push(baseDir);
+    const fixture = createFixtureRepo(baseDir);
+    setPlanningTransportForTests(() => {
+      throw new Error('no planning in this test');
+    });
+    const h = await openHarness({ RANGER_APPROVED_SNAPSHOT_ROOTS: baseDir });
+    try {
+      await seedConversation(h, 'Build the integration per the connected repository.');
+      expect((await connectRepositoryViaApi(h, fixture.fileUrl)).status).toBe(200);
+      const approvalId = await planAndApproveDirectly(h, ['edit:src/', 'command']);
+
+      const run1 = await startRun(h, approvalId, 'preserved-run-1');
+      const coding1 = scriptedTransport([
+        { output: [functionCallItem('edit_file', { path: 'src/integration.ts', content: 'export const integration = true;\n' }, 'c1')] },
+        { output: [messageItem('done')] },
+      ]);
+      expect((await runHandlerToTerminal(h, run1, coding1.transport)).state).toBe('succeeded');
+
+      // The checkout CHANGES after the first run (new commit). The second
+      // run must seed from the saved generated source, never re-read the
+      // moving repository.
+      writeFileSync(fixture.trackedFile, 'NEW COMMIT CONTENT — must never leak\n');
+      execFileSync('git', ['-C', fixture.root, 'add', 'index.ts'], {
+        env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
+      });
+      execFileSync('git', ['-C', fixture.root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'rewrite index'], {
+        env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
+      });
+
+      const run2 = await startRun(h, approvalId, 'preserved-run-2');
+      const coding2 = scriptedTransport([
+        { output: [functionCallItem('edit_file', { path: 'src/more.ts', content: 'export const more = 1;\n' }, 'c2')] },
+        { output: [messageItem('done')] },
+      ]);
+      expect((await runHandlerToTerminal(h, run2, coding2.transport)).state).toBe('succeeded');
+
+      // Each run created exactly one fresh VM (two total), and the saved
+      // generated source survived into the second VM unchanged.
+      expect(h.provider.creates).toHaveLength(2);
+      const ws2 = h.db.prepare('SELECT machine_id, source_revision FROM workspaces WHERE project_id = ?').get(h.projectId) as {
+        machine_id: string;
+        source_revision: string | null;
+      };
+      expect(h.provider.machineFile(ws2.machine_id, 'index.ts') ?? '<missing>').toBe('export const version = 1;\n');
+      expect(h.provider.machineFile(ws2.machine_id, 'src/integration.ts') ?? '<missing>').toBe('export const integration = true;\n');
+      // The initial base keeps its origin and its ORIGINAL bytes; the later
+      // commit content never leaked into the workspace.
+      const initial = h.db
+        .prepare("SELECT origin, content FROM workspace_source_files WHERE project_id = ? AND relative_path = 'index.ts'")
+        .get(h.projectId) as { origin: string; content: Uint8Array };
+      expect(initial.origin).toBe('initial_checkout');
+      expect(Buffer.from(initial.content).toString('utf8')).toBe('export const version = 1;\n');
+      expect(h.provider.machineFile(ws2.machine_id, 'src/more.ts') ?? '<missing>').toBe('export const more = 1;\n');
+    } finally {
+      h.close();
+      rmSync(h.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails the run explicitly BEFORE any create when the connected repository is a remote reference', async () => {
+    setPlanningTransportForTests(() => {
+      throw new Error('no planning in this test');
+    });
+    const h = await openHarness();
+    try {
+      await seedConversation(h, 'Build the integration per the remote repository.');
+      // Metadata-only connect stays allowed (no snapshot was recorded).
+      const connected = await connectRepositoryViaApi(h, 'https://example.com/acme/support.git');
+      expect(connected.status).toBe(200);
+      expect(connected.commit).toBe('');
+      const approvalId = await planAndApproveDirectly(h, ['edit:src/', 'command']);
+
+      const runId = await startRun(h, approvalId, 'remote-repo-run');
+      const outcome = await runHandlerToTerminal(h, runId, {
+        create: async (): Promise<ResponsesResult> => {
+          throw new Error('must never dial');
+        },
+      });
+      expect(outcome.state).toBe('failed');
+      expect(outcome.failureCode).toBe('initial_source_unmaterializable');
+      // The failure happened BEFORE any creation: zero machines, zero source.
+      expect(h.provider.creates).toHaveLength(0);
+      expect(h.db.prepare('SELECT COUNT(*) AS n FROM workspace_source_files WHERE project_id = ?').get(h.projectId)).toEqual({ n: 0 });
+      expect(h.db.prepare('SELECT COUNT(*) AS n FROM workspaces WHERE project_id = ?').get(h.projectId)).toEqual({ n: 0 });
+      // The run failed honestly through the public event record.
+      const events = await allEvents(h);
+      const failed = events.filter((e) => e.type === 'run.state.changed').at(-1);
+      expect((failed!.data as Record<string, unknown>)['to']).toBe('failed');
+    } finally {
+      h.close();
+      rmSync(h.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails the run explicitly BEFORE any create when the checkout became unreadable', async () => {
+    const { createFixtureRepo } = await import('../helpers/fixture-repo.js');
+    const baseDir = mkdtempSync(path.join(tmpdir(), 'ranger-initial-src-'));
+    tempDirs.push(baseDir);
+    const fixture = createFixtureRepo(baseDir);
+    setPlanningTransportForTests(() => {
+      throw new Error('no planning in this test');
+    });
+    const h = await openHarness({ RANGER_APPROVED_SNAPSHOT_ROOTS: baseDir });
+    try {
+      await seedConversation(h, 'Build the integration per the connected repository.');
+      const connected = await connectRepositoryViaApi(h, fixture.fileUrl);
+      expect(connected.status).toBe(200);
+      expect(connected.commit).toMatch(/^[0-9a-f]{40}$/);
+      const approvalId = await planAndApproveDirectly(h, ['edit:src/', 'command']);
+
+      // The approved checkout vanished after connect: the initial source
+      // cannot materialize, so the run must fail before any create instead
+      // of silently booting an empty repo.
+      rmSync(fixture.root, { recursive: true, force: true });
+
+      const runId = await startRun(h, approvalId, 'vanished-checkout-run');
+      const outcome = await runHandlerToTerminal(h, runId, {
+        create: async (): Promise<ResponsesResult> => {
+          throw new Error('must never dial');
+        },
+      });
+      expect(outcome.state).toBe('failed');
+      expect(outcome.failureCode).toBe('initial_source_unmaterializable');
+      expect(h.provider.creates).toHaveLength(0);
+      expect(h.db.prepare('SELECT COUNT(*) AS n FROM workspace_source_files WHERE project_id = ?').get(h.projectId)).toEqual({ n: 0 });
     } finally {
       h.close();
       rmSync(h.dataDir, { recursive: true, force: true });

@@ -5,6 +5,26 @@ served in `/v1/capabilities` (`contractVersion`) must always appear here.
 
 ## v1 — 2026-10-18
 
+### v1 amendment — initial source materialization before run create (2026-10-18)
+
+The contract version stays v1. No route, schema or event changes. Public
+behavior of an approved run start:
+
+- A connected approved-root local repository is materialized into the
+  project's persisted source at its RECORDED commit BEFORE any VM create.
+  The bridge uses the existing hardened read-only git inspection only;
+  symlink and submodule entries are refused, and the existing file-count
+  and per-file guest-transport bounds apply. The persisted initial base is
+  verified by byte readback and marked with the `initial_checkout` origin,
+  semantically distinct from `guest_edit` files (which are still saved only
+  after the guest write succeeded).
+- Generated saved source from earlier runs is never overwritten by a later
+  re-read of the repository.
+- When the initial source cannot materialize (a remote or reference-only
+  repository record, or a changed/unreadable checkout), the run fails
+  explicitly with failure code `initial_source_unmaterializable` BEFORE any
+  VM create. It never silently boots an empty repository.
+
 ### v1 amendment — real Trace retrieval routes implemented (2026-10-18)
 
 The contract version stays v1. The previously declared retrieval family is

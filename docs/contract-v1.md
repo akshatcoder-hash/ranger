@@ -62,9 +62,14 @@ https, ssh or git; embedded credentials are rejected), ref, workspace-relative
 checkout path and checkout policy (`shallow`, `submodules`). Local
 `file://` repositories also resolve the real commit, working-tree dirty flag
 (including untracked files) and a deterministic content hash at connect time;
-remote URLs persist the approved reference and resolve these fields when the
-source is available locally. References persist across restarts and are
-readable only by project members.
+remote URLs persist the approved reference without host inspection. There is
+no in-VM checkout service: when an approved run starts, the initial source is
+materialized from the connected approved-root local checkout at its recorded
+commit BEFORE any VM create, and a remote or reference-only record (or a
+changed/unreadable checkout) fails the run explicitly with
+`initial_source_unmaterializable` before any create. Generated saved source
+from earlier runs is never overwritten. References persist across restarts
+and are readable only by project members.
 
 - `PUT /v1/projects/{projectId}/repository` — connectRepository
 - `GET /v1/projects/{projectId}/repository` — getRepository
@@ -144,7 +149,7 @@ Plan versions, revisions and approvals
 - `GET /v1/projects/{projectId}/approvals` — listApprovals
 
 ### runs
-Engineering runs: durable start, status and cancel. Pause and resume are rejected as unsupported (`unsupported_operation`, not success).
+Engineering runs: durable start, status and cancel. Pause and resume are rejected as unsupported (`unsupported_operation`, not success). A run start materializes the connected approved-root repository's recorded commit into the project's persisted source BEFORE any VM create (the initial base, origin `initial_checkout`, verified by readback); generated saved source from earlier runs is never overwritten; when the initial source cannot materialize the run fails explicitly with `initial_source_unmaterializable` before any create.
 
 - `POST /v1/projects/{projectId}/runs` — startRun (validates the exact-version approval, enqueues ONE durable job and returns promptly; idempotent by scoped key so a retry never duplicates the run or its job; one run active at a time)
 - `GET /v1/projects/{projectId}/runs` — listRuns (includes failed and cancelled runs)

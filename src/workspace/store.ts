@@ -134,15 +134,30 @@ export function clearFailedWorkspace(db: DatabaseSync, projectId: string): void 
   db.prepare('DELETE FROM workspaces WHERE project_id = ? AND uncertain = 0').run(projectId);
 }
 
-export function saveSourceFile(db: DatabaseSync, projectId: string, relativePath: string, content: Buffer): void {
+/**
+ * Semantic origin of a source file row, set at insert and never rewritten:
+ * 'initial_checkout' marks the verified initial base materialized from the
+ * connected approved-root repository at its recorded commit before any VM
+ * create; 'guest_edit' marks a file created by a successful guest edit
+ * (saved only after the guest write succeeded).
+ */
+export type SourceFileOrigin = 'initial_checkout' | 'guest_edit';
+
+export function saveSourceFile(
+  db: DatabaseSync,
+  projectId: string,
+  relativePath: string,
+  content: Buffer,
+  origin: SourceFileOrigin = 'guest_edit',
+): void {
   if (content.byteLength > SOURCE_FILE_CAP_BYTES) {
     throw Errors.validation('Workspace file exceeds the size cap', { reason: 'file_too_large' });
   }
   db.prepare(
-    `INSERT INTO workspace_source_files (project_id, relative_path, content, size_bytes, updated_at)
-     VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO workspace_source_files (project_id, relative_path, content, size_bytes, updated_at, origin)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(project_id, relative_path) DO UPDATE SET content = excluded.content, size_bytes = excluded.size_bytes, updated_at = excluded.updated_at`,
-  ).run(projectId, relativePath, content, content.byteLength, Date.now());
+  ).run(projectId, relativePath, content, content.byteLength, Date.now(), origin);
 }
 
 export function readSourceFile(db: DatabaseSync, projectId: string, relativePath: string): Buffer | null {

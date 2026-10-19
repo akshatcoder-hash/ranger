@@ -157,8 +157,21 @@ lock is taken, and no repository-configured helper executes
 `GIT_ATTR_NOSYSTEM=1` neutralize attribute filters, global/system git
 config is ignored, and ambient `GIT_*` environment variables are stripped).
 Content hashing hashes symlinks by link text and never reads out-of-root
-target bytes. Remote references persist without host inspection and resolve
-in the workspace checkout.
+target bytes.
+
+There is no in-VM checkout service: a remote repository reference cannot be
+checked out into the workspace. When an approved run starts, the executor
+materializes the initial source from the connected approved-root local
+checkout at its RECORDED commit BEFORE any VM create (hardened read-only git
+only; symlink and submodule entries are refused; the existing file-count and
+per-file guest-transport bounds apply; the persisted base is verified by
+byte readback and marked with the `initial_checkout` origin, distinct from
+`guest_edit` files saved after successful guest writes). Generated saved
+source from earlier runs is never overwritten by a later re-read. When the
+initial source cannot materialize — a remote or reference-only record, or a
+changed/unreadable checkout — the run fails explicitly with
+`initial_source_unmaterializable` BEFORE any VM create instead of silently
+booting an empty repository.
 
 Mutating routes accept a scoped `Idempotency-Key` header (scoped to the
 operation, project AND authenticated principal, so the same key and body

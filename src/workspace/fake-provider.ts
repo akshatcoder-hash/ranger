@@ -199,6 +199,11 @@ export class FakeInstabox implements InstaboxProvider {
     return this.machines.get(machineId) ?? null;
   }
 
+  /** Test-support read of the modeled guest file state (deterministic). */
+  machineFile(machineId: string, relativePath: string): string | null {
+    return this.files.get(machineId)?.get(relativePath) ?? null;
+  }
+
   async listByOperation(operationKey: string): Promise<ProviderMachine | null> {
     const machineId = this.operationToMachine.get(operationKey);
     if (machineId === undefined) return null;

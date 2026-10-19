@@ -56,7 +56,7 @@ const execFile = promisify(execFileCb);
 const GIT_TIMEOUT_MS = 10_000;
 const GIT_MAX_BUFFER = 32 * 1024 * 1024;
 /** Deterministic cap on the number of files folded into the content hash. */
-const HASH_FILE_CAP = 20_000;
+export const HASH_FILE_CAP = 20_000;
 /** Files above this size contribute their path+size, not their bytes. */
 const HASH_FILE_BYTE_CAP = 8 * 1024 * 1024;
 /** The well-known empty tree; attribute lookups see no rules from it. */
@@ -233,6 +233,28 @@ async function git(root: string, args: string[]): Promise<string> {
   }
 }
 
+/** Byte-faithful variant of `git()` for blob content (never decoded as text). */
+async function gitBytes(root: string, args: string[]): Promise<Buffer> {
+  try {
+    const { stdout } = await execFile(
+      'git',
+      [...GIT_HARDENED_FLAGS, '-C', root, ...args],
+      {
+        timeout: GIT_TIMEOUT_MS,
+        maxBuffer: GIT_MAX_BUFFER,
+        env: hardenedGitEnv(),
+        encoding: 'buffer',
+      },
+    );
+    return stdout;
+  } catch {
+    throw Errors.validation(`Git operation failed for the local repository: ${describeGitFailure(args)}`, {
+      reason: 'git_failed',
+      step: args[0] ?? 'unknown',
+    });
+  }
+}
+
 function describeGitFailure(args: string[]): string {
   switch (args[0]) {
     case 'rev-parse':
@@ -374,4 +396,128 @@ export async function resolveLocalSnapshot(
   const status = await git(root, ['status', '--porcelain']);
   const contentHash = await hashRepositoryFiles(root);
   return { commit, branch, dirty: status.trim() !== '', contentHash };
+}
+
+export interface CommitSourceBounds {
+  /** Refuse when the tree holds more than this many entries. */
+  maxFiles: number;
+  /** Refuse when any blob exceeds this size (never read the bytes first). */
+  maxFileBytes: number;
+}
+
+export interface CommitSourceFile {
+  path: string;
+  content: Buffer;
+}
+
+/**
+ * Read one recorded commit's full tree as bounded source files, using the
+ * SAME hardened read-only invocation and containment guards as snapshot
+ * resolution. This is the initial-source bridge for an approved-run start:
+ * the RECORDED commit is the authority (a later dirty or moved working tree
+ * never changes what is read). Every refusal is explicit and happens before
+ * any content is materialized:
+ * - `local_path_not_approved` / `not_a_git_worktree` / `attributes_rejected`
+ *   / `repository_redirect` — the existing approval and containment guards,
+ *   re-verified at read time against the CURRENT approved roots;
+ * - `git_failed` — the recorded commit no longer resolves or the tree
+ *   cannot be read (changed/unreadable checkout);
+ * - `submodule_entry_unsupported` — a gitlink; there is no submodule
+ *   fetch/materialization on this host or in the workspace;
+ * - `symlink_entry_unsupported` — a symlink blob; the guest write protocol
+ *   is regular-file-only (nofollow), so a link cannot materialize as itself;
+ * - `entry_path_invalid` — a tree path the workspace write path would
+ *   refuse (absolute, `..`, NUL);
+ * - `file_count_exceeded` / `file_too_large` — the caller's bounds (the
+ *   existing file-count and per-file guest transport limits).
+ */
+export async function readCommitSourceFiles(
+  root: string,
+  recordedCommit: string,
+  approvedRoots: string[],
+  bounds: CommitSourceBounds,
+): Promise<CommitSourceFile[]> {
+  if (!/^[0-9a-f]{40}$/.test(recordedCommit)) {
+    throw Errors.validation('The recorded repository commit is not a resolved commit id', {
+      reason: 'git_failed',
+      step: 'commit_shape',
+    });
+  }
+  // Re-verify the full approval/containment chain at read time (the
+  // connection may be stale; the roots are the CURRENT configuration).
+  const real = requireApprovedSnapshotRoot(root, approvedRoots);
+  if (!isDirectoryWithGit(real)) {
+    throw Errors.validation('Repository URL does not point at a readable local git worktree', {
+      reason: 'not_a_git_worktree',
+    });
+  }
+  rejectRepositoryAttributes(real);
+  await requireContainedRepository(real, canonicalApprovedRoots(approvedRoots));
+  await git(real, ['rev-parse', '--verify', `${recordedCommit}^{commit}`]);
+
+  const listing = await git(real, ['ls-tree', '-r', '-z', '-l', recordedCommit]);
+  interface TreeEntry {
+    mode: string;
+    type: string;
+    oid: string;
+    size: number;
+    path: string;
+  }
+  const entries: TreeEntry[] = [];
+  for (const record of listing.split('\0')) {
+    if (record === '') continue;
+    const tab = record.indexOf('\t');
+    if (tab === -1) {
+      throw Errors.validation('The repository tree listing is malformed', { reason: 'git_failed', step: 'ls-tree' });
+    }
+    const tokens = record.slice(0, tab).trim().split(/\s+/);
+    const [mode, type, oid, sizeToken] = tokens;
+    const treePath = record.slice(tab + 1);
+    if (mode === undefined || type === undefined || oid === undefined || !/^[0-9a-f]{40}$/.test(oid)) {
+      throw Errors.validation('The repository tree listing is malformed', { reason: 'git_failed', step: 'ls-tree' });
+    }
+    if (type === 'commit') {
+      throw Errors.validation(
+        'The recorded commit contains a submodule (gitlink) entry, which cannot materialize in the workspace',
+        { reason: 'submodule_entry_unsupported', path: treePath },
+      );
+    }
+    if (type !== 'blob' || mode === '120000') {
+      throw Errors.validation(
+        'The recorded commit contains a symlink entry, which cannot materialize as a workspace file',
+        { reason: 'symlink_entry_unsupported', path: treePath },
+      );
+    }
+    if (treePath.length === 0 || treePath.startsWith('/') || treePath.includes('\0') || treePath.split('/').includes('..')) {
+      throw Errors.validation('The recorded commit contains a path the workspace cannot hold', {
+        reason: 'entry_path_invalid',
+        path: treePath,
+      });
+    }
+    const size = Number.parseInt(sizeToken ?? '', 10);
+    if (!Number.isInteger(size) || size < 0) {
+      throw Errors.validation('The repository tree entry metadata is unreadable', {
+        reason: 'git_failed',
+        step: 'ls-tree',
+      });
+    }
+    entries.push({ mode, type, oid, size, path: treePath });
+  }
+  if (entries.length > bounds.maxFiles) {
+    throw Errors.validation(`The recorded commit holds more than ${bounds.maxFiles} files`, {
+      reason: 'file_count_exceeded',
+      files: entries.length,
+    });
+  }
+  const files: CommitSourceFile[] = [];
+  for (const entry of entries) {
+    if (entry.size > bounds.maxFileBytes) {
+      throw Errors.validation(`Recorded file ${entry.path} exceeds the ${bounds.maxFileBytes}-byte source bound`, {
+        reason: 'file_too_large',
+        path: entry.path,
+      });
+    }
+    files.push({ path: entry.path, content: await gitBytes(real, ['cat-file', 'blob', entry.oid]) });
+  }
+  return files;
 }

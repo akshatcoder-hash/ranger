@@ -13,6 +13,8 @@ import { WorkspaceService } from '../workspace/service.js';
 import { SecretResolver } from '../secrets.js';
 import { getWorkspace, listAllSourceFiles, listCommandsForRun } from '../workspace/store.js';
 import { getRunRow, bindRunClaim, completeRunFromWorker, insertRunToolOutcome, renewRunLease, type RunRow } from './store.js';
+import { materializeInitialSource } from './initial-source.js';
+import { getRepositoryRecord } from '../repositories/store.js';
 import { approvalChecker } from './approval-checker.js';
 import type { JobHandler } from '../worker/loop.js';
 
@@ -140,6 +142,27 @@ async function executeRun(deps: RunExecutorDeps, run: RunRow, claim: { workerId:
     const transport = resolveTransport(deps);
     const workspace = new WorkspaceService({ db, config: deps.config, secrets: new SecretResolver(deps.config.secretFile) });
 
+    // Initial-source bridge (the proven window2 gap): a connected
+    // approved-root repository materializes into persisted source BEFORE
+    // any VM create, at its recorded commit, so a freshly connected project
+    // never boots the agent on an empty repo. Generated saved source from
+    // earlier runs is never overwritten. When the source cannot materialize
+    // the run fails explicitly with NO create — never a silently empty VM.
+    let sourceRevision: string | null = null;
+    try {
+      const initial = await materializeInitialSource(
+        db,
+        run.projectId,
+        getRepositoryRecord(db, run.projectId),
+        deps.config.approvedSnapshotRoots,
+      );
+      if (initial.materialized) sourceRevision = initial.commit;
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      await fail('initial_source_unmaterializable', `Connected repository source could not be materialized before the workspace create: ${message}`);
+      return;
+    }
+
     // One ephemeral VM per run: an existing workspace belongs to a previous
     // run and is destroyed; saved source seeds the fresh VM. An uncertain
     // earlier create is NEVER repeated — the run fails honestly and the
@@ -156,7 +179,7 @@ async function executeRun(deps: RunExecutorDeps, run: RunRow, claim: { workerId:
       await workspace.destroy(run.projectId);
     }
     try {
-      await workspace.create(run.projectId, null, runRequestId);
+      await workspace.create(run.projectId, sourceRevision, runRequestId);
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       if (/uncertain/i.test(message)) {

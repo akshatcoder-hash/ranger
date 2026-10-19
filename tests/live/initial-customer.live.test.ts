@@ -7,14 +7,19 @@ import { Sandbox } from '@insforge/instabox-sdk';
 import { RangerClient, RangerApiError } from '../../src/clients/ranger-client.js';
 import { readLedger } from '../../src/budget/ledger.js';
 import { SecretResolver } from '../../src/secrets.js';
+import { createWindowRunner } from '../helpers/window-harness.js';
 
 /**
  * LIVE window2: the combined initial-customer flow. ONE approved public run
- * is the ONLY Instabox creation trigger; the primitive smoke, the customer
- * seeding, the enforced-isolation probes, the desktop/preview evidence and
- * the real cancellation all run on that run's SAME VM. First live failure
- * stops the window: cleanup, delete, verify — never a replacement create and
- * never a retry.
+ * is the ONLY Instabox creation trigger. The customer source comes from the
+ * CONNECTED repository: the run executor materializes the recorded approved
+ * checkout into persisted source BEFORE the VM create, so the driver never
+ * writes fixtures after startRun (the post-create seeding race is gone) and
+ * instead verifies the materialized files by readback. First live failure
+ * stops the window: the failure hook promptly cancels the owned public run
+ * (bounded; provider-kill fallback, never a second create), every later
+ * step is halted, and the cleanup deletes + verifies — never a replacement
+ * create and never a retry.
  *
  * Requires RANGER_LIVE_INITIAL_CUSTOMER=1 plus RANGER_SECRET_FILE and
  * RANGER_LIVE_BUDGET_FILE. Uses the SHARED Ranger data directory and the
@@ -68,6 +73,67 @@ const evidence: Record<string, unknown> = { phases: {} as Record<string, unknown
 
 function phase(name: string, data: unknown): void {
   (evidence['phases'] as Record<string, unknown>)[name] = data;
+}
+
+/** Hard upper bound for one awaited promise (a hung call must not block cleanup). */
+async function bounded<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} exceeded ${ms}ms`)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
+/**
+ * Failure hook: promptly cancel the OWNED public run on the first failed
+ * assertion or live command failure. The public cancel is bounded; if it
+ * hangs or fails, the recorded provider identity is killed directly through
+ * the existing ownership cleanup — NEVER a second create. Runs before the
+ * afterAll bounded cleanup/delete-verify.
+ */
+async function cancelOwnedRunBounded(): Promise<void> {
+  if (runId === '') return; // failure before any run existed: nothing owned yet
+  const hook: Record<string, unknown> = {};
+  try {
+    const client = operatorClient();
+    await bounded(client.cancelRun({ path: { projectId, runId } }), 30_000, 'public cancel');
+    hook['publicCancel'] = 'requested';
+    // Bounded confirm: the worker terminates descendants and destroys the VM.
+    await bounded(
+      waitFor('run terminal', 120_000, async () => {
+        const run = await client.getRun({ path: { projectId, runId } });
+        return ['failed', 'cancelled', 'succeeded'].includes(run.run.state) ? run.run : null;
+      }),
+      125_000,
+      'run terminal confirm',
+    );
+    hook['runTerminal'] = true;
+  } catch (cause) {
+    hook['publicCancel'] = `unavailable: ${String(cause instanceof Error ? cause.message : cause).slice(0, 120)}`;
+    if (machineId !== '') {
+      try {
+        const key = new SecretResolver(SECRET_FILE).get('INSTABOX_API_KEY');
+        await bounded(Sandbox.kill(machineId, { apiKey: key }), 30_000, 'provider kill');
+        hook['providerKill'] = 'executed';
+      } catch (killCause) {
+        hook['providerKill'] = `failed: ${String(killCause instanceof Error ? killCause.message : killCause).slice(0, 120)}`;
+      }
+    }
+  }
+  phase('failureHook', hook);
+}
+
+// First failed assertion or live command failure halts every remaining step
+// and trips the failure hook exactly once. Each live `it` body runs inside
+// `windowStep`, so a cascade can never continue against a still-running
+// agent and no extra creation can happen after a failure.
+const windowRunner = createWindowRunner(cancelOwnedRunBounded);
+function windowStep(fn: () => Promise<void>): Promise<void> {
+  return windowRunner.step(fn);
 }
 
 function operatorClient(extraHeaders: Record<string, string> = {}): RangerClient {
@@ -185,7 +251,7 @@ afterAll(async () => {
 });
 
 describeLive('window2: one approved run, one VM, real initial customer integration', () => {
-  it('starts the control services and verifies the window2 preconditions', async () => {
+  it('starts the control services and verifies the window2 preconditions', () => windowStep(async () => {
     expect(LIVE_BUDGET_FILE).not.toBe('');
     const ledger = readLedger(LIVE_BUDGET_FILE);
     expect(ledger.instabox.additionalCreations).toBe(7);
@@ -200,13 +266,16 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
     await waitHealthy(API_URL, 'api');
     await waitHealthy(PREVIEW_URL, 'preview');
     phase('preconditions', { ledgerCreationsBefore, providerMachinesBefore: providerIdsBefore.length });
-  }, 120_000);
+  }), 120_000);
 
-  it('creates the project, connects the customer repository and enforces project authorization', async () => {
+  it('creates the project, connects the customer repository and enforces project authorization', () => windowStep(async () => {
     const client = operatorClient();
     const project = await client.createProject({ body: { name: 'Acme support integration', engineerDisplayName: 'Ranger' } });
     projectId = project.project.projectId;
 
+    // Fixtures are prepared ONLY through the public repo connect path, BEFORE
+    // startRun: the executor materializes this recorded checkout into the
+    // initial source before any VM create. No direct DB/jobs/worker access.
     const connected = await client.connectRepository({ path: { projectId }, body: { url: CUSTOMER_REPO, ref: 'main' } });
     expect(connected.repository.commit).toMatch(/^[0-9a-f]{40}$/);
 
@@ -258,9 +327,9 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
       );
     expect(foreignSandbox).toBe('400:validation_failed');
     phase('authorization', { crossProjectDenials: 'ok', foreignSandboxRejected: true });
-  }, 180_000);
+  }), 180_000);
 
-  it('rejects a run started before any approval', async () => {
+  it('rejects a run started before any approval', () => windowStep(async () => {
     const attempt = await operatorClient()
       .startRun({ path: { projectId }, body: { conversationId, approvalId: 'apr_00000000-0000-4000-8000-000000000000' } })
       .then(
@@ -268,9 +337,9 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
         (cause: unknown) => (cause instanceof RangerApiError ? `${cause.status}:${cause.code}` : 'unexpected-error'),
       );
     expect(attempt).toBe('404:not_found');
-  }, 30_000);
+  }), 30_000);
 
-  it('runs the live clarification, records answers, generates the plan and approves the exact version', async () => {
+  it('runs the live clarification, records answers, generates the plan and approves the exact version', () => windowStep(async () => {
     const client = operatorClient();
     const clarification = await client.generateClarification({ path: { projectId, conversationId }, body: {} });
     expect(clarification.questions.length).toBeGreaterThan(0);
@@ -306,13 +375,13 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
       planVersion: generated.plan.version,
       approvalId,
     });
-  }, 300_000);
+  }), 300_000);
 
-  it('starts exactly one approved run whose executor creates the one window2 VM', async () => {
+  it('starts exactly one approved run whose executor creates the one window2 VM', () => windowStep(async () => {
     const client = operatorClient();
-    // Idempotency is opt-in per call: the retry MUST present the SAME key as
-    // the original request, otherwise the retry executes fresh and hits the
-    // one-active-run guard (the live finding that spent window2).
+    // Idempotency is opt-in per call: the replay MUST present the SAME key
+    // as the original request, otherwise the replay executes fresh and hits
+    // the one-active-run guard (the live finding that spent window2).
     const idempotent = operatorClient({ 'idempotency-key': 'window2-run-start' });
     const started = await idempotent.startRun({ path: { projectId }, body: { conversationId, approvalId } });
     runId = started.run.runId;
@@ -329,61 +398,50 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
 
     const key = new SecretResolver(SECRET_FILE).get('INSTABOX_API_KEY');
     const listed = await Sandbox.list({ apiKey: key });
-    const mine = listed.find((item) => !providerIdsBefore.includes(item.sandboxId));
-    expect(mine).toBeTruthy();
-    machineId = mine!.sandboxId;
-    expect(mine!.vault).toBe(false);
-    expect(mine!.onTimeout).toBe('kill');
-    phase('creation', { providerMachines: listed.length, vault: mine!.vault, onTimeout: mine!.onTimeout, runId: 'recorded' });
-  }, 180_000);
+    // Exactly ONE new provider machine: the deterministic one-creation
+    // rehearsal — no hidden second create, no replacement.
+    const newMachines = listed.filter((item) => !providerIdsBefore.includes(item.sandboxId));
+    expect(newMachines).toHaveLength(1);
+    machineId = newMachines[0]!.sandboxId;
+    expect(newMachines[0]!.vault).toBe(false);
+    expect(newMachines[0]!.onTimeout).toBe('kill');
+    phase('creation', { providerMachines: listed.length, vault: newMachines[0]!.vault, onTimeout: newMachines[0]!.onTimeout, runId: 'recorded' });
+  }), 180_000);
 
-  it('runs the primitive write/read/command smoke and seeds the customer source on the same VM', async () => {
+  it('verifies the materialized customer source by readback and runs the primitive command smoke on the same VM', () => windowStep(async () => {
     const client = operatorClient();
 
-    // The workspace row appears only after the executor provisions it; never
-    // write before it exists (the cascade lesson from the live window).
+    // The workspace row appears only after the executor provisions it; the
+    // materialized initial base is seeded by the executor BEFORE the coding
+    // loop, so the driver only ever READS (never writes after startRun —
+    // the post-create seeding race is removed).
     await waitFor('workspace recorded', 120_000, async () => {
       const status = await client.getWorkspaceStatus({ path: { projectId } });
       return status.workspace.observedState === 'running' ? status.workspace : null;
     });
 
-    // FIRST live guest write (the window1 failure point). No fallback: any
-    // failure here fails the window and the cleanup deletes the VM.
-    const readme = readFileSync(path.join(CUSTOMER_REPO, 'README.md'));
-    const written = await client.writeWorkspaceFile({
-      path: { projectId },
-      body: { path: 'README.md', contentBase64: readme.toString('base64') },
-    });
-    expect(written.sizeBytes).toBe(readme.byteLength);
-    const readBack = await client.readWorkspaceFile({ path: { projectId }, query: { path: 'README.md' } });
-    expect(Buffer.from(readBack.contentBase64, 'base64').equals(readme)).toBe(true);
+    // Verify the materialized source by readback through the public API:
+    // every expected customer file must already hold the connected
+    // checkout's exact bytes. No driver write raced the agent here.
+    const expectedFiles = ['README.md', 'systems/inbox.py', 'systems/orders.py', 'systems/orders.json', 'systems/policy.py', 'systems/policy.json', 'systems/INTERNAL_NOTES.md'];
+    for (const relative of expectedFiles) {
+      const expected = readFileSync(path.join(CUSTOMER_REPO, relative));
+      const readBack = await client.readWorkspaceFile({ path: { projectId }, query: { path: relative } });
+      expect(Buffer.from(readBack.contentBase64, 'base64').equals(expected), `readback mismatch: ${relative}`).toBe(true);
+    }
+    const listed = await client.listWorkspaceFiles({ path: { projectId }, query: { path: 'systems/' } });
+    expect(listed.files.length).toBe(expectedFiles.length - 1);
+
+    // The FIRST live guest command (the window2 all-commands-124 failure
+    // point). No fallback: any failure here halts the window, cancels the
+    // owned run and the cleanup deletes the VM.
     const smoke = await driverCommand(client, 'printf', ['smoke-ok\\n'], 20_000);
     expect(smoke.exitCode).toBe(0);
     expect(smoke.logs).toContain('smoke-ok');
+    phase('materializedReadback', { verified: expectedFiles.length, smokeCommand: 'ok' });
+  }), 240_000);
 
-    // Seed the remaining customer systems (the integration/ dir stays ABSENT).
-    const seedPaths = [
-      'systems/inbox.py',
-      'systems/orders.py',
-      'systems/orders.json',
-      'systems/policy.py',
-      'systems/policy.json',
-      'systems/INTERNAL_NOTES.md',
-    ];
-    await Promise.all(
-      seedPaths.map((relative) =>
-        client.writeWorkspaceFile({
-          path: { projectId },
-          body: { path: relative, contentBase64: readFileSync(path.join(CUSTOMER_REPO, relative)).toString('base64') },
-        }),
-      ),
-    );
-    const files = await client.listWorkspaceFiles({ path: { projectId }, query: { path: 'systems/' } });
-    expect(files.files.length).toBe(seedPaths.length);
-    phase('smokeAndSeed', { firstWriteBytes: readme.byteLength, seeded: seedPaths.length, smokeCommand: 'ok' });
-  }, 240_000);
-
-  it('proves enforced identity, limits and network restrictions on the live guest', async () => {
+  it('proves enforced identity, limits and network restrictions on the live guest', () => windowStep(async () => {
     const client = operatorClient();
     const probe = await driverCommand(
       client,
@@ -450,9 +508,9 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
       pidCeilingRefused: true,
       timeoutKillObserved: true,
     });
-  }, 120_000);
+  }), 120_000);
 
-  it('opens the authenticated desktop stream and rejects unauthorized preview targets', async () => {
+  it('opens the authenticated desktop stream and rejects unauthorized preview targets', () => windowStep(async () => {
     const client = operatorClient();
     const shot = await client.captureWorkspaceScreenshot({ path: { projectId }, body: {} });
     artifactId = shot.artifactId;
@@ -479,9 +537,9 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
     );
     expect(rejected).toBe('400:validation_failed');
     phase('desktop', { screenshotArtifact: artifactId, viewerCaptured: true, arbitraryPortRejected: true });
-  }, 180_000);
+  }), 180_000);
 
-  it('waits for the agent to build, test and launch, with real outcomes and no injection compliance', async () => {
+  it('waits for the agent to build, test and launch, with real outcomes and no injection compliance', () => windowStep(async () => {
     const client = operatorClient();
     const seen = await waitFor('run_tests pass + launch_app', Math.max(30_000, CANCEL_BY_MS - (Date.now() - runStartedAt)), async () => {
       const run = await client.getRun({ path: { projectId, runId } });
@@ -511,9 +569,9 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
       testRuns: seen.tools.filter((tool) => tool.name === 'run_tests').length,
       deniedAttempts: seen.tools.filter((tool) => tool.status === 'denied').length,
     });
-  }, 560_000);
+  }), 560_000);
 
-  it('runs the independent acceptance suite against the generated integration over the private preview', async () => {
+  it('runs the independent acceptance suite against the generated integration over the private preview', () => windowStep(async () => {
     const client = operatorClient();
     // The integration must be reachable through the authenticated preview.
     const preview = await client.createPreviewSession({ path: { projectId }, body: { guestPort: 8080 } });
@@ -552,9 +610,9 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
     expect(exitCode, sanitize(output).slice(-3000)).toBe(0);
     const passed = output.match(/Tests\s+(\d+) passed/);
     phase('acceptance', { exitCode, passedCases: passed ? Number(passed[1]) : null });
-  }, 300_000);
+  }), 300_000);
 
-  it('proves live cancellation: the in-flight supervised wait and its descendant are terminated', async () => {
+  it('proves live cancellation: the in-flight supervised wait and its descendant are terminated', () => windowStep(async () => {
     const client = operatorClient();
 
     // Observe the real in-flight exec (pgrep on the fixed command marker)
@@ -642,9 +700,9 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
       machineGone: true,
       changedFiles: diff.changedFiles.length,
     });
-  }, 300_000);
+  }), 300_000);
 
-  it('survives a control-process restart with history, source and settled accounting', async () => {
+  it('survives a control-process restart with history, source and settled accounting', () => windowStep(async () => {
     const client = operatorClient();
     await stopServices();
     startServices();
@@ -698,7 +756,7 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
       toolCalls: tools.tools.length,
     };
     phase('restart', { historyIntact: true, reindexed: true, accountingSettled: true });
-  }, 300_000);
+  }), 300_000);
 });
 
 function readBackSize(contentBase64: string): number {
