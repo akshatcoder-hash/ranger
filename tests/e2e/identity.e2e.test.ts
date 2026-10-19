@@ -303,4 +303,25 @@ describe('identity e2e over the public API', () => {
     const list = await operator.listApiTokens();
     expect(list.tokens.length).toBeGreaterThanOrEqual(1);
   });
+  it('issues an anonymous browser session over HTTP with no credential', async () => {
+    const res = await fetch(`${BASE}/v1/auth/anonymous-session`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(res.status).toBe(200);
+    const session = (await res.json()) as { sessionId: string; csrfToken: string };
+    const setCookie = res.headers.get('set-cookie') ?? '';
+    expect(setCookie).toContain('HttpOnly');
+    expect(session.csrfToken.length).toBeGreaterThan(20);
+    const cookieValue = setCookie.split(';')[0]!.split('=').slice(1).join('=');
+
+    const guest = new RangerClient({
+      baseUrl: BASE,
+      headers: { cookie: `ranger_session=${cookieValue}`, host: HOST, 'x-ranger-csrf': session.csrfToken },
+    });
+    expect((await guest.getPrincipal()).displayName).toBe('Guest');
+    const project = await guest.createProject({ body: { name: 'Guest Project', engineerDisplayName: 'Ranger' } });
+    expect(project.project.name).toBe('Guest Project');
+  });
 });

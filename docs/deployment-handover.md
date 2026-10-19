@@ -1,11 +1,8 @@
 # Deployment handover
 
-This records the earlier deployment. Later cloud fixes and verification are in `cloud-validation-2026-10-19.md`; they are not deployed merely by committing or pushing them.
-
-Ranger's integrated app (backend at the repository root, frontend in
-`frontend/`) is deployed and verified live as of **2026-10-19**. This is
-user-demo-scope validation, not production. Local development is covered in
-`docs/local-full-stack.md` and is not repeated here.
+Ranger is a recording build, not a public product launch. Backend code is at
+the repository root; the frontend is in `frontend/`. Earlier component
+verification is recorded in `cloud-validation-2026-10-19.md`.
 
 ## Cumulative VM limit migration (2026-10-19)
 
@@ -14,13 +11,32 @@ released free machines may be replaced sequentially without a cumulative
 creation limit. Current code supports an explicit JSON
 `instabox.maxAdditionalCreations: null`. Numeric caps continue to be enforced.
 The earlier deployment ledger recorded below remains capped until its
-operator explicitly migrates that field under `withLedgerLock`, using
-`readLedger` and `writeLedger` to preserve every existing counter, machine,
-pending reservation, operation, xAI budget, and unknown field. Do not delete,
-reseed, or reset the ledger. Code changes alone do not migrate a deployed
-ledger. Local concurrency remains one, VM lifetime remains at most 600 seconds,
-and the SDK checks account inventory before each create. No remote deployment
-or deployed-ledger migration is implied by this note.
+operator runs the migration script on the deployed Machine (after deploying
+an image that contains it; the image working directory is `/app/ranger`):
+
+```
+fly ssh console -a ranger-backend-akshats -C "node /app/ranger/scripts/migrate-instabox-ledger.mjs"
+```
+
+It reads `RANGER_LIVE_BUDGET_FILE` (default `/data/provider-budget.json`),
+sets only `instabox.maxAdditionalCreations` to `null` under `withLedgerLock`
+and prints one `before -> after` line for that field. Every counter, machine,
+pending reservation, operation, xAI budget, and unknown field is preserved; a
+missing ledger fails loudly. Do not delete, reseed, or reset the ledger. Code
+changes alone do not migrate a deployed ledger. Local concurrency remains one,
+VM lifetime remains at most 600 seconds, and the SDK checks account inventory
+before each create. No remote deployment or deployed-ledger migration is
+implied by this note.
+
+## Credential-free UI and remote repositories
+
+`POST /v1/auth/anonymous-session` (no credential) creates a fresh principal
+and browser session, so the UI no longer asks for a credential. The bootstrap
+principal and credential below remain for operator use. A project connected
+to a public `https://github.com/owner/repo` repository is shallow-cloned on the host (`git` is in the
+runtime image, clone area `<RANGER_DATA_DIR>/repo-clones/<projectId>`) during
+workspace preparation, before the single VM create; a clone failure fails the
+preparation with `clone_failed` and creates no VM.
 
 ## Live deployment
 
@@ -42,18 +58,24 @@ live), while a missing Origin passes through for CLI/CSRF-header clients
 
 ## How to use
 
-- **Log in:** the bootstrap credential is written on the machine at
-  `/data/ranger/bootstrap-credential.txt`; a local copy is kept at
-  `/Users/akshat/.secrets/ranger-deployed-credential.txt` (mode 0600).
-  The UI login accepts the full line. NEVER print the credential value.
-  Rotate by fetching the file (`fly ssh sftp get`) to reissue, or by
-  creating a new principal (`bootstrap --additional-principal`).
-- **Use:** create a project with a preselected local repository, then
-  start a live voice session (same-origin voice relay, 24 kHz PCM) that
-  drives workspace preparation, Trace indexing and grounded answers.
-- **Do NOT:** launch any new voice-prep or live attempt without a new
-  explicit Instabox VM allowance (see Known limitations), and never put
-  provider keys or tokens in `VITE_*` variables or browser storage.
+1. Open **https://ranger.akshats.xyz**. No token or sign-in form is needed.
+2. Start a project, connect a public GitHub URL and select its branch or tag.
+3. Start a call: “Prepare this repository, then explain how its main workflow works.”
+4. Watch **Project** for clone, index and total times. Ask a code question;
+   answers should cite the connected files.
+5. Ask for one concrete change and its acceptance conditions. **Review plan**,
+   approve that version, then ask Ranger to start the approved work.
+6. **Live activity** shows real commands starting and finishing. **VM** lets
+   you run a command or capture a screenshot. Command output appears after
+   completion, not as streamed stdout. **Changes** and **Checks** show results.
+
+The prepared VM is reused for approved work while its original lifetime
+allows. There is one VM at a time and a 600-second lifetime, not a cumulative
+creation allowance. Finish the recording within that window.
+
+An operator credential remains at `/data/ranger/bootstrap-credential.txt`;
+it is not needed in the recording. Never put provider secrets in `VITE_*`
+variables or browser storage.
 
 ## How it was verified (2026-10-19)
 
@@ -71,14 +93,15 @@ live), while a missing Origin passes through for CLI/CSRF-header clients
 
 - **Backend:** from the repo root, create `.fly-build/` then bundle the
   pinned Trace for the image build:
-  `git -C /path/to/trace bundle create .fly-build/trace.bundle HEAD`
+  `git -C /path/to/trace bundle create /absolute/path/to/ranger/.fly-build/trace.bundle HEAD`
   (pinned `bd7f255339a45a5bf41bcdc2be650626c497e2b2`; the image is built
   from the bundle, no network fetch of Trace). Then `fly deploy` (remote
   builder). Status: `fly status -a ranger-backend-akshats`; logs:
   `fly logs -a ranger-backend-akshats`; machines:
   `fly machine list -a ranger-backend-akshats`. Rollback: redeploy a
   previous image from `fly releases`.
-- **Frontend:** `cd frontend && npm run build` then `npx wrangler deploy`
+- **Frontend:** run `npm run build` in `frontend/`, then `npx wrangler deploy`
+  from the repository root
   (wrangler 4.151.2 pinned devDep). Rollback: `npx wrangler rollback`
   (or versions list).
 
@@ -90,25 +113,22 @@ live), while a missing Origin passes through for CLI/CSRF-header clients
   seeded once, never reset). No secret values exist in the repo, image or
   logs; the start script materializes the secret file 0600 in memory at
   boot. Never print or `cat` secret values.
-- The live-budget ledger is authoritative and never reset. Instabox VM
-  creation allowance is exhausted (9/9, all released, 0 pending); xAI
-  observed spend is $0.7336, reserved $0. A new explicit VM allowance is
-  required before any further voice-prep or live attempt.
+- The live-budget ledger is authoritative and never reset. Historical
+  creation counts are retained, but no longer act as a lifetime allowance
+  after the migration above. Existing xAI spending limits remain enforced.
+- Anonymous visitors can consume the shared provider budget. The URL is
+  intended for this recording, not unrestricted public distribution.
 
 ## Known limitations
 
-1. The one real live voice attempt FAILED at `guest_write_failed` while
-   copying project source into the agent VM after ~97 s; Trace indexing
-   and the grounded answer were never reached and the cause is unknown.
-   Voice media via a real human microphone/browser is NOT verified
-   (synthetic driver only).
-2. Instabox VM creation allowance is exhausted 9/9 (all released, 0
-   pending); no new attempts without a new explicit allowance.
+1. Human microphone/speaker quality is not established by synthetic/API
+   checks. Test your microphone and playback before recording.
+2. Use a small public repository. Existing source limits reject symlinks,
+   submodules and files exceeding the guest transport size bound.
 3. Single-machine SQLite: expect brief unavailability during backend
    deploys; do not scale past 1 machine.
-4. Local Macs behind stale DNS caches (e.g. Tailscale MagicDNS negative
-   cache, SOA TTL 1800 s) may see NXDOMAIN for ranger.akshats.xyz for up
-   to ~30 min after domain creation; public DNS is fine.
+4. Anonymous projects belong to that browser's session. Clearing cookies
+   or switching browsers does not recover them.
 
 ## Deploy asset file map
 

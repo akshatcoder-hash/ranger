@@ -9,6 +9,7 @@ import {
   reserveInstaboxCreation,
 } from '../budget/ledger.js';
 import { withTransaction } from '../db/db.js';
+import { appendProjectEvent } from '../events/store.js';
 import {
   COMMAND_OUTPUT_CAP_BYTES,
   FIXED_PREVIEW_PORTS,
@@ -280,16 +281,20 @@ export class WorkspaceService {
         timeoutMs,
         background: true,
       });
-      return insertCommand(this.options.db, {
-        projectId,
-        argv,
-        state: 'running',
-        pid: result.pid ?? null,
-        logs: '',
-        exitCode: null,
-        timedOut: false,
-        runId,
-        isTest: attribution?.isTest === true,
+      return withTransaction(this.options.db, () => {
+        const row = insertCommand(this.options.db, {
+          projectId,
+          argv,
+          state: 'running',
+          pid: result.pid ?? null,
+          logs: '',
+          exitCode: null,
+          timedOut: false,
+          runId,
+          isTest: attribution?.isTest === true,
+        });
+        this.commandEvent(row, 'started', runId);
+        return row;
       });
     }
     // Foreground supervision. The approved c2135f8 defect: awaiting the
@@ -302,36 +307,61 @@ export class WorkspaceService {
     // cannot be forged.
     const commandId = newCommandId();
     const command = workloadShell(argv, foregroundCommandMarker(commandId) ?? undefined);
-    insertCommand(this.options.db, {
-      id: commandId,
-      projectId,
-      argv,
-      state: 'running',
-      pid: null,
-      logs: '',
-      exitCode: null,
-      timedOut: false,
-      runId,
-      isTest: attribution?.isTest === true,
+    withTransaction(this.options.db, () => {
+      const row = insertCommand(this.options.db, {
+        id: commandId,
+        projectId,
+        argv,
+        state: 'running',
+        pid: null,
+        logs: '',
+        exitCode: null,
+        timedOut: false,
+        runId,
+        isTest: attribution?.isTest === true,
+      });
+      this.commandEvent(row, 'started', runId);
     });
     try {
       const result = await this.supervisedForeground(workspace.machineId!, command, commandId, timeoutMs);
-      return (
-        completeCommand(this.options.db, {
+      return withTransaction(this.options.db, () => {
+        const row = completeCommand(this.options.db, {
           projectId,
           commandId,
           state: result.exitCode === 0 && !result.timedOut ? 'succeeded' : 'failed',
           exitCode: result.exitCode,
           timedOut: result.timedOut,
           logs: (result.stdout + result.stderr).slice(0, COMMAND_OUTPUT_CAP_BYTES),
-        }) ?? this.command(projectId, commandId)
-      );
+        }) ?? this.command(projectId, commandId);
+        this.commandEvent(row, 'finished', runId);
+        return row;
+      });
     } catch (cause) {
       // No result arrived: record the honest unknown outcome, never a
       // fabricated exit code or pass.
-      completeCommand(this.options.db, { projectId, commandId, state: 'failed', exitCode: null, timedOut: false, logs: '' });
+      withTransaction(this.options.db, () => {
+        const row = completeCommand(this.options.db, { projectId, commandId, state: 'failed', exitCode: null, timedOut: false, logs: '' })
+          ?? this.command(projectId, commandId);
+        this.commandEvent(row, 'finished', runId);
+      });
       throw cause;
     }
+  }
+
+  private commandEvent(row: CommandRow, phase: 'started' | 'finished', runId: string | null): void {
+    appendProjectEvent(this.options.db, {
+      projectId: row.projectId,
+      runId,
+      type: `workspace.command.${phase}`,
+      requestId: row.id,
+      data: {
+        commandId: row.id,
+        command: row.argv.join(' ').slice(0, 4000),
+        state: row.state,
+        exitCode: row.exitCode,
+        timedOut: row.timedOut,
+      },
+    });
   }
 
   /**

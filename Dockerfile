@@ -43,6 +43,7 @@ COPY --from=build /src/contracts ./contracts
 COPY --from=build /src/config ./config
 COPY --from=build /app/trace /app/trace
 COPY deploy/fly/start.mjs deploy/fly/prefetch-trace-model.mjs /app/ranger/deploy/fly/
+COPY scripts/migrate-instabox-ledger.mjs /app/ranger/scripts/
 
 ENV NODE_ENV=production
 EXPOSE 8080

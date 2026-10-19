@@ -1,12 +1,10 @@
-export const DEMO_PROJECT_ID = 'northstar-return-support'
-
 export type Capabilities = { xai: boolean; instabox: boolean; trace: boolean }
 
-const LIVE_PROJECT_ID = /^prj_[0-9a-fA-F-]+$/
+const PROJECT_ID = /^prj_[0-9a-fA-F-]+$/
 
-/** Backend project ids are prefixed UUIDs; anything else (including the demo id) is never sent to the backend. */
-export function isLiveProjectId(value: string | null | undefined): value is string {
-  return typeof value === 'string' && LIVE_PROJECT_ID.test(value)
+/** Backend project ids are prefixed UUIDs; anything else is never sent to the backend. */
+export function isProjectId(value: string | null | undefined): value is string {
+  return typeof value === 'string' && PROJECT_ID.test(value)
 }
 
 export function parseLines(text: string): string[] {
@@ -32,7 +30,7 @@ export function executionBlockers(capabilities: Capabilities | null): string[] {
 /**
  * Returns a user-facing problem, or null when the repository reference and ref look acceptable.
  * Accepts an https URL, an absolute local path, or a file URL with no host and no credentials.
- * The backend still decides, including whether a local path is an operator-approved checkout.
+ * The backend still decides, including whether a public https repository can be cloned and whether a local path is an operator-approved checkout.
  */
 export function validateRepositoryInput(url: string, ref: string): string | null {
   const cleanUrl = url.trim()
@@ -48,7 +46,7 @@ export function validateRepositoryInput(url: string, ref: string): string | null
     } else if (parsed.protocol === 'https:') {
       if (parsed.username || parsed.password) return 'Do not put credentials in the repository URL.'
     } else {
-      return 'Use an https URL, an absolute local path, or a file:// URL. A remote URL is only a reference; it does not load files.'
+      return 'Use an https URL, an absolute local path, or a file:// URL.'
     }
   }
   const cleanRef = ref.trim()
@@ -65,6 +63,8 @@ export type PreparationStatus = {
   phase: PreparationPhase
   fileCount?: number
   byteCount?: number
+  /** Time the backend spent cloning a remote repository; absent for local checkouts and older backends. */
+  cloneElapsedMs?: number
   indexElapsedMs?: number
   elapsedMs?: number
   errorCode?: string
@@ -74,55 +74,93 @@ export type PreparationStatus = {
 
 type PreparationEvent = { sequence: number; type: string; data?: Record<string, unknown> }
 
-function optionalCount(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+const COUNT_FIELDS = ['fileCount', 'byteCount', 'cloneElapsedMs', 'indexElapsedMs', 'elapsedMs'] as const
+const TEXT_FIELDS = ['errorCode', 'message', 'repositoryCommit'] as const
+
+export function preparationIsActive(status: PreparationStatus | null): boolean {
+  return status !== null && (status.phase === 'queued' || status.phase === 'preparing' || status.phase === 'indexing')
 }
 
-function optionalText(value: unknown): string | undefined {
-  return typeof value === 'string' && value !== '' ? value : undefined
+function preparationEvents(events: readonly PreparationEvent[]) {
+  return [...events].filter(event => event.type === PREPARATION_EVENT && event.data).sort((left, right) => left.sequence - right.sequence)
+}
+
+function validPhase(data: Record<string, unknown>): { jobId: string; phase: PreparationPhase } | null {
+  const { jobId, phase } = data
+  if (typeof jobId !== 'string' || jobId === '' || typeof phase !== 'string' || !PREPARATION_PHASES.includes(phase as PreparationPhase)) return null
+  return { jobId, phase: phase as PreparationPhase }
 }
 
 /** Latest preparation phase for one project. A later event keeps an earlier real count when it omits that field. Missing data never becomes ready. */
 export function latestPreparation(events: readonly PreparationEvent[]): PreparationStatus | null {
-  const ordered = [...events].filter(event => event.type === PREPARATION_EVENT && event.data).sort((left, right) => left.sequence - right.sequence)
   let latest: PreparationStatus | null = null
-  for (const event of ordered) {
+  for (const event of preparationEvents(events)) {
     const data = event.data
-    if (!data) continue
-    const phase = data.phase
-    const jobId = data.jobId
-    if (typeof jobId !== 'string' || jobId === '' || typeof phase !== 'string' || !PREPARATION_PHASES.includes(phase as PreparationPhase)) continue
-    const previous: PreparationStatus | null = latest?.jobId === jobId ? latest : null
-    const carried: PreparationStatus = {
-      jobId,
-      phase: phase as PreparationPhase,
-      ...(previous?.fileCount !== undefined ? { fileCount: previous.fileCount } : {}),
-      ...(previous?.byteCount !== undefined ? { byteCount: previous.byteCount } : {}),
-      ...(previous?.indexElapsedMs !== undefined ? { indexElapsedMs: previous.indexElapsedMs } : {}),
-      ...(previous?.elapsedMs !== undefined ? { elapsedMs: previous.elapsedMs } : {}),
-      ...(previous?.errorCode ? { errorCode: previous.errorCode } : {}),
-      ...(previous?.message ? { message: previous.message } : {}),
-      ...(previous?.repositoryCommit ? { repositoryCommit: previous.repositoryCommit } : {}),
+    const head = data ? validPhase(data) : null
+    if (!data || !head) continue
+    const next: PreparationStatus = { ...(latest?.jobId === head.jobId ? latest : {}), ...head }
+    for (const field of COUNT_FIELDS) {
+      const value = data[field]
+      if (typeof value === 'number' && Number.isFinite(value) && value >= 0) next[field] = value
     }
-    const fileCount = optionalCount(data.fileCount)
-    const byteCount = optionalCount(data.byteCount)
-    const indexElapsedMs = optionalCount(data.indexElapsedMs)
-    const elapsedMs = optionalCount(data.elapsedMs)
-    const errorCode = optionalText(data.errorCode)
-    const message = optionalText(data.message)
-    const repositoryCommit = optionalText(data.repositoryCommit)
-    latest = {
-      ...carried,
-      ...(fileCount !== undefined ? { fileCount } : {}),
-      ...(byteCount !== undefined ? { byteCount } : {}),
-      ...(indexElapsedMs !== undefined ? { indexElapsedMs } : {}),
-      ...(elapsedMs !== undefined ? { elapsedMs } : {}),
-      ...(errorCode ? { errorCode } : {}),
-      ...(message ? { message } : {}),
-      ...(repositoryCommit ? { repositoryCommit } : {}),
+    for (const field of TEXT_FIELDS) {
+      const value = data[field]
+      if (typeof value === 'string' && value !== '') next[field] = value
     }
+    latest = next
   }
   return latest
+}
+
+/**
+ * Indexing speed in files per second, from backend-reported counters only.
+ * Prefers the last two consecutive indexing events; a single event falls back to its own total over its own index time.
+ */
+export function indexingRate(events: readonly PreparationEvent[]): number | null {
+  const latest = latestPreparation(events)
+  if (!latest) return null
+  const samples = preparationEvents(events).flatMap(event => {
+    const data = event.data
+    const head = data ? validPhase(data) : null
+    if (!data || !head || head.jobId !== latest.jobId || head.phase !== 'indexing') return []
+    const files = data.fileCount
+    const ms = typeof data.indexElapsedMs === 'number' ? data.indexElapsedMs : data.elapsedMs
+    return typeof files === 'number' && typeof ms === 'number' && Number.isFinite(files) && Number.isFinite(ms) && files >= 0 && ms >= 0 ? [{ files, ms }] : []
+  })
+  const last = samples[samples.length - 1]
+  if (!last) return null
+  const before = samples[samples.length - 2]
+  if (before && last.ms > before.ms && last.files >= before.files) return (last.files - before.files) / ((last.ms - before.ms) / 1000)
+  return last.ms > 0 ? last.files / (last.ms / 1000) : null
+}
+
+/** Files per second over a finished index, from the event's own totals. */
+export function averageIndexRate(status: PreparationStatus): number | null {
+  return status.fileCount !== undefined && status.indexElapsedMs !== undefined && status.indexElapsedMs > 0 ? status.fileCount / (status.indexElapsedMs / 1000) : null
+}
+
+/** Client-side stopwatch for one preparation job. Timestamps are the browser's own clock, never backend fields. */
+export type PreparationClock = { jobId: string; phase: PreparationPhase; jobStartedAt: number; phaseStartedAt: number }
+
+export function advancePreparationClock(previous: PreparationClock | null, status: PreparationStatus | null, now: number): PreparationClock | null {
+  if (!status) return null
+  if (previous?.jobId === status.jobId) return previous.phase === status.phase ? previous : { ...previous, phase: status.phase, phaseStartedAt: now }
+  // A job first seen mid-flight (page reload) starts from the elapsed time the backend already reported.
+  return { jobId: status.jobId, phase: status.phase, jobStartedAt: now - (status.elapsedMs ?? 0), phaseStartedAt: now }
+}
+
+/** 0.84 s, 12.4 s, 2m 05s. */
+export function formatDuration(ms: number): string {
+  if (ms < 10_000) return `${(ms / 1000).toFixed(ms < 1000 ? 2 : 1)} s`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`
+  const seconds = Math.floor(ms / 1000)
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`
+}
+
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 type CreateResult = { ok: true; data: { projectId: string } } | { ok: false; reason: string; message: string }
@@ -140,7 +178,7 @@ export function planCreateOutcome(result: CreateResult): CreateOutcome {
   if (result.ok) return { kind: 'created', projectId: result.data.projectId }
   if (result.reason === 'aborted') return { kind: 'aborted' }
   const projectId = result.message.match(PROJECT_ID_IN_TEXT)?.[0]
-  if (projectId && isLiveProjectId(projectId)) return { kind: 'recovered', projectId, reason: result.reason, message: result.message }
+  if (projectId && isProjectId(projectId)) return { kind: 'recovered', projectId, reason: result.reason, message: result.message }
   return { kind: 'failed', reason: result.reason, message: result.message }
 }
 
@@ -158,18 +196,9 @@ export function applyEventPage<T extends { eventId: string; sequence: number }>(
   return { state: next, fetchMore: true }
 }
 
-const BOOTSTRAP_PREFIX = 'RANGER_BOOTSTRAP_TOKEN='
-
-/** Accepts a bare token or the exact `RANGER_BOOTSTRAP_TOKEN=<token>` line from the bootstrap file. Anything else with whitespace is rejected locally. */
-export function normalizeCredential(raw: string): string | null {
-  let value = raw.trim()
-  if (value.startsWith(BOOTSTRAP_PREFIX)) value = value.slice(BOOTSTRAP_PREFIX.length).trim()
-  return value && !/\s/.test(value) ? value : null
-}
-
 export const DEFAULT_ENGINEER_NAME = 'Ranger'
 
 /** Project screens show the loaded project's engineer only; a missing, foreign or denied project never inherits a previous name. */
-export function projectViewEngineerName(demo: boolean, draft: string, projectEngineer: string | null | undefined): string {
-  return demo ? draft : projectEngineer ?? DEFAULT_ENGINEER_NAME
+export function projectViewEngineerName(projectEngineer: string | null | undefined): string {
+  return projectEngineer ?? DEFAULT_ENGINEER_NAME
 }

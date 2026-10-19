@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -18,6 +18,8 @@ import { runVoiceWorkspaceTool, VOICE_TOOLS } from '../../src/voice/tools.js';
 import { RetrievalService } from '../../src/retrieval/service.js';
 import { claimNextJob } from '../../src/worker/loop.js';
 import { PREPARE_JOB_TYPE, projectWorkspacePrepHandler, type PrepareRetrieval } from '../../src/workspace/prepare.js';
+import { createRepositoryCloner, type RepositoryCloner } from '../../src/repositories/clone.js';
+import { disconnectRepository, getRepositoryRecord } from '../../src/repositories/store.js';
 import { listAllSourceFiles } from '../../src/workspace/store.js';
 import { setWorkspaceProviderForTests } from '../../src/workspace/runtime.js';
 import { FakeInstabox } from '../../src/workspace/instabox.js';
@@ -76,7 +78,7 @@ interface Fixture {
   otherId: string;
 }
 
-async function fixture(options: { repoUrl?: string } = {}): Promise<Fixture> {
+async function fixture(options: { repoUrl?: string; approveDataDir?: boolean } = {}): Promise<Fixture> {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'ranger-voice-prep-'));
   tempDirs.push(dataDir);
   const ledger = path.join(dataDir, 'ledger.json');
@@ -93,7 +95,7 @@ async function fixture(options: { repoUrl?: string } = {}): Promise<Fixture> {
     RANGER_DATA_DIR: dataDir,
     RANGER_LOG_LEVEL: 'error',
     RANGER_LIVE_BUDGET_FILE: ledger,
-    RANGER_APPROVED_SNAPSHOT_ROOTS: dataDir,
+    ...(options.approveDataDir === false ? {} : { RANGER_APPROVED_SNAPSHOT_ROOTS: dataDir }),
   } as NodeJS.ProcessEnv);
   const db = openDatabase(dataDir);
   runMigrations(db, path.join(process.cwd(), 'migrations'));
@@ -136,10 +138,10 @@ function tool(f: Fixture, retrieval: RetrievalService | null, name: string, call
   });
 }
 
-async function runPrepJob(f: Fixture, retrieval: PrepareRetrieval): Promise<void> {
+async function runPrepJob(f: Fixture, retrieval: PrepareRetrieval, cloneRepository?: RepositoryCloner): Promise<void> {
   const job = claimNextJob(f.db, [PREPARE_JOB_TYPE], 'worker-test', 60_000);
   expect(job).not.toBeNull();
-  await projectWorkspacePrepHandler({ db: f.db, config: f.config, retrieval })(job!);
+  await projectWorkspacePrepHandler({ db: f.db, config: f.config, retrieval, ...(cloneRepository !== undefined ? { cloneRepository } : {}) })(job!);
   f.db.prepare("UPDATE jobs SET status = 'succeeded' WHERE id = ?").run(job!.id);
 }
 
@@ -247,14 +249,138 @@ describe('voice project preparation (worker index -> fresh API retrieval)', () =
     expect(existsSync(indexDirs[indexDirs.length - 1]!)).toBe(true);
   });
 
-  it('fails before any VM when the repository is reference-only', { timeout: LONG }, async () => {
+  it('fails before any VM when the remote clone fails', { timeout: LONG }, async () => {
     const f = await fixture({ repoUrl: 'https://example.invalid/acme/app.git' });
     const api = new RetrievalService({ db: f.db, config: f.config });
     await tool(f, api, 'prepare_project_workspace', 'r1', {});
-    await runPrepJob(f, stubRetrieval);
+    const failing: RepositoryCloner = async () => {
+      throw new Error('Could not clone the repository: repository not found');
+    };
+    await runPrepJob(f, stubRetrieval, failing);
     expect(f.provider.creates).toHaveLength(0);
+    expect(phases(f).map((data) => data['phase'])).toEqual(['queued', 'preparing', 'failed']);
     const last = phases(f).at(-1)!;
-    expect(last).toMatchObject({ phase: 'failed', errorCode: 'initial_source_unmaterializable' });
+    expect(last).toMatchObject({ phase: 'failed', errorCode: 'clone_failed' });
+    expect(String(last['message'])).toContain('repository not found');
+    expect(listAllSourceFiles(f.db, f.projectId)).toHaveLength(0);
+    expect(f.db.prepare('SELECT COUNT(*) AS n FROM workspaces WHERE project_id = ?').get(f.projectId)).toMatchObject({ n: 0 });
+    const ledger = JSON.parse(readFileSync(path.join(f.config.dataDir, 'ledger.json'), 'utf8')) as { instabox: { additionalCreations: number; pendingReservations: unknown[] } };
+    expect(ledger.instabox.additionalCreations).toBe(0);
+    expect(ledger.instabox.pendingReservations).toHaveLength(0);
+  });
+
+  describe('remote repository clone', () => {
+    /** Bare clone of the fixture repo, standing in for the remote host. */
+    function bareRemote(f: Fixture): { fileUrl: string; head: string } {
+      const source = path.join(f.config.dataDir, 'remote-src', 'support-app');
+      commitRepo(path.join(f.config.dataDir, 'remote-src'));
+      const bare = path.join(f.config.dataDir, 'remote.git');
+      execFileSync('git', ['clone', '--bare', source, bare], { stdio: 'ignore', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' } });
+      const head = execFileSync('git', ['-C', bare, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+      return { fileUrl: `file://${bare}`, head };
+    }
+
+    const indexStubFor = (f: Fixture): PrepareRetrieval => ({
+      assertAvailable: async () => undefined,
+      reindexDetailed: async (projectId, options) => {
+        const files = listAllSourceFiles(f.db, projectId);
+        return {
+          version: 1,
+          projectId,
+          snapshotId: 'snap',
+          commit: null,
+          branch: null,
+          dirty: false,
+          indexedAt: new Date().toISOString(),
+          embeddingModel: 'stub',
+          embeddedChunks: 0,
+          filesIndexed: files.length,
+          mirrorHead: '',
+          sourceFingerprint: '',
+          fileCount: files.length,
+          byteCount: files.reduce((n, file) => n + file.content.byteLength, 0),
+          indexElapsedMs: 7,
+          provenance: options?.provenance ?? {},
+        };
+      },
+    });
+
+    it('clones on the host, then materializes, creates one VM, seeds and indexes the clone', { timeout: LONG }, async () => {
+      // No operator-approved roots: the clone area alone must be readable.
+      const f = await fixture({ repoUrl: 'https://example.invalid/acme/app.git', approveDataDir: false });
+      expect(f.config.approvedSnapshotRoots).toEqual([]);
+      const remote = bareRemote(f);
+      const api = new RetrievalService({ db: f.db, config: f.config });
+      await tool(f, api, 'prepare_project_workspace', 'k1', {});
+      const requested: Array<{ url: string; ref: string; target: string }> = [];
+      const cloner = createRepositoryCloner({ allowedProtocols: 'https:file', allowFileUrls: true });
+      await runPrepJob(f, indexStubFor(f), async (input) => {
+        requested.push({ url: input.url, ref: input.ref, target: input.target });
+        return cloner({ ...input, url: remote.fileUrl });
+      });
+
+      expect(requested).toEqual([
+        { url: 'https://example.invalid/acme/app.git', ref: 'main', target: path.join(path.resolve(f.config.dataDir), 'repo-clones', f.projectId) },
+      ]);
+      expect(phases(f).map((data) => data['phase'])).toEqual(['queued', 'preparing', 'indexing', 'ready']);
+      expect(f.provider.creates).toHaveLength(1);
+      expect(f.provider.commands.length).toBeGreaterThan(0);
+      expect(f.provider.kills).toHaveLength(0);
+      const sources = listAllSourceFiles(f.db, f.projectId);
+      expect(sources.map((file) => file.path).sort()).toEqual(['.env', 'src/calculator.ts', 'src/formatter.ts']);
+      const ready = phases(f).at(-1)!;
+      expect(ready).toMatchObject({ phase: 'ready', fileCount: 3, indexElapsedMs: 7, repositoryCommit: remote.head });
+      expect(typeof ready['cloneElapsedMs']).toBe('number');
+      expect(Number(ready['cloneElapsedMs'])).toBeGreaterThanOrEqual(0);
+      expect(phases(f)[2]).toMatchObject({ phase: 'indexing', repositoryCommit: remote.head });
+      expect(typeof phases(f)[2]!['cloneElapsedMs']).toBe('number');
+      expect(getRepositoryRecord(f.db, f.projectId)).toMatchObject({ commit: remote.head, url: 'https://example.invalid/acme/app.git' });
+    });
+
+    it('fails with clone_failed and no VM when the ref does not exist in the remote', { timeout: LONG }, async () => {
+      const f = await fixture({ repoUrl: 'https://example.invalid/acme/app.git' });
+      const remote = bareRemote(f);
+      f.db.prepare('UPDATE project_repositories SET ref = ? WHERE project_id = ?').run('no-such-branch', f.projectId);
+      const api = new RetrievalService({ db: f.db, config: f.config });
+      await tool(f, api, 'prepare_project_workspace', 'k2', {});
+      const cloner = createRepositoryCloner({ allowedProtocols: 'https:file', allowFileUrls: true });
+      await runPrepJob(f, stubRetrieval, (input) => cloner({ ...input, url: remote.fileUrl }));
+      expect(f.provider.creates).toHaveLength(0);
+      expect(phases(f).at(-1)).toMatchObject({ phase: 'failed', errorCode: 'clone_failed' });
+      expect(listAllSourceFiles(f.db, f.projectId)).toHaveLength(0);
+      expect(existsSync(path.join(f.config.dataDir, 'repo-clones', f.projectId))).toBe(false);
+    });
+
+    it.each(['reconnect', 'disconnect'] as const)(
+      'aborts before any materialize or create when the repository is replaced by %s during the clone',
+      { timeout: LONG },
+      async (change) => {
+        const f = await fixture({ repoUrl: 'https://example.invalid/acme/app.git', approveDataDir: false });
+        const remote = bareRemote(f);
+        const api = new RetrievalService({ db: f.db, config: f.config });
+        await tool(f, api, 'prepare_project_workspace', 'k4', {});
+        const cloner = createRepositoryCloner({ allowedProtocols: 'https:file', allowFileUrls: true });
+        await runPrepJob(f, stubRetrieval, async (input) => {
+          const cloned = await cloner({ ...input, url: remote.fileUrl });
+          if (change === 'disconnect') disconnectRepository(f.db, f.projectId);
+          else f.db.prepare('UPDATE project_repositories SET url = ? WHERE project_id = ?').run('https://example.invalid/acme/other.git', f.projectId);
+          return cloned;
+        });
+        expect(f.provider.creates).toHaveLength(0);
+        expect(phases(f).at(-1)).toMatchObject({ phase: 'failed', errorCode: 'repository_changed' });
+        expect(listAllSourceFiles(f.db, f.projectId)).toHaveLength(0);
+        expect(existsSync(path.join(f.config.dataDir, 'repo-clones', f.projectId))).toBe(false);
+      },
+    );
+
+    it('refuses to clone non-https remotes with the production cloner', async () => {
+      const f = await fixture({ repoUrl: 'ssh://git@example.invalid/acme/app.git' });
+      const api = new RetrievalService({ db: f.db, config: f.config });
+      await tool(f, api, 'prepare_project_workspace', 'k3', {});
+      await runPrepJob(f, stubRetrieval);
+      expect(f.provider.creates).toHaveLength(0);
+      expect(phases(f).at(-1)).toMatchObject({ phase: 'failed', errorCode: 'clone_failed' });
+    });
   });
 
   it('destroys the owned VM when seeding fails and never indexes', { timeout: LONG }, async () => {

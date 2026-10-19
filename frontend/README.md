@@ -13,10 +13,24 @@ npm ci
 npm run dev
 ```
 
-The dev server binds `127.0.0.1:5173`. Open `/` for live mode. Use
-**Explore demo** to open the explicitly labelled demo mode, or
-append `?mode=demo` to a route. Demo data is illustrative and never indicates
-a live repository, call, workspace, test run, or code change.
+The dev server binds `127.0.0.1:5173`. There is a single product flow: no
+demo mode, no sample data and no token to paste. On load the app checks
+`GET /v1/auth/me`; if there is no session it opens one anonymous guest session
+(`POST /v1/auth/anonymous-session`) and continues on its own. From there:
+
+1. Start a project and paste a public GitHub URL under **Connect a repository**.
+2. Start a call and ask Ranger to prepare the repository. The workspace shows
+   preparation live: queued, VM + repo, Trace index, ready,
+   with an elapsed clock, file and byte counts, files per second while
+   indexing, and clone / index / total times once ready. Every number is a
+   backend event field or the browser's own stopwatch.
+3. Ask code questions on the call, request a change, **Review plan**,
+   approve, then ask Ranger to start the approved work. Watch **Live activity**
+   and the results tabs.
+4. The **VM** card shows the workspace's observed state and offers a plain
+   command console (`sh -c` in the project's VM) and a desktop screenshot.
+
+`public/assets/workflow-demo.mp4` is landing-page marketing only.
 
 ## Backend contract
 
@@ -32,37 +46,20 @@ the real control API **same-origin**: every call uses a relative `/v1` path
 with `credentials: 'include'`, so requests go to the frontend origin and the
 Vite dev-server proxy forwards them to the backend (see
 `docs/local-full-stack.md` at the repository root). The browser session is
-established through the UI (`POST /v1/auth/browser-sessions`): the
-credential is submitted once to establish the session, the input field is
-cleared, and the secret is not stored in the browser (the bootstrap
-credential itself remains reusable from its protected file — this is not a
-consumed one-use token). The server sets the HttpOnly `ranger_session`
-cookie (SameSite=Strict) and the CSRF token returned once at session
-creation is held in application memory for the `x-ranger-csrf` header —
+opened automatically by the app (`POST /v1/auth/anonymous-session`, no
+credential); a later 401 renews it once and replays the failed call once, and
+only a failed renewal is shown to the user. The server sets the HttpOnly
+`ranger_session` cookie (SameSite=Strict) and the CSRF token returned once at
+session creation is held in application memory for the `x-ranger-csrf` header,
 never in `localStorage` or `sessionStorage`. Mutating calls send scoped
 `Idempotency-Key` headers, and multi-step operations report partial failure
 explicitly instead of claiming success.
 
-Local control-plane verification passed end to end: an initial manual
-browser journey (same-origin session exchange with reload, real
-project/conversation/message flows, plan version approval and invalidation,
-honest empty/disabled states, and a `403 origin_mismatch` rejection of a
-cross-origin cookie mutation), followed by a focused five-check follow-up
-in a unique headless session with cookies explicitly cleared — covering
-bootstrap credential-file line handling (the complete line, value omitted
-here; empty-value lines are rejected by local tests), engineer
-rename persistence across reload, invalid-route isolation, project
-navigation/state isolation (the same authorized user switching projects),
-and latest-event rendering in the UI. Both defects the initial journey
-surfaced are closed. The full verification report, its stated limitations
-(headless input via DOM setters/React events, no screenshot evidence) and
-cleanup record live in `docs/local-full-stack.md` at the repository root.
-That report verifies the local control plane (100 frontend tests, current
-count) — this is user-demo-scope validation, not production; live
-engineering is not accepted. The one real end-to-end live attempt has
-finished and FAILED (guest source copy failed after Trace materialized;
-indexing never started), the live-run guest timeout is still unknown, and
-no repeat is permitted without a new explicit VM allowance.
+Current deployment and recording instructions are in
+`docs/deployment-handover.md` at the repository root. Older verification in
+`docs/local-full-stack.md` predates anonymous sessions and public-repository
+loading. The provider limit is five simultaneous VMs, not a cumulative
+creation allowance; Ranger uses one VM at a time.
 
 Browser media is implemented: a same-origin voice WebSocket relay with
 24 kHz PCM playback, capture and interruption, plus independent

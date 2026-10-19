@@ -20,6 +20,7 @@ export const RESPONSE_TYPE_BY_OPERATION: Record<string, string> = {
   listApiTokens: 'ApiTokenListResponse',
   revokeApiToken: 'OkResponse',
   createBrowserSession: 'BrowserSessionCreatedResponse',
+  createAnonymousSession: 'BrowserSessionCreatedResponse',
   listBrowserSessions: 'BrowserSessionListResponse',
   revokeBrowserSession: 'OkResponse',
   createConnectionTicket: 'ConnectionTicketResponse',

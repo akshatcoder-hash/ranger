@@ -247,6 +247,24 @@ export function writeRepositoryRecord(
   return mapRepositoryRow(row);
 }
 
+/**
+ * Record the commit a remote repository resolved to once the host clone
+ * exists (the connect itself cannot resolve it). Guarded by url and ref so a
+ * reconnect during the clone is never overwritten. Returns false when the
+ * record was replaced or disconnected.
+ */
+export function recordResolvedCommit(
+  db: DatabaseSync,
+  projectId: string,
+  repository: Pick<RepositoryRecord, 'url' | 'ref'>,
+  commit: string,
+): boolean {
+  const result = db
+    .prepare('UPDATE project_repositories SET commit_sha = ?, updated_at = ? WHERE project_id = ? AND url = ? AND ref = ?')
+    .run(commit, Date.now(), projectId, repository.url, repository.ref);
+  return Number(result.changes) > 0;
+}
+
 export function getRepositoryRecord(db: DatabaseSync, projectId: string): RepositoryRecord | null {
   const row = mapRow<RepositorySqlRow>(
     db.prepare('SELECT * FROM project_repositories WHERE project_id = ?').get(projectId),

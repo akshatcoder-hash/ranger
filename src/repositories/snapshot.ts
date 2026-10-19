@@ -204,7 +204,7 @@ const GIT_HARDENED_FLAGS = [
   'core.attributesFile=/dev/null',
 ] as const;
 
-function hardenedGitEnv(): NodeJS.ProcessEnv {
+export function hardenedGitEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (key.startsWith('GIT_')) continue;

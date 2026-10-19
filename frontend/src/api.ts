@@ -1,6 +1,6 @@
 /**
  * Same-origin browser adapter for the Ranger v1 control API.
- * Provider calls stay on the backend. Credentials never enter storage, logs, or URLs.
+ * Provider calls stay on the backend. The browser holds only an HttpOnly session cookie and an in-memory CSRF token.
  */
 
 export type ApiReason = 'aborted' | 'unauthorized' | 'unavailable' | 'unsupported' | 'partial' | 'backend'
@@ -55,6 +55,9 @@ export type WorkspaceStatus = {
   observedState: string
   sourceRevision: string | null
 }
+export type WorkspaceCommand = { commandId: string; state: 'running' | 'succeeded' | 'failed' | 'terminated'; exitCode: number | null; startedAt: string }
+export type WorkspaceCommandLogs = { logs: string; totalBytes: number; truncated: boolean }
+export type WorkspaceScreenshot = { artifactId: string; contentBase64: string }
 export type PlanState = { plan: LivePlan | null; approved: boolean }
 export type RunRecord = {
   runId: string
@@ -74,7 +77,7 @@ export type RunTool = { callId: string; name: string; status: string; result?: R
 export type ProjectEvent = { eventId: string; sequence: number; type: string; data?: Record<string, unknown> }
 
 export interface RangerApi {
-  connectSession(credential: string, signal: AbortSignal): Promise<ApiResult<{ principalId: string }>>
+  openAnonymousSession(signal: AbortSignal): Promise<ApiResult<{ principalId: string }>>
   getSession(signal: AbortSignal): Promise<ApiResult<{ principalId: string }>>
   getCapabilities(signal: AbortSignal): Promise<ApiResult<{ xai: boolean; instabox: boolean; trace: boolean }>>
   createProject(request: ProjectRequest, signal: AbortSignal): Promise<ApiResult<{ projectId: string; conversationId: string }>>
@@ -97,6 +100,9 @@ export interface RangerApi {
   ): Promise<ApiResult<{ accepted: boolean }>>
   connectRepository(projectId: string, url: string, ref: string, signal: AbortSignal): Promise<ApiResult<void>>
   getWorkspaceStatus(projectId: string, signal: AbortSignal): Promise<ApiResult<WorkspaceStatus>>
+  runWorkspaceCommand(projectId: string, request: { command: string; args?: string[]; timeoutMs?: number }, signal: AbortSignal): Promise<ApiResult<WorkspaceCommand>>
+  getWorkspaceCommandLogs(projectId: string, commandId: string, signal: AbortSignal, sinceByte?: number): Promise<ApiResult<WorkspaceCommandLogs>>
+  captureWorkspaceScreenshot(projectId: string, signal: AbortSignal): Promise<ApiResult<WorkspaceScreenshot>>
   getEvents(
     projectId: string,
     signal: AbortSignal,
@@ -121,25 +127,34 @@ const TITLE_LIMIT = 200
 const MESSAGE_PAGE = '100'
 const EVENT_PAGE = '100'
 const MAX_EVENT_PAGES = 50
-const ID = /^(prj|cnv|pln|vcs|cap|run)_[0-9a-fA-F-]+$/
+const ID = /^(prj|cnv|pln|vcs|cap|run|cmd)_[0-9a-fA-F-]+$/
+/** Session endpoints never trigger a silent session renewal: a 401 there is a real answer. */
+const NO_RENEWAL = new Set(['/v1/auth/me', '/v1/auth/anonymous-session'])
 
+type RequestOptions = { body?: unknown; idempotent?: boolean }
 type Envelope = { requestId?: string; error?: { code?: string; message?: string; details?: { reason?: unknown; retryAfterMs?: unknown } } }
 
 class HttpRangerApi implements RangerApi {
   private csrfToken: string | null = null
+  private renewal: Promise<ApiResult<void>> | null = null
+  private renewalSpent = false
 
-  async connectSession(credential: string, signal: AbortSignal): Promise<ApiResult<{ principalId: string }>> {
-    const secret = credential.trim()
-    if (!secret) return fail('unauthorized', 'A Ranger credential is required.')
-    const created = await this.request<{ sessionId?: string; csrfToken?: string }>(
-      'POST',
-      '/v1/auth/browser-sessions',
-      signal,
-      { body: { apiToken: secret }, bearer: secret },
-    )
+  /** Concurrent callers share one session creation so a boot race or a burst of 401s never mints several principals. */
+  async openAnonymousSession(signal: AbortSignal): Promise<ApiResult<{ principalId: string }>> {
+    const created = await this.renewSession()
     if (!created.ok) return created
-    if (typeof created.data.csrfToken === 'string' && created.data.csrfToken !== '') this.csrfToken = created.data.csrfToken
     return this.getSession(signal)
+  }
+
+  private renewSession(): Promise<ApiResult<void>> {
+    this.renewal ??= (async () => {
+      const created = await this.send<{ csrfToken?: string }>('POST', '/v1/auth/anonymous-session', new AbortController().signal)
+      if (!created.ok) { this.renewalSpent = true; return created }
+      if (typeof created.data.csrfToken === 'string' && created.data.csrfToken !== '') this.csrfToken = created.data.csrfToken
+      this.renewalSpent = false
+      return ok(undefined)
+    })().finally(() => { this.renewal = null })
+    return this.renewal
   }
 
   async getSession(signal: AbortSignal): Promise<ApiResult<{ principalId: string }>> {
@@ -332,6 +347,37 @@ class HttpRangerApi implements RangerApi {
     if (!result.ok) return result
     const workspace = toWorkspaceStatus(result.data.workspace)
     return workspace ? ok(workspace) : fail('backend', 'The workspace status response was incomplete.')
+  }
+
+  async runWorkspaceCommand(projectId: string, request: { command: string; args?: string[]; timeoutMs?: number }, signal: AbortSignal): Promise<ApiResult<WorkspaceCommand>> {
+    if (!validId(projectId, 'prj')) return fail('backend', 'That project id is not a Ranger project id.')
+    if (!request.command.trim()) return fail('backend', 'A command is required.')
+    const result = await this.request<{ command?: Record<string, unknown> }>('POST', `/v1/projects/${projectId}/workspace/commands`, signal, {
+      body: { command: request.command, ...(request.args ? { args: request.args } : {}), ...(request.timeoutMs ? { timeoutMs: request.timeoutMs } : {}) },
+    })
+    if (!result.ok) return result
+    const raw = result.data.command
+    const state = raw?.state
+    if (!raw || !validId(typeof raw.commandId === 'string' ? raw.commandId : undefined, 'cmd') || (state !== 'running' && state !== 'succeeded' && state !== 'failed' && state !== 'terminated')) {
+      return fail('backend', 'The command response was incomplete.')
+    }
+    return ok({ commandId: raw.commandId as string, state, exitCode: typeof raw.exitCode === 'number' ? raw.exitCode : null, startedAt: typeof raw.startedAt === 'string' ? raw.startedAt : '' })
+  }
+
+  async getWorkspaceCommandLogs(projectId: string, commandId: string, signal: AbortSignal, sinceByte = 0): Promise<ApiResult<WorkspaceCommandLogs>> {
+    if (!validId(projectId, 'prj') || !validId(commandId, 'cmd')) return fail('backend', 'A project and command id are required.')
+    const result = await this.request<{ logs?: string; totalBytes?: number; truncated?: boolean }>('GET', `/v1/projects/${projectId}/workspace/commands/${commandId}/logs?${new URLSearchParams({ sinceByte: String(sinceByte) })}`, signal)
+    if (!result.ok) return result
+    if (typeof result.data.logs !== 'string' || typeof result.data.totalBytes !== 'number') return fail('backend', 'The command logs response was incomplete.')
+    return ok({ logs: result.data.logs, totalBytes: result.data.totalBytes, truncated: result.data.truncated === true })
+  }
+
+  async captureWorkspaceScreenshot(projectId: string, signal: AbortSignal): Promise<ApiResult<WorkspaceScreenshot>> {
+    if (!validId(projectId, 'prj')) return fail('backend', 'That project id is not a Ranger project id.')
+    const result = await this.request<{ artifactId?: string; contentBase64?: string }>('POST', `/v1/projects/${projectId}/workspace/screenshots`, signal, { body: {} })
+    if (!result.ok) return result
+    if (typeof result.data.artifactId !== 'string' || typeof result.data.contentBase64 !== 'string' || result.data.contentBase64 === '') return fail('backend', 'The screenshot response was incomplete.')
+    return ok({ artifactId: result.data.artifactId, contentBase64: result.data.contentBase64 })
   }
 
   async listRuns(projectId: string, signal: AbortSignal): Promise<ApiResult<RunRecord[]>> {
@@ -560,18 +606,25 @@ class HttpRangerApi implements RangerApi {
     return result
   }
 
-  private async request<T>(
-    method: string,
-    path: string,
-    signal: AbortSignal,
-    options: { body?: unknown; bearer?: string; idempotent?: boolean } = {},
-  ): Promise<ApiResult<T>> {
+  /** A 401 on an ordinary call renews the anonymous session once and replays the call once; nothing is replayed after a second 401. */
+  private async request<T>(method: string, path: string, signal: AbortSignal, options: RequestOptions = {}): Promise<ApiResult<T>> {
+    const first = await this.send<T>(method, path, signal, options)
+    if (first.ok) { this.renewalSpent = false; return first }
+    if (first.reason !== 'unauthorized' || NO_RENEWAL.has(path) || this.renewalSpent) return first
+    const renewed = await this.renewSession()
+    if (!renewed.ok) return first
+    const replay = await this.send<T>(method, path, signal, options)
+    if (replay.ok) this.renewalSpent = false
+    else if (replay.reason === 'unauthorized') this.renewalSpent = true
+    return replay
+  }
+
+  private async send<T>(method: string, path: string, signal: AbortSignal, options: RequestOptions = {}): Promise<ApiResult<T>> {
     if (signal.aborted) return aborted()
     const headers = new Headers({ accept: 'application/json' })
     if (options.body !== undefined) headers.set('content-type', 'application/json')
-    if (options.bearer) headers.set('authorization', `Bearer ${options.bearer}`)
     if (options.idempotent) headers.set('idempotency-key', idempotencyKey())
-    if (options.bearer === undefined && method !== 'GET' && method !== 'HEAD' && this.csrfToken) {
+    if (method !== 'GET' && method !== 'HEAD' && this.csrfToken) {
       headers.set('x-ranger-csrf', this.csrfToken)
     }
     let response: Response

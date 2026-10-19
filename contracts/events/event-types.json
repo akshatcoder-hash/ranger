@@ -905,6 +905,58 @@
           "repositoryCommit": {
             "type": "string",
             "maxLength": 64
+          },
+          "cloneElapsedMs": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "workspace.command.started",
+      "description": "Supervised command started in the project VM",
+      "dataSchema": {
+        "type": "object",
+        "required": [
+          "commandId",
+          "command",
+          "state",
+          "exitCode",
+          "timedOut"
+        ],
+        "properties": {
+          "commandId": {
+            "type": "string",
+            "pattern": "^cmd_[0-9a-fA-F-]+$",
+            "description": "Prefixed cmd identifier"
+          },
+          "command": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "succeeded",
+              "failed",
+              "terminated"
+            ]
+          },
+          "exitCode": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "timedOut": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false
@@ -914,7 +966,48 @@
       "name": "workspace.command.finished",
       "description": "Supervised command finished with real exit status",
       "dataSchema": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "commandId",
+          "command",
+          "state",
+          "exitCode",
+          "timedOut"
+        ],
+        "properties": {
+          "commandId": {
+            "type": "string",
+            "pattern": "^cmd_[0-9a-fA-F-]+$",
+            "description": "Prefixed cmd identifier"
+          },
+          "command": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "succeeded",
+              "failed",
+              "terminated"
+            ]
+          },
+          "exitCode": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "timedOut": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
       }
     },
     {

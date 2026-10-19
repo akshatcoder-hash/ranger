@@ -1163,6 +1163,153 @@
         }
       }
     },
+    "/v1/auth/anonymous-session": {
+      "post": {
+        "operationId": "createAnonymousSession",
+        "summary": "Create a fresh principal and browser session with no credential; same response and cookie as createBrowserSession",
+        "tags": [
+          "credentials-sessions"
+        ],
+        "description": "Create a fresh principal and browser session with no credential; same response and cookie as createBrowserSession",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Scoped idempotency key: identical retries return the stored result; reuse with different input conflicts."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success (envelope carries requestId)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "requestId",
+                    "sessionId",
+                    "expiresAt",
+                    "csrfToken"
+                  ],
+                  "properties": {
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "sessionId": {
+                      "type": "string",
+                      "pattern": "^ses_[0-9a-fA-F-]+$",
+                      "description": "Prefixed ses identifier"
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "csrfToken": {
+                      "type": "string",
+                      "description": "Synchronizer CSRF token; send as x-ranger-csrf on cookie-authenticated mutations without an Origin header"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed or invalid cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Budget admission stop",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict (including idempotency conflict)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not configured / not yet implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/auth/browser-sessions/{sessionId}": {
       "delete": {
         "operationId": "revokeBrowserSession",

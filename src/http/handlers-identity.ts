@@ -3,6 +3,7 @@ import { Errors } from '../errors.js';
 import {
   authenticateBearer,
   createCredential,
+  createPrincipal,
   getPrincipal,
   listCredentials,
   revokeCredential,
@@ -29,6 +30,8 @@ interface ApiTokenBody {
 interface BrowserSessionBody {
   apiToken?: string;
 }
+
+const ANONYMOUS_DISPLAY_NAME = 'Guest';
 
 interface ConnectionTicketBody {
   projectId?: string;
@@ -81,6 +84,17 @@ export function registerIdentityHandlers(ctx: HandlerContext, handlers: Map<stri
       throw Errors.unauthorized('API credential is invalid or has been revoked');
     }
     const created = createSession(db, auth.principalId);
+    void reply.header('set-cookie', created.setCookie);
+    return {
+      sessionId: created.session.id,
+      expiresAt: iso(created.session.expiresAt),
+      csrfToken: created.csrfToken,
+    };
+  });
+
+  handlers.set('createAnonymousSession', async (_req: FastifyRequest, reply) => {
+    const principal = createPrincipal(db, ANONYMOUS_DISPLAY_NAME);
+    const created = createSession(db, principal.id);
     void reply.header('set-cookie', created.setCookie);
     return {
       sessionId: created.session.id,

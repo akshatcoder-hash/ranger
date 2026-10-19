@@ -163,10 +163,12 @@ async function executeRun(deps: RunExecutorDeps, run: RunRow, claim: { workerId:
       return;
     }
 
-    // One ephemeral VM per run: an existing workspace belongs to a previous
-    // run and is destroyed; saved source seeds the fresh VM. An uncertain
-    // earlier create is NEVER repeated — the run fails honestly and the
-    // recorded identity stays for reconciliation.
+    // A healthy running workspace of this project (the prepared VM) is reused
+    // as-is: same machine, same kill deadline, and no reseed over its live
+    // files or installed state. Only a missing/destroyed workspace is created
+    // and seeded from saved source; one past its deadline is replaced. An
+    // uncertain earlier create is NEVER repeated — the run fails honestly and
+    // the recorded identity stays for reconciliation.
     const existing = workspaceStateFor(db, run.projectId);
     if (existing === 'uncertain') {
       await fail(
@@ -175,21 +177,42 @@ async function executeRun(deps: RunExecutorDeps, run: RunRow, claim: { workerId:
       );
       return;
     }
-    if (existing === 'running') {
+    const live = existing === 'running' ? getWorkspace(db, run.projectId) : null;
+    const reusable = live !== null && live.deadlineAt !== null && live.deadlineAt > Date.now();
+    if (live !== null && reusable) {
+      // The reused VM must hold the revision the user connected and the plan
+      // was approved against; a mismatch fails the run (cleanup reclaims the
+      // stale VM) instead of doing wrong-revision work or creating another.
+      const connected = getRepositoryRecord(db, run.projectId)?.commit ?? '';
+      const planCommit = getPlanRow(db, run.projectId, run.planId)?.repositoryCommit ?? null;
+      if (
+        (connected !== '' && live.sourceRevision !== null && live.sourceRevision !== connected) ||
+        (planCommit !== null && live.sourceRevision !== planCommit)
+      ) {
+        await fail(
+          'workspace_revision_mismatch',
+          'The running workspace does not hold the connected repository revision or the revision the plan was approved against; prepare the workspace again.',
+        );
+        return;
+      }
+    }
+    if (existing === 'running' && !reusable) {
       await workspace.destroy(run.projectId);
     }
-    try {
-      await workspace.create(run.projectId, sourceRevision, runRequestId);
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      if (/uncertain/i.test(message)) {
-        await fail('uncertain_create', 'Instabox create outcome is uncertain; not creating again.');
-      } else {
-        await fail('workspace_create_failed', `Workspace create failed: ${message}`);
+    if (!reusable) {
+      try {
+        await workspace.create(run.projectId, sourceRevision, runRequestId);
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        if (/uncertain/i.test(message)) {
+          await fail('uncertain_create', 'Instabox create outcome is uncertain; not creating again.');
+        } else {
+          await fail('workspace_create_failed', `Workspace create failed: ${message}`);
+        }
+        return;
       }
-      return;
+      await seedSavedSource(deps.db, run.projectId, workspace);
     }
-    await seedSavedSource(deps.db, run.projectId, workspace);
 
     // Real Trace retrieval when the sibling is configured (explicitly not a
     // fallback and never labeled Trace otherwise). Tests may inject null.
@@ -200,7 +223,17 @@ async function executeRun(deps: RunExecutorDeps, run: RunRow, claim: { workerId:
       // Trace is an honest labeled state for the search tool (the run
       // continues on inspect/list and real commands); it never fails the run.
       try {
-        await retrieval.reindex(run.projectId);
+        if (!reusable) {
+          await retrieval.reindex(run.projectId);
+        } else {
+          // A reused prepared VM keeps its index and provenance (repository
+          // commit, job, machine) that other processes read; only a changed
+          // saved source is reindexed, and then with the same provenance.
+          const readiness = retrieval.readiness(run.projectId);
+          if (!readiness.ready) {
+            await retrieval.reindexDetailed(run.projectId, { provenance: readiness.state?.provenance ?? {} });
+          }
+        }
       } catch {
         // search_code reports the unavailable state; never fake results.
       }

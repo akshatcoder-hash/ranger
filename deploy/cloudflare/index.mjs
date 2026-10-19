@@ -57,6 +57,22 @@ async function proxyApi(request, env, url) {
     // Required by Node's undici for streaming bodies; ignored by workerd.
     init.duplex = "half";
   }
+  if (request.method === "POST" && url.pathname === "/v1/auth/connection-tickets") {
+    let body;
+    try {
+      body = await request.json();
+      if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error();
+    } catch {
+      return errorResponse("validation_failed", "Invalid connection ticket request.", undefined, 400);
+    }
+    if (body.origin !== undefined && body.origin !== publicOrigin) {
+      return errorResponse("forbidden", "Origin is not allowed for this ticket.", { reason: "origin_mismatch" });
+    }
+    // Tickets must bind to the same Origin the proxy sends on WebSocket upgrades.
+    if (body.origin === publicOrigin) body.origin = backendOrigin;
+    headers.delete("content-length");
+    init.body = JSON.stringify(body);
+  }
 
   let upstream;
   try {

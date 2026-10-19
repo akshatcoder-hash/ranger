@@ -13,6 +13,7 @@ import { FakeInstabox } from '../../src/workspace/instabox.js';
 import { setWorkspaceProviderForTests } from '../../src/workspace/runtime.js';
 import { WorkspaceService } from '../../src/workspace/service.js';
 import { splitFencedCommand } from '../../src/workspace/limits.js';
+import { listProjectEvents } from '../../src/events/store.js';
 
 /**
  * Foreground run-command supervision protocol (deterministic, not live).
@@ -103,12 +104,23 @@ describe('foreground run-command supervision (deterministic, not live)', () => {
     const during = await waitForRow(h.db, 'run_fg1');
     expect(during.state).toBe('running');
     expect(during.exit_code).toBeNull();
+    const started = listProjectEvents(h.db, h.projectId).events;
+    expect(started).toHaveLength(1);
+    expect(started[0]).toMatchObject({
+      type: 'workspace.command.started',
+      runId: 'run_fg1',
+      data: { commandId: during.id, command: 'sleep 30', state: 'running', exitCode: null },
+    });
     hang.release({ stdout: 'done\n' });
     const row = await pending;
     expect(row.state).toBe('succeeded');
     expect(row.exitCode).toBe(0);
     expect(row.logs).toContain('done');
     expect(row.pid).toBeNull();
+    expect(listProjectEvents(h.db, h.projectId).events.at(-1)).toMatchObject({
+      type: 'workspace.command.finished',
+      data: { commandId: row.id, state: 'succeeded', exitCode: 0, timedOut: false },
+    });
   });
 
   it('terminates an in-flight foreground command with TERM then liveness-checked KILL and truthful termination', async () => {

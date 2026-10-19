@@ -245,6 +245,47 @@ describe('identity, projects and repositories', () => {
     expect((afterRevoke.json() as { error: { code: string } }).error.code).toBe('unauthorized');
   });
 
+  it('anonymous sessions need no credential and authorize their own principal with cookie + CSRF', async () => {
+    const res = await app.inject({ method: 'POST', url: '/v1/auth/anonymous-session', payload: {} });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { sessionId: string; expiresAt: string; csrfToken: string };
+    expect(body.csrfToken.length).toBeGreaterThan(20);
+    const setCookie = res.headers['set-cookie'];
+    const header = (Array.isArray(setCookie) ? setCookie[0] : setCookie)!;
+    expect(header).toContain('HttpOnly');
+    const cookie = header.split(';')[0]!;
+
+    const me = await app.inject({ method: 'GET', url: '/v1/auth/me', headers: { cookie } });
+    expect(me.statusCode).toBe(200);
+    const principalId = (me.json() as { principalId: string }).principalId;
+    expect(principalId).not.toBe(bootstrapPrincipalId);
+
+    // A principal-authed mutation works with the session's CSRF token ...
+    const created = await app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers: { cookie, 'x-ranger-csrf': body.csrfToken },
+      payload: { name: 'Anonymous Project', engineerDisplayName: 'Ranger' },
+    });
+    expect(created.statusCode).toBe(200);
+    const anonymousProjectId = (created.json() as { project: { projectId: string } }).project.projectId;
+
+    // ... is refused without it ...
+    const bare = await app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers: { cookie },
+      payload: { name: 'No CSRF', engineerDisplayName: 'Ranger' },
+    });
+    expect(bare.statusCode).toBe(403);
+
+    // ... and the new principal cannot see the operator's project.
+    const foreign = await app.inject({ method: 'GET', url: `/v1/projects/${projectId}`, headers: { cookie } });
+    expect(foreign.statusCode).toBe(403);
+    const own = await app.inject({ method: 'GET', url: `/v1/projects/${anonymousProjectId}`, headers: { cookie } });
+    expect(own.statusCode).toBe(200);
+  });
+
   it('connection tickets bind principal/project/purpose, are single-use and die with the issuing credential', async () => {
     const ticketRes = await app.inject({
       method: 'POST',

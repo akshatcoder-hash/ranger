@@ -1,11 +1,16 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
+import { rmSync } from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { withTransaction, mapRow } from '../db/db.js';
 import { Errors, isAppError, redact } from '../errors.js';
 import { appendProjectEvent } from '../events/store.js';
 import type { RangerConfig } from '../config.js';
 import { SecretResolver } from '../secrets.js';
-import { getRepositoryRecord } from '../repositories/store.js';
+import { getRepositoryRecord, recordResolvedCommit } from '../repositories/store.js';
+import { cloneRepositoryShallow, type RepositoryCloner } from '../repositories/clone.js';
+import { localRepositoryPath } from '../repositories/snapshot.js';
 import { materializeInitialSource, savedSourceMatchesCommit } from '../runs/initial-source.js';
 import { activeRunRow } from '../runs/store.js';
 import { seedSavedSource } from '../runs/executor.js';
@@ -27,6 +32,10 @@ import { getWorkspace, listAllSourceFiles } from './store.js';
  * - the worker validates the connected repository/commit and retrieval
  *   availability BEFORE the VM create, then performs exactly one
  *   create -> seed -> index sequence through the existing services;
+ * - a remote (https) repository is first shallow-cloned on the host, before
+ *   any VM exists, and the clone then flows through the same materialize ->
+ *   create -> seed -> index sequence; a clone failure fails the job with no
+ *   create and no budget use;
  * - any failure stops, destroys the VM this job created (an uncertain create
  *   is never retried or destroyed blindly) and records a failed event;
  * - progress is the durable `workspace.preparation.updated` event history;
@@ -63,6 +72,8 @@ export interface PreparationEventData {
   errorCode?: string;
   message?: string;
   repositoryCommit?: string;
+  /** Wall time of the host-side clone of a remote repository. */
+  cloneElapsedMs?: number;
 }
 
 function appendPreparation(
@@ -200,6 +211,8 @@ export interface PrepareDeps {
   db: DatabaseSync;
   config: RangerConfig;
   retrieval: PrepareRetrieval;
+  /** Remote repository cloner; defaults to the https-only host clone. */
+  cloneRepository?: RepositoryCloner;
 }
 
 function failureCode(cause: unknown, fallback: string): string {
@@ -230,6 +243,7 @@ async function executePrepare(
   payload: PreparePayload,
 ): Promise<void> {
   const { db, config, retrieval } = deps;
+  const cloneRepository = deps.cloneRepository ?? cloneRepositoryShallow;
   const { projectId, sessionId } = payload;
   const startedAt = Date.now();
   const requestId = `prep_${job.id}`;
@@ -273,6 +287,7 @@ async function executePrepare(
   let repositoryCommit: string | undefined;
   let fileCount: number | undefined;
   let byteCount: number | undefined;
+  let cloneElapsedMs: number | undefined;
   /** True only after THIS job's create succeeded: the VM it owns and must clean up. */
   let created = false;
 
@@ -296,6 +311,7 @@ async function executePrepare(
       ...(repositoryCommit !== undefined ? { repositoryCommit } : {}),
       ...(fileCount !== undefined ? { fileCount } : {}),
       ...(byteCount !== undefined ? { byteCount } : {}),
+      ...(cloneElapsedMs !== undefined ? { cloneElapsedMs } : {}),
     });
     if (recorded) {
       db.prepare(
@@ -308,18 +324,54 @@ async function executePrepare(
     if (!emit({ jobId: job.id, phase: 'preparing' })) return;
 
     // 1. Validate the connected repository and committed source BEFORE any VM.
-    const repository = getRepositoryRecord(db, projectId);
+    let repository = getRepositoryRecord(db, projectId);
     if (repository === null) {
       await finishFailed('repository_not_connected', 'No repository is connected to this project');
       return;
     }
     repositoryCommit = repository.commit === '' ? undefined : repository.commit;
+
+    // A remote repository is cloned on the host BEFORE the VM create; the
+    // clone then stands in for an approved local checkout of its HEAD.
+    let sourceRepository = repository;
+    let sourceRoots = config.approvedSnapshotRoots;
+    let isRemote: boolean;
+    try {
+      isRemote = localRepositoryPath(repository.url) === null;
+    } catch (cause) {
+      await finishFailed('initial_source_unmaterializable', cause);
+      return;
+    }
+    if (isRemote) {
+      const cloneRoot = path.join(path.resolve(config.dataDir), 'repo-clones');
+      const target = path.join(cloneRoot, projectId);
+      try {
+        const cloned = await cloneRepository({ url: repository.url, ref: repository.ref, target });
+        cloneElapsedMs = cloned.elapsedMs;
+        repositoryCommit = cloned.commit;
+        if (!recordResolvedCommit(db, projectId, repository, cloned.commit)) {
+          // Reconnected or disconnected mid-clone: never materialize or create
+          // from the repository this job started with.
+          rmSync(target, { recursive: true, force: true });
+          await finishFailed('repository_changed', 'The connected repository changed during the clone; preparation was not started');
+          return;
+        }
+        repository = { ...repository, commit: cloned.commit };
+        sourceRepository = { ...repository, url: pathToFileURL(target).href };
+        sourceRoots = [...config.approvedSnapshotRoots, cloneRoot];
+      } catch (cause) {
+        await finishFailed('clone_failed', cause);
+        return;
+      }
+      if (leaseLost || !jobOwned()) return;
+    }
+
     let sourceMatches: boolean;
     try {
-      const initial = await materializeInitialSource(db, projectId, repository, config.approvedSnapshotRoots);
+      const initial = await materializeInitialSource(db, projectId, sourceRepository, sourceRoots);
       // Freshly materialized source was byte-verified against the commit;
       // pre-existing saved source must still equal the connected revision.
-      sourceMatches = initial.materialized || (await savedSourceMatchesCommit(db, projectId, repository, config.approvedSnapshotRoots));
+      sourceMatches = initial.materialized || (await savedSourceMatchesCommit(db, projectId, sourceRepository, sourceRoots));
     } catch (cause) {
       await finishFailed('initial_source_unmaterializable', cause);
       return;
@@ -382,7 +434,16 @@ async function executePrepare(
       return;
     }
 
-    if (!emit({ jobId: job.id, phase: 'indexing', fileCount, byteCount, ...(repositoryCommit !== undefined ? { repositoryCommit } : {}) })) {
+    if (
+      !emit({
+        jobId: job.id,
+        phase: 'indexing',
+        fileCount,
+        byteCount,
+        ...(repositoryCommit !== undefined ? { repositoryCommit } : {}),
+        ...(cloneElapsedMs !== undefined ? { cloneElapsedMs } : {}),
+      })
+    ) {
       await finishFailed('worker_interrupted', 'The preparation job lease was lost');
       return;
     }
@@ -404,6 +465,7 @@ async function executePrepare(
       indexElapsedMs: indexed.indexElapsedMs,
       elapsedMs: Date.now() - startedAt,
       repositoryCommit: repository.commit,
+      ...(cloneElapsedMs !== undefined ? { cloneElapsedMs } : {}),
     });
     if (!recorded) await finishFailed('worker_interrupted', 'The preparation job lease was lost');
   } catch (cause) {

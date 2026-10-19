@@ -208,6 +208,23 @@ function credentialsFamily(): OperationDef[] {
       ),
     },
     {
+      id: 'createAnonymousSession',
+      method: 'post',
+      path: '/v1/auth/anonymous-session',
+      family: 'credentials-sessions',
+      summary: 'Create a fresh principal and browser session with no credential; same response and cookie as createBrowserSession',
+      auth: 'none',
+      mutating: true,
+      response: okResponse(
+        {
+          sessionId: idField('ses'),
+          expiresAt: timestamp(),
+          csrfToken: str({ description: 'Synchronizer CSRF token; send as x-ranger-csrf on cookie-authenticated mutations without an Origin header' }),
+        },
+        ['sessionId', 'expiresAt', 'csrfToken'],
+      ),
+    },
+    {
       id: 'listBrowserSessions',
       method: 'get',
       path: '/v1/auth/browser-sessions',

@@ -1199,8 +1199,8 @@ describe('approved run workflow (deterministic providers, public API)', () => {
       expect((await runHandlerToTerminal(h, run1, coding1.transport)).state).toBe('succeeded');
 
       // The checkout CHANGES after the first run (new commit). The second
-      // run must seed from the saved generated source, never re-read the
-      // moving repository.
+      // run must keep the prepared workspace, never re-read the moving
+      // repository.
       writeFileSync(fixture.trackedFile, 'NEW COMMIT CONTENT — must never leak\n');
       execFileSync('git', ['-C', fixture.root, 'add', 'index.ts'], {
         env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
@@ -1216,9 +1216,8 @@ describe('approved run workflow (deterministic providers, public API)', () => {
       ]);
       expect((await runHandlerToTerminal(h, run2, coding2.transport)).state).toBe('succeeded');
 
-      // Each run created exactly one fresh VM (two total), and the saved
-      // generated source survived into the second VM unchanged.
-      expect(h.provider.creates).toHaveLength(2);
+      // Both runs share one VM, retaining generated source unchanged.
+      expect(h.provider.creates).toHaveLength(1);
       const ws2 = h.db.prepare('SELECT machine_id, source_revision FROM workspaces WHERE project_id = ?').get(h.projectId) as {
         machine_id: string;
         source_revision: string | null;

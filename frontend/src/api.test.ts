@@ -13,32 +13,38 @@ afterEach(() => {
 })
 
 describe('browser backend adapter', () => {
-  it('exchanges a bearer credential once and keeps it out of storage and later requests', async () => {
+  it('opens an anonymous session with no credential and keeps the CSRF token out of storage', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input)
       const headers = new Headers(init?.headers)
-      if (path === '/v1/auth/browser-sessions') {
+      expect(headers.has('authorization')).toBe(false)
+      expect(init?.credentials).toBe('include')
+      if (path === '/v1/auth/anonymous-session') {
         expect(init?.method).toBe('POST')
-        expect(init?.credentials).toBe('include')
-        expect(headers.get('authorization')).toBe('Bearer secret-token')
-        expect(JSON.parse(String(init?.body))).toEqual({ apiToken: 'secret-token' })
+        expect(init?.body).toBeUndefined()
         return json({ sessionId: 'ses_1', expiresAt: '2026-01-01T00:00:00.000Z', csrfToken: 'csrf-once', requestId: 'req-session' })
       }
-      expect(headers.has('authorization')).toBe(false)
-      expect(String(init?.body ?? '')).not.toContain('secret-token')
-      return json({ principalId: 'prin_operator', requestId: 'req-me' })
+      return json({ principalId: 'prin_guest', requestId: 'req-me' })
     })
     vi.stubGlobal('fetch', fetchMock)
     const storageWrites = vi.fn()
     vi.stubGlobal('localStorage', { setItem: storageWrites, getItem: vi.fn(), removeItem: vi.fn() })
     vi.stubGlobal('sessionStorage', { setItem: storageWrites, getItem: vi.fn(), removeItem: vi.fn() })
 
-    const connected = await rangerApi.connectSession(' secret-token ', new AbortController().signal)
+    const connected = await rangerApi.openAnonymousSession(new AbortController().signal)
 
-    expect(connected).toEqual({ ok: true, data: { principalId: 'prin_operator' } })
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(connected).toEqual({ ok: true, data: { principalId: 'prin_guest' } })
+    expect(fetchMock.mock.calls.map(call => String(call[0]))).toEqual(['/v1/auth/anonymous-session', '/v1/auth/me'])
     expect(storageWrites).not.toHaveBeenCalled()
     expect(JSON.stringify(fetchMock.mock.calls)).not.toContain('csrf-once')
+  })
+
+  it('shares one session creation between concurrent callers', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === '/v1/auth/anonymous-session' ? json({ csrfToken: 'csrf-shared' }) : json({ principalId: 'prin_guest' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const results = await Promise.all([rangerApi.openAnonymousSession(new AbortController().signal), rangerApi.openAnonymousSession(new AbortController().signal)])
+    expect(results.every(result => result.ok)).toBe(true)
+    expect(fetchMock.mock.calls.filter(call => String(call[0]) === '/v1/auth/anonymous-session')).toHaveLength(1)
   })
 
   it('sends the in-memory CSRF token on a later cookie mutation and never retries it', async () => {
@@ -46,15 +52,15 @@ describe('browser backend adapter', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       calls += 1
       const headers = new Headers(init?.headers)
-      if (String(input) === '/v1/auth/browser-sessions') return json({ csrfToken: 'csrf-memory', requestId: 'req-1' })
-      if (String(input) === '/v1/auth/me') return json({ principalId: 'prin_operator', requestId: 'req-2' })
+      if (String(input) === '/v1/auth/anonymous-session') return json({ csrfToken: 'csrf-memory', requestId: 'req-1' })
+      if (String(input) === '/v1/auth/me') return json({ principalId: 'prin_guest', requestId: 'req-2' })
       expect(headers.get('x-ranger-csrf')).toBe('csrf-memory')
       expect(headers.has('authorization')).toBe(false)
       expect(headers.get('idempotency-key')).toMatch(/^[0-9a-f]{32}$/)
       return json({ requestId: 'req-rename' }, 409)
     }))
 
-    await rangerApi.connectSession('secret-token', new AbortController().signal)
+    await rangerApi.openAnonymousSession(new AbortController().signal)
     const renamed = await rangerApi.renameEngineer(PROJECT, 'Ada', new AbortController().signal)
 
     expect(renamed.ok).toBe(false)
@@ -482,6 +488,87 @@ describe('browser backend adapter', () => {
 
     vi.stubGlobal('fetch', vi.fn(async () => json({ inspection: { state: 'fresh-frame-requested', observations: [], sourceFrameId: null, sourceTimestamp: null, freshness: 'absent' } })))
     await expect(rangerApi.requestInspection(PROJECT, CAPTURE, signal)).resolves.toMatchObject({ ok: true, data: { state: 'fresh-frame-requested', freshness: 'absent' } })
+  })
+})
+
+describe('session renewal and VM commands', () => {
+  const unauthorized = () => json({ requestId: 'req-401', error: { code: 'unauthorized', message: 'expired' } }, 401)
+
+  it('renews the anonymous session once on a 401 and replays the call once', async () => {
+    const seen: { path: string; csrf: string | null }[] = []
+    let renamed = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input)
+      seen.push({ path, csrf: new Headers(init?.headers).get('x-ranger-csrf') })
+      if (path === '/v1/auth/anonymous-session') return json({ csrfToken: 'csrf-renewed' })
+      renamed += 1
+      return renamed === 1 ? unauthorized() : json({ requestId: 'req-ok' })
+    }))
+
+    const result = await rangerApi.renameEngineer(PROJECT, 'Ada', new AbortController().signal)
+
+    expect(result.ok).toBe(true)
+    expect(seen.map(call => call.path)).toEqual([`/v1/projects/${PROJECT}`, '/v1/auth/anonymous-session', `/v1/projects/${PROJECT}`])
+    expect(seen[2].csrf).toBe('csrf-renewed')
+  })
+
+  it('surfaces the 401 when renewal fails and does not renew again after a replay is also refused', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === '/v1/auth/anonymous-session' ? json({ error: { code: 'internal_error', message: 'down' } }, 500) : unauthorized())
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await rangerApi.listRuns(PROJECT, new AbortController().signal)).toMatchObject({ ok: false, reason: 'unauthorized' })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    fetchMock.mockClear()
+    expect(await rangerApi.listRuns(PROJECT, new AbortController().signal)).toMatchObject({ ok: false, reason: 'unauthorized' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    vi.stubGlobal('fetch', vi.fn(async () => json({ runs: [] })))
+    expect(await rangerApi.listRuns(PROJECT, new AbortController().signal)).toMatchObject({ ok: true })
+  })
+
+  it('never renews on the session endpoints themselves', async () => {
+    const fetchMock = vi.fn(async () => unauthorized())
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await rangerApi.getSession(new AbortController().signal)).toMatchObject({ ok: false, reason: 'unauthorized' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('runs a command through sh -c and reads its logs from the returned command id', async () => {
+    const COMMAND = 'cmd_66666666-6666-6666-6666-666666666666'
+    const calls: { path: string; method?: string; body: unknown }[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input)
+      calls.push({ path, method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+      if (path.endsWith('/logs?sinceByte=0')) return json({ logs: 'src\n', totalBytes: 4, truncated: false })
+      return json({ command: { commandId: COMMAND, state: 'succeeded', exitCode: 0, startedAt: '2026-10-19T00:00:00Z' } })
+    }))
+    const signal = new AbortController().signal
+
+    const started = await rangerApi.runWorkspaceCommand(PROJECT, { command: 'sh', args: ['-c', 'ls'], timeoutMs: 60_000 }, signal)
+    expect(started).toEqual({ ok: true, data: { commandId: COMMAND, state: 'succeeded', exitCode: 0, startedAt: '2026-10-19T00:00:00Z' } })
+    const logs = await rangerApi.getWorkspaceCommandLogs(PROJECT, COMMAND, signal)
+    expect(logs).toEqual({ ok: true, data: { logs: 'src\n', totalBytes: 4, truncated: false } })
+    expect(calls[0]).toEqual({ path: `/v1/projects/${PROJECT}/workspace/commands`, method: 'POST', body: { command: 'sh', args: ['-c', 'ls'], timeoutMs: 60_000 } })
+    expect(calls[1].path).toBe(`/v1/projects/${PROJECT}/workspace/commands/${COMMAND}/logs?sinceByte=0`)
+  })
+
+  it('refuses malformed command, log and screenshot responses and foreign ids before any request', async () => {
+    const fetchMock = vi.fn(async () => json({ command: { commandId: 'not-an-id', state: 'succeeded' }, logs: 3 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const signal = new AbortController().signal
+    expect(await rangerApi.runWorkspaceCommand(PROJECT, { command: 'sh' }, signal)).toMatchObject({ ok: false, reason: 'backend' })
+    expect(await rangerApi.getWorkspaceCommandLogs(PROJECT, 'cmd_66666666-6666-6666-6666-666666666666', signal)).toMatchObject({ ok: false, reason: 'backend' })
+    expect(await rangerApi.captureWorkspaceScreenshot(PROJECT, signal)).toMatchObject({ ok: false, reason: 'backend' })
+    fetchMock.mockClear()
+    expect(await rangerApi.runWorkspaceCommand('demo', { command: 'sh' }, signal)).toMatchObject({ ok: false })
+    expect(await rangerApi.runWorkspaceCommand(PROJECT, { command: '  ' }, signal)).toMatchObject({ ok: false })
+    expect(await rangerApi.getWorkspaceCommandLogs(PROJECT, 'cmd_../x', signal)).toMatchObject({ ok: false })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('captures a screenshot as base64 with its artifact id', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ artifactId: 'art_1', contentBase64: 'iVBORw0KGgo=' })))
+    expect(await rangerApi.captureWorkspaceScreenshot(PROJECT, new AbortController().signal)).toEqual({ ok: true, data: { artifactId: 'art_1', contentBase64: 'iVBORw0KGgo=' } })
   })
 })
 

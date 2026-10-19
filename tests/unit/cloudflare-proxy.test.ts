@@ -89,6 +89,28 @@ describe('cloudflare API proxy', () => {
     expect(body.requestId).toEqual(expect.any(String));
   });
 
+  it('binds a browser connection ticket to the translated WebSocket Origin', async () => {
+    const { calls } = await invoke(incoming('/v1/auth/connection-tickets', {
+      method: 'POST',
+      headers: { origin: PUBLIC_ORIGIN, 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId: 'prj_1', purpose: 'voice-relay', origin: PUBLIC_ORIGIN }),
+    }));
+    expect(await calls[0]!.request.json()).toEqual({
+      projectId: 'prj_1', purpose: 'voice-relay', origin: BACKEND_ORIGIN,
+    });
+    expect(calls[0]!.request.headers.get('origin')).toBe(BACKEND_ORIGIN);
+  });
+
+  it('refuses a foreign ticket origin even with an allowed request Origin', async () => {
+    const { response, calls } = await invoke(incoming('/v1/auth/connection-tickets', {
+      method: 'POST',
+      headers: { origin: PUBLIC_ORIGIN, 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId: 'prj_1', purpose: 'voice-relay', origin: 'https://evil.example' }),
+    }));
+    expect(response.status).toBe(403);
+    expect(calls).toHaveLength(0);
+  });
+
   it('rejects a null Origin string without fetching', async () => {
     const { response, fetchMock } = await invoke(
       incoming('/v1/projects', { method: 'POST', headers: { origin: 'null' } }),

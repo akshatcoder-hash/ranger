@@ -1,4 +1,4 @@
-import { arr, idField, int, nullable, num, obj, str, timestamp } from './schema.js';
+import { arr, bool, idField, int, nullable, num, obj, str, timestamp } from './schema.js';
 
 /**
  * Realtime project event contract.
@@ -39,6 +39,14 @@ export interface EventTypeDef {
   description: string;
   dataSchema: Record<string, unknown>;
 }
+
+const COMMAND_EVENT_SCHEMA = obj(['commandId', 'command', 'state', 'exitCode', 'timedOut'], {
+  commandId: idField('cmd'),
+  command: str({ maxLength: 4000 }),
+  state: str({ enum: ['running', 'succeeded', 'failed', 'terminated'] }),
+  exitCode: nullable(int()),
+  timedOut: bool(),
+});
 
 export const EVENT_TYPES: EventTypeDef[] = [
   {
@@ -300,9 +308,11 @@ export const EVENT_TYPES: EventTypeDef[] = [
       errorCode: str({ maxLength: 64 }),
       message: str({ maxLength: 400 }),
       repositoryCommit: str({ maxLength: 64 }),
+      cloneElapsedMs: int({ minimum: 0 }),
     }),
   },
-  { name: 'workspace.command.finished', description: 'Supervised command finished with real exit status', dataSchema: { type: 'object' } },
+  { name: 'workspace.command.started', description: 'Supervised command started in the project VM', dataSchema: COMMAND_EVENT_SCHEMA },
+  { name: 'workspace.command.finished', description: 'Supervised command finished with real exit status', dataSchema: COMMAND_EVENT_SCHEMA },
   { name: 'workspace.artifact.created', description: 'Artifact collected', dataSchema: { type: 'object' } },
   { name: 'preview.session.updated', description: 'Preview or desktop session state changed', dataSchema: { type: 'object' } },
   { name: 'retrieval.index.updated', description: 'Project retrieval index refreshed', dataSchema: { type: 'object' } },

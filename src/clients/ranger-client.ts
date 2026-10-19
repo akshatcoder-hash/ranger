@@ -197,6 +197,11 @@ export class RangerClient {
     return this.request<BrowserSessionCreatedResponse>('POST', '/v1/auth/browser-sessions', args as OpArgs);
   }
 
+  /** Create a fresh principal and browser session with no credential; same response and cookie as createBrowserSession */
+  async createAnonymousSession(): Promise<BrowserSessionCreatedResponse> {
+    return this.request<BrowserSessionCreatedResponse>('POST', '/v1/auth/anonymous-session');
+  }
+
   /** List active browser sessions for the principal */
   async listBrowserSessions(): Promise<BrowserSessionListResponse> {
     return this.request<BrowserSessionListResponse>('GET', '/v1/auth/browser-sessions');

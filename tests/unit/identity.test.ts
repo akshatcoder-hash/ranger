@@ -15,6 +15,8 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { loadConfig } from '../../src/config.js';
+import { buildApiServer } from '../../src/http/app.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { openDatabase } from '../../src/db/db.js';
 import { migrationsDirFromCwd, runMigrations } from '../../src/db/migrate.js';
@@ -859,5 +861,62 @@ describe('bootstrap credential', () => {
     expect(countRows(db, 'credentials')).toBe(2); // bootstrap + second only
     // The winning credential file is preserved.
     expect(readFileSync(secondPath, 'utf8').startsWith('RANGER_BOOTSTRAP_TOKEN=')).toBe(true);
+  });
+});
+
+describe('anonymous session route', () => {
+  async function anonymousApp() {
+    const config = await loadConfig({ RANGER_DATA_DIR: dataDir, RANGER_LOG_LEVEL: 'error' } as NodeJS.ProcessEnv);
+    return buildApiServer({ config, db });
+  }
+
+  function cookieFrom(setCookie: string | string[] | number | undefined): string {
+    const header = Array.isArray(setCookie) ? setCookie[0] : String(setCookie);
+    return header!.split(';')[0]!;
+  }
+
+  it('creates a principal and session with no credential, then authenticates with the cookie', async () => {
+    const app = await anonymousApp();
+    try {
+      expect(countRows(db, 'principals')).toBe(0);
+      const res = await app.inject({ method: 'POST', url: '/v1/auth/anonymous-session', payload: {} });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as { sessionId: string; expiresAt: string; csrfToken: string };
+      expect(body.sessionId.startsWith('ses_')).toBe(true);
+      expect(body.csrfToken.length).toBeGreaterThan(20);
+      expect(new Date(body.expiresAt).getTime()).toBeGreaterThan(Date.now());
+      const setCookie = res.headers['set-cookie'];
+      const header = Array.isArray(setCookie) ? setCookie[0]! : String(setCookie);
+      expect(header.startsWith(`${SESSION_COOKIE_NAME}=`)).toBe(true);
+      expect(header).toContain('HttpOnly');
+      expect(countRows(db, 'principals')).toBe(1);
+      expect(countRows(db, 'credentials')).toBe(0);
+
+      const me = await app.inject({ method: 'GET', url: '/v1/auth/me', headers: { cookie: cookieFrom(setCookie) } });
+      expect(me.statusCode).toBe(200);
+      expect(me.json()).toMatchObject({ displayName: 'Guest' });
+
+      // Without the cookie the route grants nothing.
+      const bare = await app.inject({ method: 'GET', url: '/v1/auth/me' });
+      expect(bare.statusCode).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('gives every call its own principal and works with or without a JSON body', async () => {
+    const app = await anonymousApp();
+    try {
+      const withBody = await app.inject({ method: 'POST', url: '/v1/auth/anonymous-session', payload: {} });
+      const plain = await app.inject({ method: 'POST', url: '/v1/auth/anonymous-session' });
+      expect(withBody.statusCode).toBe(200);
+      expect(plain.statusCode).toBe(200);
+      const first = await app.inject({ method: 'GET', url: '/v1/auth/me', headers: { cookie: cookieFrom(withBody.headers['set-cookie']) } });
+      const second = await app.inject({ method: 'GET', url: '/v1/auth/me', headers: { cookie: cookieFrom(plain.headers['set-cookie']) } });
+      expect((first.json() as { principalId: string }).principalId).not.toBe((second.json() as { principalId: string }).principalId);
+      expect(countRows(db, 'principals')).toBe(2);
+    } finally {
+      await app.close();
+    }
   });
 });

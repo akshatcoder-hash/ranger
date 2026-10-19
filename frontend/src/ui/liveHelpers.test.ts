@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { DEMO_PROJECT_ID, applyEventPage, executionBlockers, isLiveProjectId, latestPreparation, mergeEvents, parseLines, normalizeCredential, planCreateOutcome, projectViewEngineerName, validateRepositoryInput } from './liveHelpers'
+import { advancePreparationClock, applyEventPage, averageIndexRate, executionBlockers, formatBytes, formatDuration, indexingRate, isProjectId, latestPreparation, mergeEvents, parseLines, planCreateOutcome, preparationIsActive, projectViewEngineerName, validateRepositoryInput } from './liveHelpers'
 
-describe('isLiveProjectId', () => {
-  it('accepts backend project ids and rejects the demo id', () => {
-    expect(isLiveProjectId('prj_0e2f6c9a-2222-4c3d-9f4e-2b7c5d1a3f10')).toBe(true)
-    expect(isLiveProjectId(DEMO_PROJECT_ID)).toBe(false)
-    expect(isLiveProjectId('prj_../x')).toBe(false)
-    expect(isLiveProjectId(null)).toBe(false)
+describe('isProjectId', () => {
+  it('accepts backend project ids and rejects anything else', () => {
+    expect(isProjectId('prj_0e2f6c9a-2222-4c3d-9f4e-2b7c5d1a3f10')).toBe(true)
+    expect(isProjectId('northstar-return-support')).toBe(false)
+    expect(isProjectId('prj_../x')).toBe(false)
+    expect(isProjectId(null)).toBe(false)
   })
 })
 
@@ -56,6 +56,12 @@ describe('validateRepositoryInput', () => {
     expect(validateRepositoryInput('ssh://git@github.com/o/r.git', 'main')).not.toBeNull()
     expect(validateRepositoryInput('https://github.com/o/r', 'a b')).not.toBeNull()
     expect(validateRepositoryInput('https://github.com/o/r', '')).not.toBeNull()
+  })
+
+  it('does not tell the user a remote URL is only a reference', () => {
+    for (const bad of ['ssh://git@github.com/o/r.git', 'http://github.com/o/r', 'git@github.com:o/r.git', 'https://user:pw@github.com/o/r', '']) {
+      expect(validateRepositoryInput(bad, 'main') ?? '').not.toMatch(/reference|does not load|don.t load/i)
+    }
   })
 })
 
@@ -144,37 +150,94 @@ describe('applyEventPage', () => {
   })
 })
 
-describe('normalizeCredential', () => {
-  it('accepts a bare token and trims whitespace', () => {
-    expect(normalizeCredential('  rng_abc123\n')).toBe('rng_abc123')
-  })
-
-  it('accepts the exact bootstrap file line', () => {
-    expect(normalizeCredential('RANGER_BOOTSTRAP_TOKEN=rng_abc123\n')).toBe('rng_abc123')
-    expect(normalizeCredential('  RANGER_BOOTSTRAP_TOKEN= rng_abc123  ')).toBe('rng_abc123')
-  })
-
-  it('rejects empty values, empty prefixed values and multi-part input', () => {
-    expect(normalizeCredential('   ')).toBeNull()
-    expect(normalizeCredential('RANGER_BOOTSTRAP_TOKEN=')).toBeNull()
-    expect(normalizeCredential('RANGER_BOOTSTRAP_TOKEN=rng_a rng_b')).toBeNull()
-    expect(normalizeCredential('rng_a\nOTHER=secret')).toBeNull()
-  })
-
-  it('does not extract tokens from other prefixes', () => {
-    expect(normalizeCredential('export RANGER_BOOTSTRAP_TOKEN=rng_abc')).toBeNull()
-    expect(normalizeCredential('ranger_bootstrap_token=rng_abc')).toBe('ranger_bootstrap_token=rng_abc')
+describe('projectViewEngineerName', () => {
+  it('never leaks a previous project name when no project is loaded', () => {
+    expect(projectViewEngineerName(null)).toBe('Ranger')
+    expect(projectViewEngineerName(undefined)).toBe('Ranger')
+    expect(projectViewEngineerName('Loaded')).toBe('Loaded')
   })
 })
 
-describe('projectViewEngineerName', () => {
-  it('never leaks a previous project name when no project is loaded', () => {
-    expect(projectViewEngineerName(false, 'BinLabeler', null)).toBe('Ranger')
-    expect(projectViewEngineerName(false, 'BinLabeler', undefined)).toBe('Ranger')
-    expect(projectViewEngineerName(false, 'draft', 'Loaded')).toBe('Loaded')
+describe('preparation speeds', () => {
+  const prep = (sequence: number, data: Record<string, unknown>) => ({ eventId: `e${sequence}`, sequence, type: 'workspace.preparation.updated', data })
+
+  it('carries cloneElapsedMs only when an event reported it', () => {
+    const ready = latestPreparation([
+      prep(1, { jobId: 'job_1', phase: 'preparing' }),
+      prep(2, { jobId: 'job_1', phase: 'indexing', cloneElapsedMs: 2400, fileCount: 10 }),
+      prep(3, { jobId: 'job_1', phase: 'ready', indexElapsedMs: 800, elapsedMs: 3500, byteCount: 2048, repositoryCommit: 'abc123' }),
+    ])
+    expect(ready).toEqual({ jobId: 'job_1', phase: 'ready', cloneElapsedMs: 2400, fileCount: 10, indexElapsedMs: 800, elapsedMs: 3500, byteCount: 2048, repositoryCommit: 'abc123' })
+    expect(latestPreparation([prep(1, { jobId: 'job_1', phase: 'ready' })])?.cloneElapsedMs).toBeUndefined()
+    expect(latestPreparation([prep(1, { jobId: 'job_1', phase: 'ready', cloneElapsedMs: -5 })])?.cloneElapsedMs).toBeUndefined()
   })
 
-  it('uses the local name in demo mode', () => {
-    expect(projectViewEngineerName(true, 'Sample', null)).toBe('Sample')
+  it('does not carry fields across jobs', () => {
+    const status = latestPreparation([prep(1, { jobId: 'job_1', phase: 'ready', fileCount: 9 }), prep(2, { jobId: 'job_2', phase: 'queued' })])
+    expect(status).toEqual({ jobId: 'job_2', phase: 'queued' })
+  })
+
+  it('treats queued, preparing and indexing as active and ready, failed and nothing as finished', () => {
+    expect(preparationIsActive({ jobId: 'j', phase: 'queued' })).toBe(true)
+    expect(preparationIsActive({ jobId: 'j', phase: 'preparing' })).toBe(true)
+    expect(preparationIsActive({ jobId: 'j', phase: 'indexing' })).toBe(true)
+    expect(preparationIsActive({ jobId: 'j', phase: 'ready' })).toBe(false)
+    expect(preparationIsActive({ jobId: 'j', phase: 'failed' })).toBe(false)
+    expect(preparationIsActive(null)).toBe(false)
+  })
+
+  it('computes files per second from the last two consecutive indexing events', () => {
+    const events = [
+      prep(1, { jobId: 'job_1', phase: 'preparing' }),
+      prep(2, { jobId: 'job_1', phase: 'indexing', fileCount: 100, indexElapsedMs: 1000 }),
+      prep(3, { jobId: 'job_1', phase: 'indexing', fileCount: 700, indexElapsedMs: 2000 }),
+      prep(4, { jobId: 'job_1', phase: 'indexing', fileCount: 1300, indexElapsedMs: 4000 }),
+    ]
+    expect(indexingRate(events)).toBe(300)
+  })
+
+  it('falls back to a single event\'s own totals and never fabricates a rate', () => {
+    expect(indexingRate([prep(1, { jobId: 'job_1', phase: 'indexing', fileCount: 500, indexElapsedMs: 500 })])).toBe(1000)
+    expect(indexingRate([prep(1, { jobId: 'job_1', phase: 'indexing', fileCount: 500 })])).toBeNull()
+    expect(indexingRate([prep(1, { jobId: 'job_1', phase: 'indexing', fileCount: 500, indexElapsedMs: 0 })])).toBeNull()
+    expect(indexingRate([prep(1, { jobId: 'job_1', phase: 'preparing', elapsedMs: 900 })])).toBeNull()
+    expect(indexingRate([])).toBeNull()
+  })
+
+  it('ignores indexing events from an earlier job', () => {
+    const events = [
+      prep(1, { jobId: 'job_old', phase: 'indexing', fileCount: 9000, indexElapsedMs: 1000 }),
+      prep(2, { jobId: 'job_new', phase: 'indexing', fileCount: 50, indexElapsedMs: 500 }),
+    ]
+    expect(indexingRate(events)).toBe(100)
+  })
+
+  it('averages a finished index from its own totals only', () => {
+    expect(averageIndexRate({ jobId: 'j', phase: 'ready', fileCount: 1280, indexElapsedMs: 640 })).toBe(2000)
+    expect(averageIndexRate({ jobId: 'j', phase: 'ready', fileCount: 1280 })).toBeNull()
+    expect(averageIndexRate({ jobId: 'j', phase: 'ready', fileCount: 0, indexElapsedMs: 0 })).toBeNull()
+  })
+
+  it('starts a client stopwatch per job and restarts the phase timer only when the phase changes', () => {
+    const first = advancePreparationClock(null, { jobId: 'j1', phase: 'queued' }, 1000)
+    expect(first).toEqual({ jobId: 'j1', phase: 'queued', jobStartedAt: 1000, phaseStartedAt: 1000 })
+    expect(advancePreparationClock(first, { jobId: 'j1', phase: 'queued' }, 2000)).toBe(first)
+    expect(advancePreparationClock(first, { jobId: 'j1', phase: 'indexing' }, 3000)).toEqual({ jobId: 'j1', phase: 'indexing', jobStartedAt: 1000, phaseStartedAt: 3000 })
+    expect(advancePreparationClock(first, { jobId: 'j2', phase: 'queued' }, 4000)).toEqual({ jobId: 'j2', phase: 'queued', jobStartedAt: 4000, phaseStartedAt: 4000 })
+    expect(advancePreparationClock(first, null, 5000)).toBeNull()
+  })
+
+  it('seeds a job first seen mid-flight from the elapsed time the backend already reported', () => {
+    expect(advancePreparationClock(null, { jobId: 'j1', phase: 'indexing', elapsedMs: 2500 }, 10_000)).toEqual({ jobId: 'j1', phase: 'indexing', jobStartedAt: 7500, phaseStartedAt: 10_000 })
+  })
+
+  it('formats durations and sizes for a readout', () => {
+    expect(formatDuration(840)).toBe('0.84 s')
+    expect(formatDuration(1240)).toBe('1.2 s')
+    expect(formatDuration(12_400)).toBe('12.4 s')
+    expect(formatDuration(125_000)).toBe('2m 05s')
+    expect(formatBytes(512)).toBe('512 B')
+    expect(formatBytes(2048)).toBe('2.0 KB')
+    expect(formatBytes(5 * 1024 * 1024)).toBe('5.0 MB')
   })
 })
