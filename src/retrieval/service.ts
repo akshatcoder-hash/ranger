@@ -126,13 +126,16 @@ function notReadyError(reason: 'not_indexed' | 'stale' | 'mirror_mismatch'): Ret
       });
 }
 
-function sourceStamp(db: DatabaseSync, projectId: string): string {
-  const row = db
-    .prepare(
-      'SELECT COUNT(*) AS c, COALESCE(SUM(size_bytes), 0) AS b, COALESCE(MAX(updated_at), 0) AS m FROM workspace_source_files WHERE project_id = ?',
-    )
-    .get(projectId) as { c: number; b: number; m: number };
-  return `${row.c}:${row.b}:${row.m}`;
+/**
+ * Invalidate on writes from this connection AND other connections/processes.
+ * Source-count/size/MAX(timestamp) aggregates are not a change token: an edit
+ * can keep all three unchanged. Unrelated database writes may cause a harmless
+ * rehash; source changes must never be hidden by a cached readiness result.
+ */
+function sourceStamp(db: DatabaseSync): string {
+  const local = db.prepare('SELECT total_changes() AS changes').get() as { changes: number };
+  const external = db.prepare('PRAGMA data_version').get() as { data_version: number };
+  return `${local.changes}:${external.data_version}`;
 }
 
 function toIndexStats(state: PersistedIndexState): TraceIndexStats {
@@ -171,17 +174,19 @@ export class RetrievalService {
   readiness(projectId: string): IndexReadiness {
     const persisted = readIndexState(this.options.config.dataDir, projectId);
     if (persisted === null) return { ready: false, reason: 'not_indexed', state: null };
-    const stamp = sourceStamp(this.options.db, projectId);
+    // The mirror is outside SQLite, so validate its HEAD even when the
+    // database change token still matches a previously verified fingerprint.
+    if (this.mirrorFor(projectId).headCommit() !== persisted.mirrorHead) {
+      this.verified.delete(projectId);
+      return { ready: false, reason: 'mirror_mismatch', state: persisted };
+    }
+    const stamp = sourceStamp(this.options.db);
     const key = `${persisted.snapshotId}:${persisted.mirrorHead}:${stamp}`;
     if (this.verified.get(projectId) === key) return { ready: true, state: persisted };
     const current = fingerprintSource(listAllSourceFiles(this.options.db, projectId));
     if (current.fingerprint !== persisted.sourceFingerprint) {
       this.verified.delete(projectId);
       return { ready: false, reason: 'stale', state: persisted };
-    }
-    if (this.mirrorFor(projectId).headCommit() !== persisted.mirrorHead) {
-      this.verified.delete(projectId);
-      return { ready: false, reason: 'mirror_mismatch', state: persisted };
     }
     this.verified.set(projectId, key);
     return { ready: true, state: persisted };
@@ -235,7 +240,7 @@ export class RetrievalService {
     const state = this.stateFor(projectId);
     return runIndexedExclusively(async () => {
       const startedAt = Date.now();
-      const stampBefore = sourceStamp(this.options.db, projectId);
+      const stampBefore = sourceStamp(this.options.db);
       const synced = await mirror.sync(this.options.db, projectId);
       const stats = await indexMirror({
         traceRoot: this.options.config.providers.traceRoot,
