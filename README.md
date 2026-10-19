@@ -248,6 +248,42 @@ OpenAPI documents, and the generated typed client. A unit test fails if any
 artifact drifts. The changelog (`docs/contract-changelog.md`) records every
 published version; current: **v1**.
 
+## Trace retrieval (local setup)
+
+Retrieval runs the real pinned Trace (`bd7f255339a45a5bf41bcdc2be650626c497e2b2`)
+from a sibling checkout. By default Ranger looks for it at `../trace` next to
+this repository and keeps indexes and the embedding model in
+`~/.cache/ranger-trace` (outside git). To use other locations, set
+`providers.traceRoot` / `providers.traceHome` (absolute paths) in the file named
+by `RANGER_CONFIG_FILE` (see `config/ranger.config.example.json`).
+
+```sh
+# Node >= 24 and pnpm 12 (e.g. via corepack) on PATH
+# Run from the Ranger checkout root; the subshell keeps the shell's cwd here
+# regardless of what the sibling Trace checkout is named.
+(
+  cd ../trace
+  git rev-parse HEAD                  # must print the pinned commit above
+  pnpm install --frozen-lockfile
+  pnpm build
+
+  # One-time embedding model download (Hugging Face, ~162 MB) into the Ranger cache.
+  # Ranger itself indexes with --no-model-download, so this must happen first.
+  # A unique temporary seed directory is created with mktemp so nothing existing
+  # is ever overwritten; it is left in place (the Trace index may reference it)
+  # and its location is printed below for later cleanup if desired.
+  SEED_DIR="$(mktemp -d)"
+  mkdir -p "$SEED_DIR/src" && echo 'export const seed = 1;' > "$SEED_DIR/src/seed.ts"
+  TRACE_HOME="$HOME/.cache/ranger-trace" node packages/cli/dist/bin.js index "$SEED_DIR"
+  echo "Trace seed directory (safe to delete once no longer needed): $SEED_DIR"
+)
+
+npm run test:integration -- tests/integration/trace-retrieval.int.test.ts
+```
+
+`npm run bootstrap -- --trace` verifies the pin, install, build and model-cache
+presence for the configured locations.
+
 ## Retrieve and run over SSH
 
 The repository lives on the development VM at

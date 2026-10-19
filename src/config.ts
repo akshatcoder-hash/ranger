@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import path from 'node:path';
+import { resolveRepoRoot } from './identity/repo-root.js';
 
 /**
  * Central configuration for all Ranger processes (API, worker, preview).
@@ -104,9 +106,11 @@ export const DEFAULT_PROVIDERS: ProviderConfig = {
   xaiVoiceModel: 'grok-voice-3.0',
   xaiVisionModel: 'grok-4.3',
   xaiCodingModel: 'grok-4.3',
-  traceRoot: '/home/factory-user/repos/trace',
+  // Sibling checkout next to this repository; override with providers.traceRoot
+  // in the RANGER_CONFIG_FILE. resolveRepoRoot works from src/ and dist/src/.
+  traceRoot: path.join(path.dirname(resolveRepoRoot(import.meta.dirname)), 'trace'),
   tracePinnedCommit: 'bd7f255339a45a5bf41bcdc2be650626c497e2b2',
-  traceHome: '/home/factory-user/.cache/ranger-trace',
+  traceHome: path.join(homedir(), '.cache', 'ranger-trace'),
 };
 
 export class ConfigError extends Error {

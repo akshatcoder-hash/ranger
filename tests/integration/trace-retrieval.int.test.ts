@@ -5,7 +5,7 @@ import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { afterAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { loadConfig, type RangerConfig } from '../../src/config.js';
+import { DEFAULT_PROVIDERS, loadConfig, type RangerConfig } from '../../src/config.js';
 import { openDatabase } from '../../src/db/db.js';
 import { runMigrations } from '../../src/db/migrate.js';
 import { buildApiServer } from '../../src/http/app.js';
@@ -23,7 +23,8 @@ import { verifyTracePin } from '../../src/retrieval/trace-pin.js';
  * No live paid provider and no Instabox VM is involved.
  */
 
-const TRACE_ROOT = '/home/factory-user/repos/trace';
+const TRACE_ROOT = DEFAULT_PROVIDERS.traceRoot;
+const TRACE_HOME = DEFAULT_PROVIDERS.traceHome;
 const PINNED = 'bd7f255339a45a5bf41bcdc2be650626c497e2b2';
 const LONG = 300_000;
 
@@ -132,7 +133,7 @@ afterAll(() => {
   }
   while (cleanupIndexDirs.length > 0) {
     const dir = cleanupIndexDirs.pop();
-    if (dir !== undefined && dir.startsWith(path.join('/home/factory-user', '.cache', 'ranger-trace'))) {
+    if (dir !== undefined && dir.startsWith(TRACE_HOME)) {
       rmSync(dir, { recursive: true, force: true });
     }
   }
