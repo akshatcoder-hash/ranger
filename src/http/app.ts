@@ -70,7 +70,7 @@ export async function buildApiServer(opts: ApiServerOptions): Promise<FastifyIns
   const context: HandlerContext = {
     config: opts.config,
     db: opts.db,
-    secrets: new SecretResolver(opts.config.secretFile),
+    secrets: SecretResolver.fromConfig(opts.config),
   };
   const { http: handlerMap, ws: wsHandlerMap } = buildHandlerMaps(context);
   if (opts.handlerOverrides !== undefined) {

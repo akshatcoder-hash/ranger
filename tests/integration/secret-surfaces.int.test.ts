@@ -96,6 +96,32 @@ afterAll(() => {
   }
 });
 
+describe('compiled bootstrap secret-source selection', () => {
+  it('ignores ambient provider keys by default and accepts explicit environment opt-in without exposing them', async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'ranger-boot-env-'));
+    const env = {
+      RANGER_DATA_DIR: dataDir,
+      RANGER_CONFIG_FILE: '',
+      RANGER_SECRET_FILE: '',
+      RANGER_SECRET_SOURCE: '',
+      XAI_API_KEY: 'synthetic-bootstrap-env-xai',
+      INSTABOX_API_KEY: 'synthetic-bootstrap-env-instabox',
+    };
+    const defaultSource = await capture(spawnBootstrap([], env));
+    expect(defaultSource.code, defaultSource.stderr).toBe(0);
+    expect(defaultSource.stdout).toContain('secret source: file');
+    expect(defaultSource.stdout).toContain('provider keys present: none');
+
+    const optedIn = await capture(spawnBootstrap([], { ...env, RANGER_SECRET_SOURCE: 'environment' }));
+    expect(optedIn.code, optedIn.stderr).toBe(0);
+    expect(optedIn.stdout).toContain('secret source: environment');
+    expect(optedIn.stdout).toContain('provider keys present: XAI_API_KEY, INSTABOX_API_KEY');
+    for (const result of [defaultSource, optedIn]) {
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain('synthetic-bootstrap-env-');
+    }
+  });
+});
+
 describe('compiled bootstrap credential containment', () => {
   it('refuses docs, root and dist destinations and an external symlink before creating a file', async () => {
     const dataDir = mkdtempSync(path.join(tmpdir(), 'ranger-boot-data-'));

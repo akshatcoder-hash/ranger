@@ -20,6 +20,7 @@ describe('loadConfig', () => {
     expect(config.port).toBe(3100);
     expect(config.previewPort).toBe(3101);
     expect(config.secretFile).toBeNull();
+    expect(config.secretSource).toBe('file');
     expect(config.liveBudgetFile).toBeNull();
     expect(config.limits.maxConcurrentRuns).toBe(1);
   });
@@ -39,7 +40,39 @@ describe('loadConfig', () => {
     expect(config.port).toBe(3901);
     expect(config.previewPort).toBe(3902);
     expect(config.secretFile).toBe('/tmp/ranger-test-secrets');
+    expect(config.secretSource).toBe('file');
     expect(config.liveBudgetFile).toBe('/tmp/ranger-test-budget.json');
+  });
+
+  it('requires explicit process opt-in before selecting environment secrets', async () => {
+    const config = await loadConfig(envWith({
+      RANGER_SECRET_SOURCE: 'environment',
+      XAI_API_KEY: 'synthetic-env-key',
+    }), { requireDataDir: false });
+    expect(config.secretSource).toBe('environment');
+    expect(config.secretFile).toBeNull();
+    expect(JSON.stringify(config)).not.toContain('synthetic-env-key');
+
+    const defaultConfig = await loadConfig(envWith({ XAI_API_KEY: 'synthetic-env-key' }), { requireDataDir: false });
+    expect(defaultConfig.secretSource).toBe('file');
+  });
+
+  it('rejects ambiguous and unsupported secret source settings', async () => {
+    await expect(loadConfig(envWith({
+      RANGER_SECRET_SOURCE: 'environment', RANGER_SECRET_FILE: '/not-read',
+    }), { requireDataDir: false })).rejects.toThrow(/Unset RANGER_SECRET_FILE/);
+    await expect(loadConfig(envWith({
+      RANGER_SECRET_SOURCE: 'ambient',
+    }), { requireDataDir: false })).rejects.toThrow(/must be file or environment/);
+  });
+
+  it('does not allow a JSON config file to opt into ambient provider secrets', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'ranger-config-'));
+    const cfgFile = path.join(dir, 'ranger.config.json');
+    writeFileSync(cfgFile, JSON.stringify({ secretSource: 'environment', secretFile: '/not-read' }));
+    const config = await loadConfig(envWith({ RANGER_CONFIG_FILE: cfgFile }), { requireDataDir: false });
+    expect(config.secretSource).toBe('file');
+    expect(config.secretFile).toBeNull();
   });
 
   it('rejects non-integer ports', async () => {

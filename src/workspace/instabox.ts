@@ -15,7 +15,7 @@ import {
   WORKLOAD_USER,
   fencedWorkloadCommand,
 } from './limits.js';
-import { guestWriteCommand } from './guest-write.js';
+import { guestWriteCommand, guestWriteVerified } from './guest-write.js';
 import { guestWriteDetail } from './diagnostics.js';
 import { FakeInstabox } from './fake-provider.js';
 import type { InstaboxProvider, ProviderCreateRequest } from './provider.js';
@@ -262,19 +262,19 @@ export class InstaboxWorkspace {
     // so a failed write is never persisted.
     const result = await this.options.provider.exec({
       machineId: current.machineId,
-      command: guestWriteCommand(relativePath),
+      command: guestWriteCommand(relativePath, bytes),
       user: WORKLOAD_USER,
       stdin: bytes.toString('base64'),
       timeoutMs: 30_000,
     });
-    if (result.exitCode !== 0) {
+    if (!guestWriteVerified(result, bytes)) {
       // Same failure shape as the public API write path: the SDK's exitCode
       // and timedOut/truncated flags ride the structured details, so a
       // timeout kill is never collapsed into a bare message. Detail text
       // stays redacted and bounded.
       throw Errors.conflict('Workspace file was not written in the guest', {
         reason: 'guest_write_failed',
-        detail: guestWriteDetail(result.stderr, result.stdout),
+        detail: result.exitCode === 0 ? 'guest-write-verification-failed' : guestWriteDetail(result.stderr, result.stdout),
         exitCode: result.exitCode,
         timedOut: result.timedOut,
         truncated: result.truncated,

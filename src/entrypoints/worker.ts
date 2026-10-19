@@ -44,7 +44,7 @@ export async function main(): Promise<void> {
   }
   const scriptTransport = scriptedTransportFromEnv(process.env);
 
-  const secrets = new SecretResolver(config.secretFile);
+  const secrets = SecretResolver.fromConfig(config);
   const retrieval = new RetrievalService({ db, config });
   const handlers = new Map<string, JobHandler>();
   handlers.set(RUN_JOB_TYPE, engineeringRunHandler({ db, config, retrieval, transportFactory: scriptTransport ?? undefined }));

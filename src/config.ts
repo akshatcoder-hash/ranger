@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { resolveRepoRoot } from './identity/repo-root.js';
+import type { SecretSource } from './secrets.js';
 
 /**
  * Central configuration for all Ranger processes (API, worker, preview).
@@ -9,7 +10,8 @@ import { resolveRepoRoot } from './identity/repo-root.js';
  * Values come from environment variables plus an optional JSON config file
  * (RANGER_CONFIG_FILE). The config file may tighten limits but never widens
  * them beyond documented maxima. Secrets are NOT part of config: they are
- * selected on demand from RANGER_SECRET_FILE by src/secrets.ts.
+ * selected on demand by src/secrets.ts from the protected file (default)
+ * or an explicitly opted-in process environment.
  */
 
 export const CONTRACT_VERSION = 'v1' as const;
@@ -72,8 +74,10 @@ export interface RangerConfig {
   port: number;
   previewPort: number;
   dataDir: string;
-  /** Path to the protected file holding provider keys; unset means unavailable. */
+  /** Protected-file path; required for provider keys when source is file. */
   secretFile: string | null;
+  /** Environment keys are unavailable unless explicitly selected by the operator. */
+  secretSource: SecretSource;
   /** Path to the shared live-test budget ledger; unset means live ops are refused. */
   liveBudgetFile: string | null;
   /** Optional JSON config file with limit/provider overrides. */
@@ -239,6 +243,16 @@ export async function loadConfig(
 ): Promise<RangerConfig> {
   const configFile = readString(env, 'RANGER_CONFIG_FILE');
   const fileConfig = await readConfigFile(configFile);
+  // Source selection is an explicit process setting, never a JSON-file
+  // override. Ambient key presence alone must not enable live providers.
+  const secretSource = readString(env, 'RANGER_SECRET_SOURCE') ?? 'file';
+  if (secretSource !== 'file' && secretSource !== 'environment') {
+    throw new ConfigError('RANGER_SECRET_SOURCE must be file or environment');
+  }
+  const secretFile = readString(env, 'RANGER_SECRET_FILE') ?? null;
+  if (secretSource === 'environment' && secretFile !== null) {
+    throw new ConfigError('Unset RANGER_SECRET_FILE when RANGER_SECRET_SOURCE=environment');
+  }
 
   const dataDir = readString(env, 'RANGER_DATA_DIR') ?? fileConfig.dataDir;
   if (opts.requireDataDir !== false && dataDir === undefined) {
@@ -256,7 +270,8 @@ export async function loadConfig(
     port: readInt(env, 'RANGER_PORT') ?? DEFAULT_PORT,
     previewPort: readInt(env, 'RANGER_PREVIEW_PORT') ?? DEFAULT_PREVIEW_PORT,
     dataDir: dataDir ?? '.',
-    secretFile: readString(env, 'RANGER_SECRET_FILE') ?? null,
+    secretFile,
+    secretSource,
     liveBudgetFile: readString(env, 'RANGER_LIVE_BUDGET_FILE') ?? null,
     configFile: configFile ?? null,
     approvedSnapshotRoots: resolveApprovedSnapshotRoots(env, fileConfig),

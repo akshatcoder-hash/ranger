@@ -140,7 +140,7 @@ async function executeRun(deps: RunExecutorDeps, run: RunRow, claim: { workerId:
     // configured protected key. An unconfigured provider fails the run
     // explicitly BEFORE any workspace create — never a fake success.
     const transport = resolveTransport(deps);
-    const workspace = new WorkspaceService({ db, config: deps.config, secrets: new SecretResolver(deps.config.secretFile) });
+    const workspace = new WorkspaceService({ db, config: deps.config, secrets: SecretResolver.fromConfig(deps.config) });
 
     // Initial-source bridge (the proven window2 gap): a connected
     // approved-root repository materializes into persisted source BEFORE
@@ -300,7 +300,7 @@ export async function seedSavedSource(db: DatabaseSync, projectId: string, works
 /** Terminate the run's still-running commands, then destroy the workspace. */
 async function bestEffortCleanup(deps: RunExecutorDeps, run: RunRow): Promise<void> {
   try {
-    const workspace = new WorkspaceService({ db: deps.db, config: deps.config, secrets: new SecretResolver(deps.config.secretFile) });
+    const workspace = new WorkspaceService({ db: deps.db, config: deps.config, secrets: SecretResolver.fromConfig(deps.config) });
     for (const command of listCommandsForRun(deps.db, run.id)) {
       if (command.state !== 'running') continue;
       try {
@@ -328,7 +328,7 @@ function runDeadlineMs(db: DatabaseSync, projectId: string): number {
 
 function resolveTransport(deps: RunExecutorDeps): ResponsesTransport {
   if (deps.transportFactory !== undefined) return deps.transportFactory('deterministic-test-key');
-  const secrets = new SecretResolver(deps.config.secretFile);
+  const secrets = SecretResolver.fromConfig(deps.config);
   return new OpenAiResponsesTransport(secrets.get('XAI_API_KEY'));
 }
 

@@ -19,7 +19,7 @@ import {
   foregroundCommandMarker,
   isFixedPreviewPort,
 } from './limits.js';
-import { guestWriteCommand } from './guest-write.js';
+import { guestWriteCommand, guestWriteVerified } from './guest-write.js';
 import { guestWriteDetail } from './diagnostics.js';
 import { bootstrapWorkload } from './bootstrap.js';
 import { armWorkspaceWatchdog, destroyFailedBootstrap, destroyRecordedWorkspace } from './cleanup.js';
@@ -222,12 +222,12 @@ export class WorkspaceService {
     // presented as saved source.
     const written = await providerFor(this.options).exec({
       machineId: workspace.machineId!,
-      command: guestWriteCommand(relativePath),
+      command: guestWriteCommand(relativePath, content),
       user: WORKLOAD_USER,
       stdin: content.toString('base64'),
       timeoutMs: 30_000,
     });
-    if (written.exitCode !== 0) {
+    if (!guestWriteVerified(written, content)) {
       // Preserve the SDK failure fields through guest_write_failed: the
       // numeric exitCode and the timedOut/truncated flags distinguish a
       // kill-at-deadline from an instant silent exit (the window1 evidence
@@ -235,7 +235,7 @@ export class WorkspaceService {
       // are structured values, so no payload or secret can ride them.
       throw Errors.conflict('Workspace file was not written in the guest', {
         reason: 'guest_write_failed',
-        detail: guestWriteDetail(written.stderr, written.stdout),
+        detail: written.exitCode === 0 ? 'guest-write-verification-failed' : guestWriteDetail(written.stderr, written.stdout),
         exitCode: written.exitCode,
         timedOut: written.timedOut,
         truncated: written.truncated,

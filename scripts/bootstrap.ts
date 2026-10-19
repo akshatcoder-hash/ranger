@@ -31,7 +31,7 @@ const db = openDatabase(config.dataDir);
 runMigrations(db, migrationsDirFromCwd());
 const migrations = appliedMigrations(db);
 
-const secrets = new SecretResolver(config.secretFile);
+const secrets = SecretResolver.fromConfig(config);
 const secretNames = secrets.presentNames();
 
 // Compiled entry lives at dist/scripts; one parent is dist, not the repo.
@@ -112,7 +112,8 @@ if (createPrincipalArg >= 0 || additionalPrincipalArg >= 0) {
       'bootstrap:',
       `  data dir: ${config.dataDir} (writable)`,
       `  migrations applied: ${migrations.length}`,
-      `  secret file configured: ${config.secretFile !== null}`,
+      `  secret source: ${config.secretSource}`,
+      `  secret source configured: ${secrets.isConfigured()}`,
       `  provider keys present: ${secretNames.length > 0 ? secretNames.join(', ') : 'none'}`,
       `  live budget ledger configured: ${config.liveBudgetFile !== null}`,
       `  contract version: v1`,

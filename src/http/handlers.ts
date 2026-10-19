@@ -92,14 +92,14 @@ export function buildHandlerMaps(context: HandlerContext): HandlerMaps {
         xai: {
           configured: present.has('XAI_API_KEY'),
           detail: present.has('XAI_API_KEY')
-            ? 'Key selected from the protected file into process memory only'
-            : 'No XAI_API_KEY in the configured secret file',
+            ? 'Key selected from the configured source into process memory only'
+            : 'No XAI_API_KEY in the configured secret source',
         },
         instabox: {
           configured: present.has('INSTABOX_API_KEY'),
           detail: present.has('INSTABOX_API_KEY')
-            ? 'Key selected from the protected file into process memory only'
-            : 'No INSTABOX_API_KEY in the configured secret file',
+            ? 'Key selected from the configured source into process memory only'
+            : 'No INSTABOX_API_KEY in the configured secret source',
         },
         trace: traceStatus(context.config),
       },

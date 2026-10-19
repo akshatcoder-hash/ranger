@@ -276,7 +276,7 @@ async function executePrepare(
   /** True only after THIS job's create succeeded: the VM it owns and must clean up. */
   let created = false;
 
-  const workspace = new WorkspaceService({ db, config, secrets: new SecretResolver(config.secretFile) });
+  const workspace = new WorkspaceService({ db, config, secrets: SecretResolver.fromConfig(config) });
 
   const finishFailed = async (code: string, cause: unknown): Promise<void> => {
     let message = typeof cause === 'string' ? cause : failureMessage(cause);
