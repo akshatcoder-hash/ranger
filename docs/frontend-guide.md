@@ -2,9 +2,10 @@
 
 Ranger has no product frontend by design. This guide documents how a future
 frontend (or the unstyled diagnostic client under `test tooling`) uses the
-v1 contract. Sections marked *land later* are declared in the contract today
-and return explicit `not_configured` errors until their milestone implements
-them — the guide will grow with each milestone. Never call provider URLs or
+v1 contract. Sections are labeled with the milestone that implemented them;
+any capability declared but not yet implemented returns an explicit
+`not_configured` error, and deferred capabilities are rejected as
+unsupported — never fake success. Never call provider URLs or
 provider keys from the frontend; every provider interaction goes through
 Ranger.
 
@@ -107,7 +108,7 @@ Ranger.
   identical retry returns the stored result with no second side effect or
   duplicate event; reusing a key with different input returns `conflict`.
 
-## Voice (land later: interaction milestone)
+## Voice (implemented: media milestone)
 
 - Start with `startVoiceSession` (project + conversation). Ranger, not the
   browser, connects to the provider realtime relay with the pinned model;
@@ -119,8 +120,13 @@ Ranger.
   voice response. It never pauses or cancels an engineering run.
 - A function call that starts engineering work returns a run reference as an
   event; the work itself runs in the worker process.
+- A dropped provider connection ends that voice session terminally. Recover
+  ONLY with a fresh session (`startVoiceSession`) plus a fresh ticket; no
+  upstream conversation state is reconstructed and no past tool call is
+  replayed. A reconnect attempt against the ended session closes with `4409`
+  (`session_ended`).
 
-## Screen capture (land later: interaction milestone)
+## Screen capture and device diagnostics (implemented: media milestone)
 
 - Capture is client-owned `getDisplayMedia`; grab frames and POST them to
   `ingestCaptureFrame` (base64 JPEG/PNG + client frame id + capture
@@ -131,20 +137,29 @@ Ranger.
   naming affected frames.
 - `endCaptureSession` invalidates the generation: later frames are rejected,
   in-flight inspection is discarded, transient buffers clear. Raw audio and
-  frames are not retained by default; retention is explicit with scope and
-  expiry via `retainEvidence`.
+  frames are never retained; retained-media evidence is an unsupported
+  capability and `retainEvidence` rejects it explicitly.
 - Inspection uses the separate xAI vision API; observations carry text,
   uncertainty and source frame/timestamp. Screen pixels never grant machine
   control.
+- Device diagnostics on the test client return one stable code per outcome:
+  `granted` (labeled `synthetic:true` under browser fake-device flags),
+  `denied`, `no_device`, `unsupported_api`, `runtime_error`, and
+  `device_prompt_pending` while an awaited permission/picker call has not
+  yet settled (a headless picker may never settle). There is no physical
+  microphone or capture display on the development host; no result may
+  claim human permission testing.
 
-## Approvals and runs (land later: orchestration/execution milestones)
+## Approvals and runs (implemented: coding-workflow milestone)
 
 - Plans are versioned; approving binds an exact version plus permitted scope.
 - `startRun` requires an approved plan version; runs are durable, and their
   progress arrives as ordered events on the project stream.
-- Pause/resume/cancel are explicit; cancel terminates the real process tree.
+- Cancel is explicit and terminates the real process tree. There is no
+  pause/resume: an interrupted run fails explicitly and a new run starts
+  from persisted state.
 
-## Streaming desktop/preview (land later: execution milestone)
+## Streaming desktop/preview (implemented: coding-workflow milestone)
 
 - `createDesktopSession` returns a `gatewayPath` on the preview origin; the
   browser renders the live stream via `openDesktopStream` with a ticket.

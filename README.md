@@ -7,18 +7,19 @@ workspaces and pinned Trace retrieval. **Backend only** — there is no product
 frontend; see `docs/frontend-guide.md` for the contract a future frontend
 would use.
 
-This is the **foundation + identity + conversations/events milestone**: the
-project skeleton, migrations, config/error/schema foundations, the complete
-v1 contract (OpenAPI + realtime event schemas + generated typed client), the
-shared live-budget ledger, executable entrypoints, test harnesses, the
-identity layer — bootstrap credentials, hashed API tokens, revocable browser
-sessions, connection tickets, project/membership/engineer-name CRUD and
-durable repository references — plus durable conversations (messages,
-questions/answers, versioned requirements/decisions), the central
-transactional event history with per-project sequences, scoped mutation
-idempotency, and ticket-authenticated cursor replay and live WebSocket event
-subscription. Route families not yet implemented return an explicit
-`501 not_configured` envelope — never fake success.
+This is the **media-delivery milestone state** (foundation, identity,
+conversations/events, coding-workflow and the media features are
+implemented; see "Milestone status" for what is proven versus still blocked):
+the project skeleton, migrations, config/error/schema foundations, the
+complete v1 contract (OpenAPI + realtime event schemas + generated typed
+client), the shared live-budget ledger, executable entrypoints, test
+harnesses, the identity layer, durable conversations with transactional event
+history and cursor replay, the real xAI voice relay and latest-frame
+capture/vision media features with the plain `/diagnostic` test client, and
+the coding-workflow surfaces (plans/approvals, runs, Instabox workspace
+execution, desktop/preview gateway, Trace retrieval). Deferred capabilities
+are removed from the supported contract or explicitly rejected as unsupported
+— never fake success.
 
 ## Requirements
 
@@ -269,25 +270,76 @@ curl -fsS http://127.0.0.1:3100/health
 `<vm-user>@<vm-host>` is your existing SSH access to this VM; nothing else is
 required (no cloud accounts, no public ports).
 
+## Media diagnostic client (test tooling)
+
+`GET /diagnostic` on the API origin serves the unstyled plain test client
+(`src/http/diagnostic.ts`): identity + create conversation, the voice relay
+path (start session, open relay with a fresh ticket, send a synthetic 440 Hz
+PCM tone, text turn, interrupt/flush, read usage, terminal end, fresh-session
+reconnect), getUserMedia/getDisplayMedia diagnostics with stable codes
+(`granted`, `denied`, `no_device`, `unsupported_api`, `runtime_error`,
+`device_prompt_pending`), and the capture path (start capture, ingest a
+synthetic canvas frame, on-demand inspection, end capture, post-end upload
+rejection). It is NOT product UI and NOT part of the v1 contract; the caller
+pastes their own bearer credential (page memory only). Every outcome carries
+a stable code; synthetic browser runs are labeled `synthetic:true` and no
+result may claim human permission testing — this host has no physical
+microphone or capture display, so physical-device paths are NOT TESTED.
+
+Deterministic test evidence for the browser walk (Chromium fake-device flags
+against the existing `setRealtimeProviderForTests` /
+`setVisionTransportForTests` seams — fake local provider and scripted vision,
+no keys, no live dials) is recorded in the mission's
+`validation/media-delivery/` directory, not in this repository.
+
 ## Milestone status (honest)
 
 - Implemented: project/toolchain, migrations, config/errors/secrets, budget
-  ledger, full v1 contract skeleton + typed client, API/worker/preview
-  entrypoints, offline test suites, docs; identity layer (bootstrap
-  principal + protected credential file, hashed API tokens, revocable
-  browser sessions with CSRF/origin checks, single-use connection tickets,
-  project/membership/engineer-name CRUD, durable repository references with
-  real local snapshot resolution); conversations layer (durable
-  conversations/messages/questions/answers, append-only requirement and
-  decision versions, central transactional event append with per-project
-  sequences and append-time schema validation, scoped mutation idempotency,
-  member-authenticated HTTP cursor replay and ticket-gated live WebSocket
-  subscription with slow-consumer and invalid/expired-cursor policies).
-- Not yet implemented (declared, return `not_configured`): voice relay,
-  capture/frames/inspection, plans/approvals, runs, workspace execution,
-  desktop/preview gateway, Trace retrieval. Trace bootstrap (pinned commit +
-  model initialization) arrives with the Trace milestone. The remaining
-  declared WebSocket routes (voice relay, desktop stream) still close with
-  `4501 not_configured` until their features wire ticket consumption.
-- No physical microphone exists on this host; any browser media checks are
-  synthetic and labeled as such.
+  ledger, full v1 contract + typed client, API/worker/preview entrypoints,
+  offline test suites, docs; identity layer (bootstrap principal + protected
+  credential file, hashed API tokens, revocable browser sessions with
+  CSRF/origin checks, single-use connection tickets, project/membership/
+  engineer-name CRUD, durable repository references with real local snapshot
+  resolution); conversations layer (durable conversations/messages/
+  questions/answers, append-only requirement and decision versions, central
+  transactional event append with per-project sequences, scoped mutation
+  idempotency, cursor replay and ticket-gated live WebSocket subscription);
+  coding-workflow layer (plans/approvals, runs, Instabox workspace execution,
+  desktop/preview gateway, Trace retrieval); media layer (real xAI voice
+  relay with server-side keys, ticket-authenticated upgrades, PCM/text/
+  function relay, voice-only interruption, observed usage accounting with
+  shared-budget admission, provider-disconnect ends the session terminally
+  and a fresh ticket starts a fresh session; latest-frame capture with
+  decoded-dimension/byte/rate/order/freshness bounds and a separate on-demand
+  xAI vision call returning structured observations with uncertainty; the
+  plain `/diagnostic` test client).
+- Standalone live evidence (e6b97e5): ONE real xAI voice session relaying
+  synthetic PCM/text plus an engineering function call that enqueued a durable
+  run, ONE real xAI vision call on a synthetic image, and a fresh-session
+  reconnect with zero tool replay over the real transport — all within the
+  shared budget. Audio is synthetic; no physical microphone exists.
+- Synthetic browser evidence (2026-10-19): agent-browser drove the real
+  `/diagnostic` page end-to-end with Chromium fake devices against the
+  deterministic test seams (fake WS provider on loopback, scripted fake
+  vision, no provider keys): full voice path with usage settled at end
+  (0.25 s / 8 tokens), ended-session reject (`4409 session_ended`), fresh
+  reconnect, full capture path with post-end upload rejected `409 conflict`,
+  and every device-diagnostic code exercised with fake/synthetic labels. Two
+  concrete defects found by the walk were fixed with tests first: the
+  diagnostic page now emits `device_prompt_pending` instead of a silent
+  no-op when a headless picker never settles, and the API end now lands the
+  relay's observed-but-unflushed usage in the terminal settlement instead of
+  losing it when end arrives before the 10 s flush tick.
+- Gates at this state: 253 unit, 84 integration, e2e (16 passed, 7 skipped
+  pending live windows), typecheck, lint, build — all passing.
+- NOT passed and not claimed: the INTEGRATED live flows — a real voice
+  session driving a real engineering run end-to-end, run cancellation under
+  live voice, and the changed-requirement customer delivery. ALL new Instabox
+  VM creations are on hold: 8 of the 9-creation cumulative ceiling are
+  consumed, all eight machines are deleted, the provider list is empty, and
+  the ninth creation stays reserved pending orchestrator confirmation; no
+  initial generated saved source exists to seed a later window. xAI budget:
+  observed **$0.5975**, reserved **$0** (caps: $5 total / $4 admission) —
+  this feature made no paid calls (deterministic seams plus reused prior
+  live evidence). The e2e live/demo tests remain skipped until a live window
+  exists.

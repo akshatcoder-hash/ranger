@@ -241,6 +241,9 @@ document.getElementById('btnMic').onclick = async function () {
     diag('unsupported_api', 'getUserMedia is not available in this browser', true);
     return;
   }
+  // A pending prompt must never be a silent no-op: some environments (for
+  // example a headless display-picker) never settle the promise.
+  diag('device_prompt_pending', 'getUserMedia requested: waiting for grant, denial or device error (outcome logged when it settles)', true);
   var stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -274,6 +277,9 @@ document.getElementById('btnDisplay').onclick = async function () {
     diag('unsupported_api', 'getDisplayMedia is not available in this browser', true);
     return;
   }
+  // A pending display-picker must never be a silent no-op: headless or
+  // unattended environments may never settle the promise.
+  diag('device_prompt_pending', 'getDisplayMedia requested: waiting for surface selection, denial or error (outcome logged when it settles)', true);
   var stream;
   try {
     stream = await navigator.mediaDevices.getDisplayMedia({ video: true });

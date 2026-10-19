@@ -1,3 +1,5 @@
+/* eslint-disable no-console -- the LIVE_* stdout lines ARE the retained
+ * evidence of the budgeted live run (statuses/counts/usage only). */
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';

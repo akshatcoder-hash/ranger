@@ -479,7 +479,9 @@ describe('authorized relay roundtrip', () => {
     // explicit, not tied to the client socket).
     const ticket = await voiceTicket();
     const connsBefore = fake.connections;
-    const relay = await relayConnect(sessionId, ticket);
+    // The live relay connection itself is the fixture: the API end must
+    // terminate it (observed via the provider client count below).
+    await relayConnect(sessionId, ticket);
     await waitFor(() => (fake.connections === connsBefore + 1 ? true : null));
     const providersBefore = fake.clients.size;
     const first = await api('POST', `/v1/projects/${projectId}/voice/sessions/${sessionId}/end`);
@@ -491,6 +493,39 @@ describe('authorized relay roundtrip', () => {
     expect((second.json.session as { state: string }).state).toBe('ended');
     const ended = await upgradeRejected(sessionId, await voiceTicket());
     expect(ended.code).toBe(4409);
+  });
+
+  it('records observed usage when the API end lands before the periodic flush', async () => {
+    fake.received.length = 0;
+    const sessionId = await voiceSessionStart();
+    const ticket = await voiceTicket();
+    const relay = await relayConnect(sessionId, ticket);
+    await waitFor(() => (fake.received.some((raw) => raw.includes('session.update')) ? true : null));
+
+    // 0.1s of synthetic PCM plus one scripted provider completion carrying
+    // observed usage; then the API end arrives BEFORE the 10s flush tick.
+    // The terminal settlement must land the observed usage, not lose it.
+    const audio = Buffer.alloc(4800).toString('base64');
+    relay.socket.send(JSON.stringify({ type: 'input_audio_buffer.append', audio }));
+    // Deterministic ordering: the script must see ONLY the response.create,
+    // never the earlier append frame.
+    await waitFor(() => (fake.received.some((raw) => raw.includes('input_audio_buffer.append')) ? true : null));
+    fake.script = [() => [JSON.stringify({ type: 'response.done', usage: { input_tokens: 5, output_tokens: 3 } })]];
+    relay.socket.send(JSON.stringify({ type: 'response.create' }));
+    await waitFor(() => (relay.frames.some((raw) => raw.includes('response.done')) ? true : null));
+
+    const ended = await api('POST', `/v1/projects/${projectId}/voice/sessions/${sessionId}/end`);
+    expect(ended.status).toBe(200);
+    const after = await api('GET', `/v1/projects/${projectId}/voice/sessions/${sessionId}`).then((o) => o.json as { usage: { audioSeconds: number; textTokens: number; toolCalls: number } });
+    expect(after.usage.textTokens).toBe(8); // 5 input + 3 output from the fake usage frame
+    expect(after.usage.audioSeconds).toBeCloseTo(0.1, 2);
+    // Exactly one usage event, and it carries the observed values.
+    const events = await api('GET', `/v1/projects/${projectId}/events?limit=200`).then((o) => o.json.events as Array<{ type: string; data: Record<string, unknown> }>);
+    const recorded = events.filter((event) => event.type === 'voice.usage.recorded' && event.data.sessionId === sessionId);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.data.textTokens).toBe(8);
+    relay.socket.close();
+    await relay.closeEvent;
   });
 
   it('refuses a different model than the configured pinned provider model', async () => {

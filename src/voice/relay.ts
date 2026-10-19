@@ -94,6 +94,8 @@ interface RelayHandle {
   interrupt(): boolean;
   /** Terminal end driven by an explicit API end of the owning session. */
   end(): void;
+  /** Observed-but-unflushed usage, for the API end's terminal settlement. */
+  residual(): UsageDelta;
 }
 
 const activeRelays = new Map<string, RelayHandle>();
@@ -111,6 +113,17 @@ export function endVoiceRelayForSession(sessionId: string): boolean {
   if (handle === undefined) return false;
   handle.end();
   return true;
+}
+
+/**
+ * Observed-but-unflushed usage of a live relay, read by the API end handler
+ * so the terminal row update lands it in the SAME statement: the relay's own
+ * settlement afterwards finds the row already ended and must not lose it.
+ */
+export function residualVoiceRelayUsage(sessionId: string): UsageDelta | null {
+  const handle = activeRelays.get(sessionId);
+  if (handle === undefined) return null;
+  return handle.residual();
 }
 
 function round3(value: number): number {
@@ -685,6 +698,7 @@ export function handleVoiceRelayUpgrade(
     end: (): void => {
       endSession('client_requested');
     },
+    residual: (): UsageDelta => residualUsage(),
     interrupt: (): boolean => {
       if (ended) return false;
       let flushed = false;

@@ -10,7 +10,7 @@ import {
   endVoiceSessionRow,
   getVoiceSessionRow,
 } from '../voice/store.js';
-import { handleVoiceRelayUpgrade, interruptVoiceResponse, endVoiceRelayForSession } from '../voice/relay.js';
+import { handleVoiceRelayUpgrade, interruptVoiceResponse, endVoiceRelayForSession, residualVoiceRelayUsage } from '../voice/relay.js';
 import type { HandlerContext, OperationHandler, WsOperationHandler } from './handlers.js';
 import type { VoiceSessionRow } from '../voice/store.js';
 
@@ -127,8 +127,13 @@ export function registerVoiceHandlers(
       key: idempotencyKeyFrom(req),
       requestHash: requestHash({ params }),
       execute: () => {
+        // Land the live relay's observed-but-unflushed usage in the SAME
+        // terminal statement: endVoiceRelayForSession below finds the row
+        // already ended, so without this the observed usage would be lost
+        // whenever the end arrives before the periodic flush tick.
+        const relayResidual = residualVoiceRelayUsage(sessionId);
         const before = getVoiceSessionRow(db, projectId, sessionId);
-        const after = endVoiceSessionRow(db, projectId, sessionId, 'client_requested');
+        const after = endVoiceSessionRow(db, projectId, sessionId, 'client_requested', relayResidual ?? undefined);
         if (before !== null && before.state === 'active') {
           appendProjectEvent(db, {
             projectId,

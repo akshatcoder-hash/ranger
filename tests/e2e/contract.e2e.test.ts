@@ -17,16 +17,11 @@ const PRJ = 'prj_00000000-1111-4c3d-9f4e-2b7c5d1a3f10';
 const PORT = 3903;
 const BASE = `http://127.0.0.1:${PORT}`;
 
-const NOT_CONFIGURED_FAMILY_SAMPLES: Record<string, (client: RangerClient) => Promise<unknown>> = {
-  voice: (client) =>
-    client.startVoiceSession({
-      path: { projectId: PRJ },
-      body: { conversationId: 'cnv_00000000-2222-4c3d-9f4e-2b7c5d1a3f10' },
-    }),
-  capture: (client) => client.startCaptureSession({ path: { projectId: PRJ }, body: {} }),
-};
-
-/** Families with real handlers: unauthenticated requests fail unauthorized. */
+/**
+ * Families with real handlers: unauthenticated requests fail unauthorized.
+ * Voice and capture were implemented at e6b97e5 (media milestone); before
+ * that they were sampled here as not_configured families.
+ */
 const IMPLEMENTED_FAMILY_SAMPLES: Record<string, (client: RangerClient) => Promise<unknown>> = {
   'credentials-sessions': (client) => client.createApiToken({ body: { name: 'probe' } }),
   'projects-memberships': (client) => client.createProject({ body: { name: 'probe' } }),
@@ -38,7 +33,18 @@ const IMPLEMENTED_FAMILY_SAMPLES: Record<string, (client: RangerClient) => Promi
   runs: (client) => client.listRuns({ path: { projectId: PRJ } }),
   retrieval: (client) => client.retrievalStatus({ path: { projectId: PRJ } }),
   'desktop-preview': (client) => client.createDesktopSession({ path: { projectId: PRJ }, body: {} }),
+  voice: (client) =>
+    client.startVoiceSession({
+      path: { projectId: PRJ },
+      body: { conversationId: 'cnv_00000000-2222-4c3d-9f4e-2b7c5d1a3f10' },
+    }),
+  capture: (client) => client.startCaptureSession({ path: { projectId: PRJ }, body: {} }),
 };
+
+/** Empty today: every declared family has real handlers. A family added to
+ * ROUTE_FAMILIES must be classified here (unfinished -> not_configured
+ * sample) or in the implemented map, or this check fails loudly. */
+const NOT_CONFIGURED_FAMILY_SAMPLES: Record<string, (client: RangerClient) => Promise<unknown>> = {};
 
 let proc: ChildProcess;
 
