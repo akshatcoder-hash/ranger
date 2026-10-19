@@ -77,6 +77,16 @@ An operator credential remains at `/data/ranger/bootstrap-credential.txt`;
 it is not needed in the recording. Never put provider secrets in `VITE_*`
 variables or browser storage.
 
+### Short recording script
+
+- Repository: `https://github.com/jonschlinkert/is-number`, branch `master`.
+- “Prepare this repo. How does it handle numeric strings and invalid input?”
+- “We import amounts from customer CSVs. Add `normalize-number.js` using the
+  existing validator: return a number for valid inputs and null otherwise.
+  Keep existing files unchanged and test it with Node’s built-in assert.”
+- Review and approve the plan, then: “Start the approved work.”
+- In **VM**, try `node -e "console.log(require('./normalize-number')('42.25'))"`.
+
 ## How it was verified (2026-10-19)
 
 - Live: `GET /v1/capabilities` through the public domain → xai

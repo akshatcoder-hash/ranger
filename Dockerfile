@@ -1,7 +1,7 @@
 # Ranger API + durable worker on one Machine. Trace is the pinned sibling
 # bundle, never a fetched remote. Host caches, git checkouts, and secrets
 # stay out of the build context.
-FROM node:24-bookworm-slim AS build
+FROM node:24-trixie-slim AS build
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends git ca-certificates \
@@ -27,11 +27,12 @@ RUN npm install -g pnpm@12.14.0 \
 
 RUN npm run build && npm prune --omit=dev
 
-FROM node:24-bookworm-slim AS runtime
+FROM node:24-trixie-slim AS runtime
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends git ca-certificates \
   && rm -rf /var/lib/apt/lists/* \
+  && git --attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904 --version \
   && npm install -g pnpm@12.14.0
 
 WORKDIR /app/ranger
