@@ -4,18 +4,31 @@
  */
 
 export type ApiReason = 'aborted' | 'unauthorized' | 'unavailable' | 'unsupported' | 'partial' | 'backend'
-export type ApiFailure = { ok: false; reason: ApiReason; message: string }
+export type ApiFailure = {
+  ok: false
+  reason: ApiReason
+  message: string
+  /** Backend error code, when the failure came from a Ranger error envelope. */
+  code?: string
+  /** Backend `details.reason`, for example `capture_ended` or `upload_rate`. */
+  detail?: string
+  retryAfterMs?: number
+}
 export type ApiResult<T> = { ok: true; data: T } | ApiFailure
 
 export type ProjectRequest = { prompt: string; engineerName: string; repository?: string }
 export type PlanDecision = { approved: boolean; planId: string }
-export type MediaSessionRequest = {
-  kind: 'voice' | 'screen'
-  stream: MediaStream
-  projectId: string
-  conversationId: string
+export type VoiceSession = { sessionId: string; model: string; expiresAt: string }
+export type CaptureSession = { sessionId: string; generation: number }
+export type FrameReceipt = { frameId: string; width: number; height: number; byteSize: number; captureTimestamp: string }
+export type InspectionObservation = { text: string; uncertainty: number; sourceFrameId: string; sourceTimestamp: string }
+export type Inspection = {
+  state: 'observed' | 'fresh-frame-requested'
+  observations: InspectionObservation[]
+  sourceFrameId: string | null
+  sourceTimestamp: string | null
+  freshness: 'current' | 'stale' | 'absent'
 }
-export type MediaSession = { id: string }
 export type LivePlan = {
   planId: string
   version: number
@@ -33,6 +46,16 @@ export type LiveProject = {
   approved: boolean
   repositoryUrl: string | null
 }
+/** GET /v1/projects/:id/workspace/status envelope. Fields match the workspace contract; nothing else is invented. */
+export type WorkspaceStatus = {
+  projectId: string
+  adapter: string
+  adapterKind: 'vm'
+  desiredState: string
+  observedState: string
+  sourceRevision: string | null
+}
+export type ProjectEvent = { eventId: string; sequence: number; type: string; data?: Record<string, unknown> }
 
 export interface RangerApi {
   connectSession(credential: string, signal: AbortSignal): Promise<ApiResult<{ principalId: string }>>
@@ -51,13 +74,23 @@ export interface RangerApi {
     signal: AbortSignal,
   ): Promise<ApiResult<{ accepted: boolean }>>
   connectRepository(projectId: string, url: string, ref: string, signal: AbortSignal): Promise<ApiResult<void>>
+  getWorkspaceStatus(projectId: string, signal: AbortSignal): Promise<ApiResult<WorkspaceStatus>>
   getEvents(
     projectId: string,
     signal: AbortSignal,
     cursor?: string,
-  ): Promise<ApiResult<{ events: { eventId: string; sequence: number; type: string }[]; cursor?: string; hasMore: boolean }>>
-  startMediaSession(request: MediaSessionRequest, signal: AbortSignal): Promise<ApiResult<MediaSession>>
-  endMediaSession(sessionId: string, signal: AbortSignal): Promise<ApiResult<void>>
+  ): Promise<ApiResult<{ events: ProjectEvent[]; cursor?: string; hasMore: boolean }>>
+  startVoiceSession(projectId: string, conversationId: string, signal: AbortSignal): Promise<ApiResult<VoiceSession>>
+  createRelayTicket(projectId: string, signal: AbortSignal): Promise<ApiResult<{ ticket: string }>>
+  cancelVoiceResponse(projectId: string, sessionId: string, signal: AbortSignal): Promise<ApiResult<{ interrupted: boolean }>>
+  endVoiceSession(projectId: string, sessionId: string, signal: AbortSignal): Promise<ApiResult<void>>
+  startCaptureSession(projectId: string, conversationId: string, signal: AbortSignal): Promise<ApiResult<CaptureSession>>
+  ingestCaptureFrame(
+    request: { projectId: string; sessionId: string; frameId: string; imageBase64: string; captureTimestamp: string },
+    signal: AbortSignal,
+  ): Promise<ApiResult<FrameReceipt>>
+  requestInspection(projectId: string, sessionId: string, signal: AbortSignal): Promise<ApiResult<Inspection>>
+  endCaptureSession(projectId: string, sessionId: string, signal: AbortSignal): Promise<ApiResult<void>>
 }
 
 /** Operator-authored plans may edit the project tree and run sandbox commands. */
@@ -66,9 +99,9 @@ const TITLE_LIMIT = 200
 const MESSAGE_PAGE = '100'
 const EVENT_PAGE = '100'
 const MAX_EVENT_PAGES = 50
-const ID = /^(prj|cnv|pln)_[0-9a-fA-F-]+$/
+const ID = /^(prj|cnv|pln|vcs|cap)_[0-9a-fA-F-]+$/
 
-type Envelope = { requestId?: string; error?: { code?: string; message?: string } }
+type Envelope = { requestId?: string; error?: { code?: string; message?: string; details?: { reason?: unknown; retryAfterMs?: unknown } } }
 
 class HttpRangerApi implements RangerApi {
   private csrfToken: string | null = null
@@ -271,15 +304,23 @@ class HttpRangerApi implements RangerApi {
     return result.ok ? ok(undefined) : result
   }
 
-  async getEvents(projectId: string, signal: AbortSignal, cursor?: string): Promise<ApiResult<{ events: { eventId: string; sequence: number; type: string }[]; cursor?: string; hasMore: boolean }>> {
+  async getWorkspaceStatus(projectId: string, signal: AbortSignal): Promise<ApiResult<WorkspaceStatus>> {
     if (!validId(projectId, 'prj')) return fail('backend', 'That project id is not a Ranger project id.')
-    const events: { eventId: string; sequence: number; type: string }[] = []
+    const result = await this.request<{ workspace?: Record<string, unknown> }>('GET', `/v1/projects/${projectId}/workspace/status`, signal)
+    if (!result.ok) return result
+    const workspace = toWorkspaceStatus(result.data.workspace)
+    return workspace ? ok(workspace) : fail('backend', 'The workspace status response was incomplete.')
+  }
+
+  async getEvents(projectId: string, signal: AbortSignal, cursor?: string): Promise<ApiResult<{ events: ProjectEvent[]; cursor?: string; hasMore: boolean }>> {
+    if (!validId(projectId, 'prj')) return fail('backend', 'That project id is not a Ranger project id.')
+    const events: ProjectEvent[] = []
     let pageCursor = cursor
     let hasMore = false
     for (let page = 0; page < MAX_EVENT_PAGES; page += 1) {
       const params = new URLSearchParams({ limit: EVENT_PAGE })
       if (pageCursor) params.set('cursor', pageCursor)
-      const result = await this.request<{ events?: { eventId?: string; sequence?: number; type?: string }[]; nextCursor?: string | null; hasMore?: boolean }>(
+      const result = await this.request<{ events?: { eventId?: string; sequence?: number; type?: string; data?: unknown }[]; nextCursor?: string | null; hasMore?: boolean }>(
         'GET',
         `/v1/projects/${projectId}/events?${params}`,
         signal,
@@ -290,7 +331,8 @@ class HttpRangerApi implements RangerApi {
       }
       for (const event of result.data.events ?? []) {
         if (typeof event.eventId === 'string' && typeof event.sequence === 'number' && typeof event.type === 'string') {
-          events.push({ eventId: event.eventId, sequence: event.sequence, type: event.type })
+          const data = eventData(event.data)
+          events.push({ eventId: event.eventId, sequence: event.sequence, type: event.type, ...(data ? { data } : {}) })
         }
       }
       const nextCursor = typeof result.data.nextCursor === 'string' && result.data.nextCursor !== '' ? result.data.nextCursor : undefined
@@ -304,20 +346,98 @@ class HttpRangerApi implements RangerApi {
     return ok({ events, ...(pageCursor ? { cursor: pageCursor } : {}), hasMore })
   }
 
-  async startMediaSession(request: MediaSessionRequest, signal: AbortSignal): Promise<ApiResult<MediaSession>> {
-    if (signal.aborted) return aborted()
-    if (!validId(request.projectId, 'prj') || !validId(request.conversationId, 'cnv')) {
-      return fail('unsupported', 'Live media needs a project and conversation, and browser audio or frame relay is not wired.')
-    }
-    void request.stream
-    void request.kind
-    return fail('unsupported', 'Browser audio and frame relay is not wired yet. No media session was created.')
+  async startVoiceSession(projectId: string, conversationId: string, signal: AbortSignal): Promise<ApiResult<VoiceSession>> {
+    if (!validId(projectId, 'prj') || !validId(conversationId, 'cnv')) return fail('backend', 'A voice call needs a project and conversation id.')
+    const result = await this.request<{ session?: { sessionId?: string; model?: string; expiresAt?: string; state?: string } }>(
+      'POST',
+      `/v1/projects/${projectId}/voice/sessions`,
+      signal,
+      { body: { conversationId }, idempotent: true },
+    )
+    if (!result.ok) return result
+    const session = result.data.session
+    if (!validId(session?.sessionId, 'vcs') || session.state !== 'active') return fail('backend', 'The voice session response was incomplete, so no call was started.')
+    return ok({ sessionId: session.sessionId, model: typeof session.model === 'string' ? session.model : '', expiresAt: typeof session.expiresAt === 'string' ? session.expiresAt : '' })
   }
 
-  async endMediaSession(sessionId: string, signal: AbortSignal): Promise<ApiResult<void>> {
-    if (signal.aborted) return aborted()
-    void sessionId
-    return fail('unsupported', 'Browser media sessions are not wired, so there is no session to end.')
+  async createRelayTicket(projectId: string, signal: AbortSignal): Promise<ApiResult<{ ticket: string }>> {
+    if (!validId(projectId, 'prj')) return fail('backend', 'That project id is not a Ranger project id.')
+    const result = await this.request<{ ticket?: string }>('POST', '/v1/auth/connection-tickets', signal, {
+      body: { projectId, purpose: 'voice-relay', origin: window.location.origin },
+    })
+    if (!result.ok) return result
+    if (typeof result.data.ticket !== 'string' || result.data.ticket === '') return fail('backend', 'The ticket response did not include a ticket.')
+    return ok({ ticket: result.data.ticket })
+  }
+
+  async cancelVoiceResponse(projectId: string, sessionId: string, signal: AbortSignal): Promise<ApiResult<{ interrupted: boolean }>> {
+    if (!validId(projectId, 'prj') || !validId(sessionId, 'vcs')) return fail('backend', 'A project and voice session id are required.')
+    const result = await this.request<{ interrupted?: boolean }>('POST', `/v1/projects/${projectId}/voice/sessions/${sessionId}/response/cancel`, signal)
+    return result.ok ? ok({ interrupted: result.data.interrupted === true }) : result
+  }
+
+  async endVoiceSession(projectId: string, sessionId: string, signal: AbortSignal): Promise<ApiResult<void>> {
+    if (!validId(projectId, 'prj') || !validId(sessionId, 'vcs')) return fail('backend', 'A project and voice session id are required.')
+    const result = await this.request('POST', `/v1/projects/${projectId}/voice/sessions/${sessionId}/end`, signal)
+    return result.ok ? ok(undefined) : result
+  }
+
+  async startCaptureSession(projectId: string, conversationId: string, signal: AbortSignal): Promise<ApiResult<CaptureSession>> {
+    if (!validId(projectId, 'prj') || !validId(conversationId, 'cnv')) return fail('backend', 'Screen sharing needs a project and conversation id.')
+    const result = await this.request<{ session?: { sessionId?: string; generation?: number; state?: string } }>(
+      'POST',
+      `/v1/projects/${projectId}/capture/sessions`,
+      signal,
+      { body: { conversationId }, idempotent: true },
+    )
+    if (!result.ok) return result
+    const session = result.data.session
+    if (!validId(session?.sessionId, 'cap') || session.state !== 'active' || typeof session.generation !== 'number') {
+      return fail('backend', 'The capture session response was incomplete, so no screen share was started.')
+    }
+    return ok({ sessionId: session.sessionId, generation: session.generation })
+  }
+
+  async ingestCaptureFrame(
+    request: { projectId: string; sessionId: string; frameId: string; imageBase64: string; captureTimestamp: string },
+    signal: AbortSignal,
+  ): Promise<ApiResult<FrameReceipt>> {
+    if (!validId(request.projectId, 'prj') || !validId(request.sessionId, 'cap')) return fail('backend', 'A project and capture session id are required.')
+    const result = await this.request<{ frame?: { frameId?: string; width?: number; height?: number; byteSize?: number; captureTimestamp?: string; stored?: boolean } }>(
+      'POST',
+      `/v1/projects/${request.projectId}/capture/sessions/${request.sessionId}/frames`,
+      signal,
+      { body: { frameId: request.frameId, imageBase64: request.imageBase64, captureTimestamp: request.captureTimestamp } },
+    )
+    if (!result.ok) return result
+    const frame = result.data.frame
+    if (frame?.stored !== true || frame.frameId !== request.frameId) return fail('backend', 'The frame response did not confirm that the frame was stored.')
+    return ok({
+      frameId: frame.frameId,
+      width: typeof frame.width === 'number' ? frame.width : 0,
+      height: typeof frame.height === 'number' ? frame.height : 0,
+      byteSize: typeof frame.byteSize === 'number' ? frame.byteSize : 0,
+      captureTimestamp: typeof frame.captureTimestamp === 'string' ? frame.captureTimestamp : request.captureTimestamp,
+    })
+  }
+
+  async requestInspection(projectId: string, sessionId: string, signal: AbortSignal): Promise<ApiResult<Inspection>> {
+    if (!validId(projectId, 'prj') || !validId(sessionId, 'cap')) return fail('backend', 'A project and capture session id are required.')
+    const result = await this.request<{ inspection?: Record<string, unknown> }>(
+      'POST',
+      `/v1/projects/${projectId}/capture/sessions/${sessionId}/inspection`,
+      signal,
+      { body: {} },
+    )
+    if (!result.ok) return result
+    const inspection = toInspection(result.data.inspection)
+    return inspection ? ok(inspection) : fail('backend', 'The inspection response was incomplete, so no observation is shown.')
+  }
+
+  async endCaptureSession(projectId: string, sessionId: string, signal: AbortSignal): Promise<ApiResult<void>> {
+    if (!validId(projectId, 'prj') || !validId(sessionId, 'cap')) return fail('backend', 'A project and capture session id are required.')
+    const result = await this.request('POST', `/v1/projects/${projectId}/capture/sessions/${sessionId}/end`, signal)
+    return result.ok ? ok(undefined) : result
   }
 
   private async readMessages(projectId: string, conversationId: string, signal: AbortSignal): Promise<ApiResult<string[]>> {
@@ -395,7 +515,14 @@ class HttpRangerApi implements RangerApi {
     }
     const payload = await readJson(response)
     if (response.ok) return ok((payload ?? {}) as T)
-    return fail(reasonFor(response.status, payload), errorMessage(response.status, payload))
+    const failure = fail(reasonFor(response.status, payload), errorMessage(response.status, payload))
+    const code = payload?.error?.code
+    const detail = payload?.error?.details?.reason
+    const retryAfterMs = payload?.error?.details?.retryAfterMs
+    if (typeof code === 'string') failure.code = code
+    if (typeof detail === 'string') failure.detail = detail
+    if (typeof retryAfterMs === 'number' && Number.isFinite(retryAfterMs)) failure.retryAfterMs = retryAfterMs
+    return failure
   }
 }
 
@@ -407,6 +534,25 @@ type RawPlan = {
   permittedScope?: unknown
 }
 
+function toWorkspaceStatus(raw: Record<string, unknown> | undefined): WorkspaceStatus | null {
+  const projectId = typeof raw?.projectId === 'string' ? raw.projectId : undefined
+  if (!raw || !validId(projectId, 'prj')) return null
+  if (typeof raw.adapter !== 'string' || raw.adapterKind !== 'vm' || typeof raw.desiredState !== 'string' || typeof raw.observedState !== 'string') return null
+  return {
+    projectId,
+    adapter: raw.adapter,
+    adapterKind: 'vm',
+    desiredState: raw.desiredState,
+    observedState: raw.observedState,
+    sourceRevision: typeof raw.sourceRevision === 'string' ? raw.sourceRevision : null,
+  }
+}
+
+function eventData(value: unknown): Record<string, unknown> | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  return value as Record<string, unknown>
+}
+
 function toPlan(raw: RawPlan | null | undefined): LivePlan | null {
   if (!raw || !validId(raw.planId, 'pln') || typeof raw.version !== 'number') return null
   return {
@@ -415,6 +561,29 @@ function toPlan(raw: RawPlan | null | undefined): LivePlan | null {
     items: strings(raw.items),
     acceptanceCriteria: strings(raw.acceptanceCriteria),
     permittedScope: strings(raw.permittedScope),
+  }
+}
+
+function toInspection(raw: Record<string, unknown> | undefined): Inspection | null {
+  if (!raw) return null
+  const state = raw.state
+  const freshness = raw.freshness
+  if (state !== 'observed' && state !== 'fresh-frame-requested') return null
+  if (freshness !== 'current' && freshness !== 'stale' && freshness !== 'absent') return null
+  const observations: InspectionObservation[] = []
+  for (const item of Array.isArray(raw.observations) ? raw.observations : []) {
+    const entry = item as Record<string, unknown> | null
+    if (!entry || typeof entry.text !== 'string' || typeof entry.sourceFrameId !== 'string' || typeof entry.sourceTimestamp !== 'string') continue
+    const uncertainty = typeof entry.uncertainty === 'number' && Number.isFinite(entry.uncertainty) ? Math.min(1, Math.max(0, entry.uncertainty)) : 1
+    observations.push({ text: entry.text, uncertainty, sourceFrameId: entry.sourceFrameId, sourceTimestamp: entry.sourceTimestamp })
+  }
+  if (state === 'observed' && observations.length === 0) return null
+  return {
+    state,
+    observations: state === 'observed' ? observations : [],
+    sourceFrameId: typeof raw.sourceFrameId === 'string' ? raw.sourceFrameId : null,
+    sourceTimestamp: typeof raw.sourceTimestamp === 'string' ? raw.sourceTimestamp : null,
+    freshness,
   }
 }
 
@@ -434,6 +603,12 @@ function cleanList(values: string[]): string[] {
 
 function validId(value: string | undefined, prefix: string): value is string {
   return typeof value === 'string' && ID.test(value) && value.startsWith(`${prefix}_`)
+}
+
+/** Builds the same-origin relay URL. The ticket is a one-time secret: never log or display the result. */
+export function voiceRelayUrl(projectId: string, sessionId: string, ticket: string, location: Pick<Location, 'protocol' | 'host'> = window.location): string {
+  const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${scheme}//${location.host}/v1/projects/${encodeURIComponent(projectId)}/voice/sessions/${encodeURIComponent(sessionId)}/relay?ticket=${encodeURIComponent(ticket)}`
 }
 
 function idempotencyKey(): string {

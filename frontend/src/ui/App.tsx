@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent } from 'react'
-import { rangerApi } from '../api'
+import { rangerApi, type WorkspaceStatus } from '../api'
+import { ScreenChannel, VoiceChannel, browserMediaDeps, providerGate, type ScreenStatus, type VoiceStatus } from '../media'
 import { MediaLifecycle, OperationEpoch } from './lifecycle'
-import { DEMO_PROJECT_ID, applyEventPage, executionBlockers, isLiveProjectId, normalizeCredential, parseLines, planCreateOutcome, projectViewEngineerName, validateRepositoryInput, type Capabilities } from './liveHelpers'
+import { DEMO_PROJECT_ID, applyEventPage, executionBlockers, isLiveProjectId, latestPreparation, normalizeCredential, parseLines, planCreateOutcome, projectViewEngineerName, validateRepositoryInput, type Capabilities, type PreparationStatus } from './liveHelpers'
 
 type Screen = 'home' | 'start' | 'workspace' | 'review'
 type Mode = 'live' | 'demo'
@@ -16,7 +17,23 @@ type ProjectEvent = OkData<Awaited<ReturnType<typeof rangerApi.getEvents>>>['eve
 type Auth = { state: 'checking' } | { state: 'signed-out'; message?: string } | { state: 'connected'; principalId: string }
 type CapabilityState = { state: 'idle' } | { state: 'loading' } | { state: 'ready'; value: Capabilities } | { state: 'error'; message: string }
 type ProjectLoad = { state: 'idle' } | { state: 'loading'; projectId: string } | { state: 'ready'; projectId: string } | { state: 'error'; projectId: string; message: string }
-type EventFeed = { projectId: string | null; events: ProjectEvent[]; status: 'idle' | 'polling' | 'paused' | 'error'; error?: string }
+type EventFeed = { projectId: string | null; events: ProjectEvent[]; preparation: PreparationStatus | null; status: 'idle' | 'polling' | 'paused' | 'error'; error?: string }
+type WorkspaceView = { projectId: string | null; status: WorkspaceStatus | null; error?: string }
+type LiveMedia = {
+  voice: VoiceStatus
+  screen: ScreenStatus
+  voiceBlocked: string | null
+  screenBlocked: string | null
+  inspectBlocked: string | null
+  onStartVoice: () => void
+  onStopVoice: () => void
+  onInterrupt: () => void
+  onStartScreen: () => void
+  onStopScreen: () => void
+  onInspect: () => void
+  onRetryVoiceCleanup: () => void
+  onRetryScreenCleanup: () => void
+}
 type LiveStatus = { kind: 'ok' } | { kind: 'checking' } | { kind: 'needs-session' } | { kind: 'no-project' } | { kind: 'invalid' } | { kind: 'loading' } | { kind: 'error'; message: string }
 
 const EVENT_POLL_MS = 5000
@@ -68,8 +85,14 @@ export function App() {
   const [projectLoad, setProjectLoad] = useState<ProjectLoad>({ state: 'idle' })
   const [reloadKey, setReloadKey] = useState(0)
   const [eventsKey, setEventsKey] = useState(0)
-  const [eventFeed, setEventFeed] = useState<EventFeed>({ projectId: null, events: [], status: 'idle' })
+  const [eventFeed, setEventFeed] = useState<EventFeed>({ projectId: null, events: [], preparation: null, status: 'idle' })
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>({ projectId: null, status: null })
   const [mediaLifecycle] = useState(() => new MediaLifecycle(() => {}))
+  const authLostRef = useRef<() => void>(() => {})
+  const [voice] = useState(() => new VoiceChannel(browserMediaDeps(), { onAuthLost: () => authLostRef.current() }))
+  const [screen] = useState(() => new ScreenChannel(browserMediaDeps(), { onAuthLost: () => authLostRef.current() }))
+  const [voiceStatus, setVoiceStatus] = useState(voice.status)
+  const [screenStatus, setScreenStatus] = useState(screen.status)
   const requestRef = useRef<AbortController | null>(null)
   const operationEpochRef = useRef(new OperationEpoch())
   const projectRef = useRef<LiveProject | null>(null)
@@ -114,8 +137,10 @@ export function App() {
 
   const clearMedia = useCallback(() => {
     mediaLifecycle.release()
+    voice.stop()
+    screen.stop()
     setMediaState('idle')
-  }, [mediaLifecycle])
+  }, [mediaLifecycle, screen, voice])
 
   const navigate = useCallback((screen: Screen, mode: Mode = location.mode, projectId: string | null = mode === location.mode ? location.projectId : null, replace = false) => {
     invalidateRequest()
@@ -202,30 +227,39 @@ export function App() {
 
   const eventProjectId = activeProject?.projectId ?? null
   useEffect(() => {
-    if (!eventProjectId) { setEventFeed({ projectId: null, events: [], status: 'idle' }); return }
+    if (!eventProjectId) { setEventFeed({ projectId: null, events: [], preparation: null, status: 'idle' }); return }
     const controller = new AbortController()
     let current = true
     let events: ProjectEvent[] = []
+    let preparation: PreparationStatus | null = null
     let cursor: string | undefined
     let polls = 0
     let timer: number | undefined
-    setEventFeed({ projectId: eventProjectId, events: [], status: 'polling' })
+    setEventFeed({ projectId: eventProjectId, events: [], preparation: null, status: 'polling' })
 
+    const remember = (next: ProjectEvent[]) => {
+      const seen = latestPreparation(next)
+      if (seen) preparation = seen
+    }
+    const publish = (status: EventFeed['status'], error?: string) => {
+      setEventFeed({ projectId: eventProjectId, events, preparation, status, ...(error ? { error } : {}) })
+    }
     const pull = async () => {
       for (let page = 0; page < EVENT_MAX_PAGES; page += 1) {
         const result = await rangerApi.getEvents(eventProjectId, controller.signal, cursor)
         if (!current) return false
         if (!result.ok) {
           if (result.reason === 'unauthorized') setAuth({ state: 'signed-out', message: 'Your session has ended. Connect again to continue.' })
-          else setEventFeed(feed => ({ ...feed, status: 'error', error: result.message }))
+          else publish('error', result.message)
           return false
         }
         const step = applyEventPage({ events, cursor }, result.data)
         const added = step.state.events !== events
         events = step.state.events
         cursor = step.state.cursor
-        if (added) setEventFeed({ projectId: eventProjectId, events, status: 'polling' })
-        if (step.error) { setEventFeed(feed => ({ ...feed, events, status: 'error', error: step.error })); return false }
+        remember(events)
+        if (added || preparation) publish('polling')
+        if (step.error) { publish('error', step.error); return false }
         if (!step.fetchMore) break
       }
       return true
@@ -241,6 +275,21 @@ export function App() {
     void loop()
     return () => { current = false; controller.abort(); window.clearTimeout(timer) }
   }, [eventProjectId, eventsKey])
+
+  const workspaceProjectId = activeProject?.projectId ?? null
+  useEffect(() => {
+    if (!workspaceProjectId) { setWorkspaceView({ projectId: null, status: null }); return }
+    const controller = new AbortController()
+    let current = true
+    setWorkspaceView(view => (view.projectId === workspaceProjectId ? view : { projectId: workspaceProjectId, status: null }))
+    void rangerApi.getWorkspaceStatus(workspaceProjectId, controller.signal).then(result => {
+      if (!current) return
+      if (result.ok) setWorkspaceView({ projectId: workspaceProjectId, status: result.data })
+      else if (result.reason === 'unauthorized') setAuth({ state: 'signed-out', message: 'Your session has ended. Connect again to continue.' })
+      else setWorkspaceView({ projectId: workspaceProjectId, status: null, error: result.message })
+    })
+    return () => { current = false; controller.abort() }
+  }, [workspaceProjectId, eventsKey])
 
   useEffect(() => {
     if (!modal) return
@@ -264,6 +313,33 @@ export function App() {
     mediaLifecycle.release()
     requestRef.current?.abort()
   }, [mediaLifecycle])
+
+  useEffect(() => {
+    authLostRef.current = () => setAuth({ state: 'signed-out', message: 'Your session has ended. Connect again to continue.' })
+  }, [])
+
+  useEffect(() => {
+    setVoiceStatus(voice.status)
+    return voice.subscribe(() => setVoiceStatus(voice.status))
+  }, [voice])
+
+  useEffect(() => {
+    setScreenStatus(screen.status)
+    return screen.subscribe(() => setScreenStatus(screen.status))
+  }, [screen])
+
+  useEffect(() => {
+    if (auth.state === 'connected') return
+    voice.stop('Your session is not connected, so the call was stopped.')
+    screen.stop('Your session is not connected, so screen sharing was stopped.')
+  }, [auth.state, screen, voice])
+
+  const mediaProjectId = activeProject?.projectId ?? null
+  const mediaConversationId = activeProject?.conversationId ?? null
+  useEffect(() => () => {
+    voice.stop()
+    screen.stop()
+  }, [mediaProjectId, mediaConversationId, screen, voice])
 
   const openModal = (next: Modal) => { setModalError(null); setModal(next) }
   const openRename = () => { setNameDraft(location.screen === 'start' || demo ? engineer : viewEngineer); openModal('name') }
@@ -441,6 +517,30 @@ export function App() {
     clearMedia(); setNotice({ kind: 'info', text: 'Media stopped.' })
   }
 
+  const mediaTarget = !demo && principalId !== null && activeProject?.conversationId
+    ? { projectId: activeProject.projectId, conversationId: activeProject.conversationId }
+    : null
+  const mediaUnavailable = mediaTarget === null ? 'Open a project with a conversation to use media.' : null
+  const providerBlocked = providerGate(capabilities.state, capabilityValue)
+  const voiceBlocked = mediaUnavailable ?? providerBlocked
+  const screenBlocked = mediaUnavailable
+  const inspectBlocked = mediaUnavailable ?? providerBlocked ?? (screenStatus.framesSent === 0 ? 'Waiting for the first frame to reach Ranger.' : null)
+  const liveMedia: LiveMedia = {
+    voice: voiceStatus,
+    screen: screenStatus,
+    voiceBlocked,
+    screenBlocked,
+    inspectBlocked,
+    onStartVoice: () => { if (mediaTarget && !voiceBlocked) { setNotice(null); void voice.start(mediaTarget) } },
+    onStopVoice: () => voice.stop(),
+    onInterrupt: () => { void voice.interrupt() },
+    onStartScreen: () => { if (mediaTarget && !screenBlocked) { setNotice(null); void screen.start(mediaTarget) } },
+    onStopScreen: () => screen.stop(),
+    onInspect: () => { if (!inspectBlocked) void screen.inspect() },
+    onRetryVoiceCleanup: () => { void voice.retryCleanup() },
+    onRetryScreenCleanup: () => { void screen.retryCleanup() },
+  }
+
   const sendMessage = async (event: FormEvent) => {
     event.preventDefault()
     const clean = message.trim()
@@ -477,12 +577,12 @@ export function App() {
   return <div className="app-shell">
     {location.screen === 'home' && <Landing demo={demo} onStart={() => navigate('start')} onDemo={() => navigate('start', 'demo')} onWorkspace={() => demo ? navigate('workspace', 'demo') : openLiveWorkspace()} />}
     {location.screen === 'start' && <Composer demo={demo} engineer={engineer} repoLabel={demo ? 'northstar / support-inbox' : pendingRepo?.url ?? null} repoState={demo ? 'Sample' : 'Selected'} repoConnected={demo ? repoConnected : pendingRepo !== null} contextFiles={contextFiles} prompt={prompt} busy={busy} signedIn={demo || principalId !== null} auth={auth} capabilities={capabilities} setPrompt={setPrompt} onContextFiles={selectContextFiles} onConnectRepo={openRepo} onConnect={connectSession} onRename={openRename} onStartCall={() => navigate('workspace', 'demo')} onSubmit={createProject} onCancel={cancelRequest} onHome={() => navigate('home')} onToggleMode={() => navigate('start', demo ? 'live' : 'demo')} />}
-    {location.screen === 'workspace' && <Workspace demo={demo} engineer={viewEngineer} projectName={projectName} project={activeProject} status={liveStatus} auth={auth} capabilities={capabilities} eventFeed={eventFeed} tab={workspaceTab} setTab={setWorkspaceTab} approved={planApproved} mediaState={mediaState} messages={shownMessages} message={message} busy={busy} setMessage={setMessage} onSend={sendMessage} onReviewPlan={() => openModal('plan')} onWriteManualPlan={() => openModal('manual')} onConnectRepo={openRepo} onConnect={connectSession} onRetry={() => setReloadKey(key => key + 1)} onRefreshEvents={() => setEventsKey(key => key + 1)} onStartProject={() => navigate('start', 'live')} onReview={() => navigate('review')} onHome={() => navigate('home')} onRename={openRename} onStartVoice={() => startMedia('voice')} onStartScreen={() => startMedia('screen')} onStopMedia={stopMedia} onCancel={cancelRequest} />}
+    {location.screen === 'workspace' && <Workspace demo={demo} engineer={viewEngineer} projectName={projectName} project={activeProject} status={liveStatus} auth={auth} capabilities={capabilities} eventFeed={eventFeed} workspaceView={workspaceView} tab={workspaceTab} setTab={setWorkspaceTab} approved={planApproved} mediaState={mediaState} messages={shownMessages} message={message} busy={busy} setMessage={setMessage} onSend={sendMessage} onReviewPlan={() => openModal('plan')} onConnectRepo={openRepo} onConnect={connectSession} onRetry={() => setReloadKey(key => key + 1)} onRefreshEvents={() => setEventsKey(key => key + 1)} onStartProject={() => navigate('start', 'live')} onReview={() => navigate('review')} onHome={() => navigate('home')} onRename={openRename} onStartVoice={() => startMedia('voice')} onStartScreen={() => startMedia('screen')} onStopMedia={stopMedia} live={activeProject ? liveMedia : null} />}
     {location.screen === 'review' && <Review demo={demo} engineer={viewEngineer} projectName={projectName} status={liveStatus} auth={auth} busy={busy} approved={planApproved} notice={notice} onConnect={connectSession} onRetry={() => setReloadKey(key => key + 1)} onStartProject={() => navigate('start', 'live')} onWorkspace={() => navigate('workspace')} onHome={() => navigate('home')} onRename={openRename} onReviewPlan={() => openModal('plan')} />}
     {notice && <div className={`toast toast-${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}><span>{notice.text}</span><button aria-label="Dismiss message" onClick={() => setNotice(null)}>×</button></div>}
     {modal && <div className="modal-scrim" onMouseDown={event => { if (event.target === event.currentTarget) setModal(null) }}><div ref={dialogRef} className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       {modal === 'name' ? <form onSubmit={saveRename}><p className="eyebrow">YOUR ENGINEER</p><h2 id="modal-title">Give your engineer a name</h2><label className="field-label" htmlFor="engineer-name">Name</label><input ref={nameInputRef} id="engineer-name" autoComplete="off" maxLength={32} value={nameDraft} onChange={event => setNameDraft(event.target.value)} />{modalError && <p role="alert">{modalError}</p>}<div className="modal-actions"><Button type="button" onClick={() => setModal(null)}>Cancel</Button><Button kind="primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save name'}</Button></div></form>
-        : modal === 'repo' ? <form onSubmit={submitRepo}><p className="eyebrow">REPOSITORY</p><h2 id="modal-title">Connect a repository</h2><p>{activeProject ? 'Ranger will use this URL and ref for the project.' : 'The repository is connected right after the project is created.'}</p><label className="field-label" htmlFor="repo-url">Repository URL</label><input id="repo-url" type="url" autoComplete="off" placeholder="https://" value={repoDraft.url} onChange={event => setRepoDraft(draft => ({ ...draft, url: event.target.value }))} /><label className="field-label" htmlFor="repo-ref">Branch, tag or commit</label><input id="repo-ref" autoComplete="off" value={repoDraft.ref} onChange={event => setRepoDraft(draft => ({ ...draft, ref: event.target.value }))} />{modalError && <p role="alert">{modalError}</p>}<div className="modal-actions"><Button type="button" onClick={() => setModal(null)}>Cancel</Button><Button kind="primary" type="submit" disabled={busy}>{busy ? 'Connecting…' : activeProject ? 'Connect repository' : 'Use repository'}</Button></div></form>
+        : modal === 'repo' ? <form onSubmit={submitRepo}><p className="eyebrow">REPOSITORY</p><h2 id="modal-title">Connect a repository</h2><p>{activeProject ? 'Ranger records this reference for the project. Files are not loaded until the engineer prepares the workspace.' : 'The reference is recorded right after the project is created. It does not load files by itself.'}</p><label className="field-label" htmlFor="repo-url">Repository URL or local checkout path</label><input id="repo-url" type="text" autoComplete="off" spellCheck={false} placeholder="https://… or /absolute/path/on/the/Ranger/server" value={repoDraft.url} onChange={event => setRepoDraft(draft => ({ ...draft, url: event.target.value }))} /><p className="small-muted">An absolute path or file:// URL is a checkout on the Ranger server and must already be operator-approved. An https URL is only a reference; it does not clone or load files.</p><label className="field-label" htmlFor="repo-ref">Branch, tag or commit</label><input id="repo-ref" autoComplete="off" value={repoDraft.ref} onChange={event => setRepoDraft(draft => ({ ...draft, ref: event.target.value }))} />{modalError && <p role="alert">{modalError}</p>}<div className="modal-actions"><Button type="button" onClick={() => setModal(null)}>Cancel</Button><Button kind="primary" type="submit" disabled={busy}>{busy ? 'Connecting…' : activeProject ? 'Connect repository' : 'Use repository'}</Button></div></form>
         : modal === 'manual' ? <form onSubmit={submitManualPlan}><p className="eyebrow">MANUAL PLAN</p><h2 id="modal-title">Write a plan by hand</h2><p>This is a plan you write as the operator. It is not generated by Ranger or a model, and it is saved as a new version that still needs your approval.</p><label className="field-label" htmlFor="manual-items">Steps, one per line</label><textarea id="manual-items" rows={5} style={fieldStyle} value={planDraft.items} onChange={event => setPlanDraft(draft => ({ ...draft, items: event.target.value }))} /><label className="field-label" htmlFor="manual-criteria">Acceptance criteria, one per line</label><textarea id="manual-criteria" rows={4} style={fieldStyle} value={planDraft.criteria} onChange={event => setPlanDraft(draft => ({ ...draft, criteria: event.target.value }))} />{modalError && <p role="alert">{modalError}</p>}<div className="modal-actions"><Button type="button" onClick={() => setModal(null)}>Cancel</Button><Button kind="primary" type="submit" disabled={busy || !activeProject?.conversationId}>{busy ? 'Saving…' : 'Save manual plan'}</Button></div></form>
         : demo ? <><p className="eyebrow">PLAN REVIEW</p><h2 id="modal-title">Before Ranger starts</h2><p className="muted">Review what will change. You can still talk through the plan before approving it.</p><ul className="plan-list"><li>Find the order behind each ticket</li><li>Apply the current return policy</li><li>Draft the customer reply</li><li>Ask before issuing a refund</li></ul><div className="modal-actions"><Button disabled={busy} onClick={() => decidePlan(false)}>Request changes</Button><Button kind="primary" disabled={busy} onClick={() => decidePlan(true)}>{busy ? 'Saving…' : 'Approve plan'}</Button></div></>
         : <LivePlanDialog plan={activeProject?.plan ?? null} approved={activeProject?.approved ?? false} busy={busy} modalError={modalError} blockers={executionBlockers(capabilityValue)} onClose={() => setModal(null)} onApprove={() => decidePlan(true)} onWriteNew={() => openModal('manual')} />}
@@ -591,13 +691,13 @@ function Composer({ demo, engineer, repoLabel, repoState, repoConnected, context
       <form className="composer-card" onSubmit={onSubmit}><label className="sr-only" htmlFor="project-prompt">Describe the problem you want to solve</label><textarea id="project-prompt" autoFocus placeholder="I want to connect our support inbox to our order system…" value={prompt} onChange={event => setPrompt(event.target.value)} maxLength={2000} />
         <button type="button" className={`repo-row ${repoConnected ? 'repo-connected' : ''}`} onClick={onConnectRepo}><span className="repo-icon" aria-hidden="true">⌘</span><strong>{repoConnected && repoLabel ? repoLabel : 'Connect a repository'}</strong><span className="repo-state">{repoConnected ? repoState : 'Choose repo'}</span></button>
         <div className="composer-controls"><button className="attach-button" type="button" onClick={() => document.getElementById('context-upload')?.click()}><span aria-hidden="true">＋</span> Add context{contextFiles.length ? ` · ${contextFiles.length} selected` : ''}</button><input id="context-upload" className="sr-only" type="file" multiple onChange={event => onContextFiles(event.currentTarget.files)} />
-          <div>{busy ? <Button type="button" onClick={onCancel}>Cancel</Button> : <><Button kind="primary" type="button" disabled={!demo} title={demo ? undefined : 'Calls are unavailable: the browser media relay is not connected.'} onClick={onStartCall}>Start a call ↗</Button><Button kind="secondary" type="submit" disabled={!prompt.trim() || !signedIn}>Send <span aria-hidden="true">↑</span></Button></>}</div>
+          <div>{busy ? <Button type="button" onClick={onCancel}>Cancel</Button> : <><Button kind="primary" type="button" disabled={!demo} title={demo ? undefined : 'Create a project first, then start a call from its workspace.'} onClick={onStartCall}>Start a call ↗</Button><Button kind="secondary" type="submit" disabled={!prompt.trim() || !signedIn}>Send <span aria-hidden="true">↑</span></Button></>}</div>
         </div>
       </form>
       {contextFiles.length > 0 && <p className="context-note">{contextFiles.join(' · ')} <span>Selected locally; not uploaded.</span></p>}
       <div className="suggestions"><Button onClick={() => setPrompt('Connect two tools I use every day and carry the right context between them.')}>Connect two tools</Button><Button onClick={() => setPrompt('Fix a workflow that keeps making us do the same thing by hand.')}>Fix a workflow</Button><Button onClick={() => setPrompt('Show me your screen and I’ll walk through what I need.')}>Show you my screen</Button></div>
       <p className="engineer-label">Your engineer’s name is {engineer}. <button onClick={onRename}>Change name</button></p>
-      <p className="live-note">{demo ? 'Sample walkthrough: actions stay in this browser.' : 'Live mode. Your project and first message are saved to your Ranger backend. Calls and screen sharing are unavailable in this build.'}</p>
+      <p className="live-note">{demo ? 'Sample walkthrough: actions stay in this browser.' : 'Live mode. Your project and first message are saved to your Ranger backend. Calls and screen sharing start from a project workspace, and only when xAI is available.'}</p>
       <button className="text-link demo-switch" onClick={onToggleMode}>{demo ? 'Switch to live mode' : 'Open sample walkthrough'}</button>
     </section>
   </main>
@@ -611,7 +711,7 @@ function LiveGate({ status, auth, busy, onConnect, onRetry, onStartProject }: { 
   return <div className="empty-conversation"><span className="empty-icon">↗</span><h2>{status.kind === 'invalid' ? 'Project not found' : 'No project selected'}</h2><p>{status.kind === 'invalid' ? 'This address is not a Ranger project.' : 'Start a project to open its workspace.'}</p><Button kind="primary" onClick={onStartProject}>Start a project</Button></div>
 }
 
-function Workspace({ demo, engineer, projectName, project, status, auth, capabilities, eventFeed, tab, setTab, approved, mediaState, messages, message, busy, setMessage, onSend, onReviewPlan, onWriteManualPlan, onConnectRepo, onConnect, onRetry, onRefreshEvents, onStartProject, onReview, onHome, onRename, onStartVoice, onStartScreen, onStopMedia, onCancel }: { demo: boolean; engineer: string; projectName: string; project: LiveProject | null; status: LiveStatus; auth: Auth; capabilities: CapabilityState; eventFeed: EventFeed; tab: WorkspaceTab; setTab: (tab: WorkspaceTab) => void; approved: boolean; mediaState: 'idle' | 'requesting' | 'active'; messages: string[]; message: string; busy: boolean; setMessage: (value: string) => void; onSend: (event: FormEvent) => void; onReviewPlan: () => void; onWriteManualPlan: () => void; onConnectRepo: () => void; onConnect: (credential: string) => void; onRetry: () => void; onRefreshEvents: () => void; onStartProject: () => void; onReview: () => void; onHome: () => void; onRename: () => void; onStartVoice: () => void; onStartScreen: () => void; onStopMedia: () => void; onCancel: () => void }) {
+function Workspace({ demo, engineer, projectName, project, status, auth, capabilities, eventFeed, workspaceView, tab, setTab, approved, mediaState, messages, message, busy, setMessage, onSend, onReviewPlan, onConnectRepo, onConnect, onRetry, onRefreshEvents, onStartProject, onReview, onHome, onRename, onStartVoice, onStartScreen, onStopMedia, live }: { demo: boolean; engineer: string; projectName: string; project: LiveProject | null; status: LiveStatus; auth: Auth; capabilities: CapabilityState; eventFeed: EventFeed; workspaceView: WorkspaceView; tab: WorkspaceTab; setTab: (tab: WorkspaceTab) => void; approved: boolean; mediaState: 'idle' | 'requesting' | 'active'; messages: string[]; message: string; busy: boolean; setMessage: (value: string) => void; onSend: (event: FormEvent) => void; onReviewPlan: () => void; onConnectRepo: () => void; onConnect: (credential: string) => void; onRetry: () => void; onRefreshEvents: () => void; onStartProject: () => void; onReview: () => void; onHome: () => void; onRename: () => void; onStartVoice: () => void; onStartScreen: () => void; onStopMedia: () => void; live: LiveMedia | null }) {
   const canMessage = demo || (status.kind === 'ok' && !!project?.conversationId)
   return <main className="workspace-page">
     <header className="workspace-topbar"><button className="brand-button" onClick={onHome}><Brand /></button><span className="breadcrumbs">Projects <span>/</span> {demo ? <>Northstar <span>/</span> Order support</> : projectName}</span><div className="topbar-right">{demo ? <DemoTag /> : auth.state === 'connected' ? <StatusPill>Session connected</StatusPill> : <StatusPill tone="amber">Not connected</StatusPill>}<Button disabled={!demo}>Share</Button></div></header>
@@ -621,18 +721,15 @@ function Workspace({ demo, engineer, projectName, project, status, auth, capabil
         {demo ? <><VoiceCard mediaState={mediaState} onStartVoice={onStartVoice} onStartScreen={onStartScreen} onStopMedia={onStopMedia} /><p className="speaker-label">YOU</p><p className="quote">“Every morning we copy the order details here before replying.”</p><div className="speech-bubble"><p className="speaker-label">YOUR ENGINEER</p><p>I can connect those steps. Should refunds always wait for someone on your team?</p></div><p className="speaker-label">YOU</p><p className="quote">Yes. Draft the reply, but let us approve the refund.</p><button className="plan-saved" onClick={onReviewPlan}><strong>{approved ? 'Plan approved' : 'Saved to the plan'}</strong><span>Refunds need your approval. <u>Review plan</u></span></button>{messages.map((item, i) => <div className="message-bubble" key={`${item}-${i}`}>{item}</div>)}</>
           : status.kind !== 'ok' || !project ? <LiveGate status={status} auth={auth} busy={busy} onConnect={onConnect} onRetry={onRetry} onStartProject={onStartProject} />
           : <>{messages.length ? <><p className="speaker-label">CONVERSATION</p>{messages.map((item, i) => <div className="message-bubble" key={`${item}-${i}`}>{item}</div>)}</> : <div className="empty-conversation"><span className="empty-icon">↗</span><h2>No messages yet</h2><p>{project.conversationId ? 'Type a message below. It is saved to this project’s conversation.' : 'This project has no conversation to write to.'}</p></div>}
-            {project.plan
-              ? <button className="plan-saved" onClick={onReviewPlan}><strong>{approved ? `Plan version ${project.plan.version} approved` : `Plan version ${project.plan.version} waiting for approval`}</strong><span>{project.plan.items.length} steps · {project.plan.acceptanceCriteria.length} acceptance criteria · <u>Review plan</u></span></button>
-              : <div className="plan-saved"><strong>No plan yet</strong><span>Ranger does not write plans in this view. You can write one by hand.</span></div>}
-            <div className="media-controls" style={{ marginTop: 10 }}><Button disabled={busy || !project.conversationId} onClick={onWriteManualPlan}>{project.plan ? 'Write a new manual plan' : 'Write a manual plan'}</Button><Button disabled={busy} onClick={onConnectRepo}>{project.repositoryUrl ? 'Change repository' : 'Connect repository'}</Button></div></>}
+            <div className="media-controls" style={{ marginTop: 10 }}><Button disabled={busy} onClick={onConnectRepo}>{project.repositoryUrl ? 'Change repository' : 'Connect repository'}</Button></div></>}
         <div className="conversation-spacer" />
-        <div className="media-controls">{mediaState === 'active' ? <Button onClick={onStopMedia}>End media</Button> : <><Button onClick={onStartVoice} disabled={!demo || mediaState === 'requesting'}>{mediaState === 'requesting' ? 'Waiting for permission…' : 'Start call'}</Button><Button onClick={onStartScreen} disabled={!demo || mediaState === 'requesting'}>Share screen</Button></>}{demo && mediaState === 'active' && <StatusPill>Sample</StatusPill>}</div>
-        {!demo && <p className="small-muted" role="note">Calls and screen sharing are unavailable: the browser media relay is not connected, so nothing is heard or seen.</p>}
+        {demo ? <div className="media-controls">{mediaState === 'active' ? <Button onClick={onStopMedia}>End media</Button> : <><Button onClick={onStartVoice} disabled={mediaState === 'requesting'}>{mediaState === 'requesting' ? 'Waiting for permission…' : 'Start call'}</Button><Button onClick={onStartScreen} disabled={mediaState === 'requesting'}>Share screen</Button></>}{mediaState === 'active' && <StatusPill>Sample</StatusPill>}</div>
+          : live && <LiveMediaPanel live={live} />}
         <form className="message-form" onSubmit={onSend}><label className="sr-only" htmlFor="workspace-message">Type a message</label><input id="workspace-message" placeholder={canMessage ? 'Or type a message…' : 'Messaging is unavailable'} disabled={!canMessage} value={message} onChange={event => setMessage(event.target.value)} /><button aria-label="Send message" disabled={!message.trim() || busy || !canMessage}>↑</button></form>
       </section>
-      <section className="work-panel"><div className="workspace-controls"><div className="tab-list" role="tablist" aria-label="Project details" onKeyDown={event => tabKeydown(event, setTab, ['workspace', 'changes', 'checks'])}>{(['workspace', 'changes', 'checks'] as const).map(item => <button key={item} role="tab" id={`tab-${item}`} aria-selected={tab === item} aria-controls="workspace-tab-panel" tabIndex={tab === item ? 0 : -1} onClick={() => setTab(item)}>{item[0].toUpperCase() + item.slice(1)}{item === 'changes' && demo && <span className="tab-count">4</span>}</button>)}</div><div className="build-controls">{demo ? <StatusPill tone="violet">{tab === 'checks' ? 'Checks passed' : 'Building'}</StatusPill> : <StatusPill tone="gray">No run started</StatusPill>}<Button disabled={!demo} onClick={onCancel}>Pause</Button></div></div>
+      <section className="work-panel"><div className="workspace-controls"><div className="tab-list" role="tablist" aria-label="Project details" onKeyDown={event => tabKeydown(event, setTab, ['workspace', 'changes', 'checks'])}>{(['workspace', 'changes', 'checks'] as const).map(item => <button key={item} role="tab" id={`tab-${item}`} aria-selected={tab === item} aria-controls="workspace-tab-panel" tabIndex={tab === item ? 0 : -1} onClick={() => setTab(item)}>{item[0].toUpperCase() + item.slice(1)}{item === 'changes' && demo && <span className="tab-count">4</span>}</button>)}</div>{demo && <div className="build-controls"><StatusPill tone="violet">{tab === 'checks' ? 'Checks passed' : 'Building'}</StatusPill></div>}</div>
         <div id="workspace-tab-panel" role="tabpanel" aria-labelledby={`tab-${tab}`} className="workspace-tab-panel">
-          {tab === 'workspace' ? demo ? <SampleWorkspace onReview={onReview} /> : project ? <LiveWorkspace project={project} capabilities={capabilities} eventFeed={eventFeed} onRefresh={onRefreshEvents} /> : <LiveEmpty title="No project loaded" detail="Open a project to see its plan state and recorded history." />
+          {tab === 'workspace' ? demo ? <SampleWorkspace onReview={onReview} /> : project ? <LiveWorkspace project={project} capabilities={capabilities} eventFeed={eventFeed} workspaceView={workspaceView} onRefresh={onRefreshEvents} /> : <LiveEmpty title="No project loaded" detail="Open a project to see its call, repository and preparation state." />
             : tab === 'changes' ? demo ? <SampleChanges onReview={onReview} /> : <LiveEmpty title="No change set available" detail="No code changes have been reported for this project." />
             : demo ? <SampleChecks onReview={onReview} /> : <LiveEmpty title="No checks have run" detail="Acceptance checks appear here only after a run reports results. No run has started." />}
         </div>
@@ -642,20 +739,96 @@ function Workspace({ demo, engineer, projectName, project, status, auth, capabil
   </main>
 }
 
-function LiveWorkspace({ project, capabilities, eventFeed, onRefresh }: { project: LiveProject; capabilities: CapabilityState; eventFeed: EventFeed; onRefresh: () => void }) {
-  const blockers = executionBlockers(capabilities.state === 'ready' ? capabilities.value : null)
-  const events = eventFeed.projectId === project.projectId ? [...eventFeed.events].reverse().slice(0, 100) : []
-  const executionText = blockers.length ? `Execution is blocked. ${blockers.join(' ')}`
-    : !project.plan ? 'There is no plan yet. No run has been started.'
-    : !project.approved ? 'The plan is waiting for your approval. No run has been started.'
-    : 'The plan is approved. No run has been started, and runs are never started automatically.'
+function LiveWorkspace({ project, capabilities, eventFeed, workspaceView, onRefresh }: { project: LiveProject; capabilities: CapabilityState; eventFeed: EventFeed; workspaceView: WorkspaceView; onRefresh: () => void }) {
+  const sameProject = eventFeed.projectId === project.projectId
+  const events = sameProject ? [...eventFeed.events].reverse().slice(0, 100) : []
+  const preparation = sameProject ? eventFeed.preparation ?? latestPreparation(eventFeed.events) : null
+  const workspace = workspaceView.projectId === project.projectId ? workspaceView : { projectId: project.projectId, status: null }
   return <div style={{ display: 'grid', gap: 14 }}>
-    <article className="detail-card"><h3>Execution</h3><CapabilityStrip capabilities={capabilities} /><p role="status">{executionText}</p></article>
+    <PreparationCard project={project} preparation={preparation} workspace={workspace} />
+    <article className="detail-card"><h3>Call</h3><CapabilityStrip capabilities={capabilities} /><p className="small-muted">Start the call, connect an operator-approved checkout, then ask the engineer to load the project. Indexing starts from that request. No plan approval is required to inspect or index.</p></article>
     <article className="detail-card"><h3>Project history</h3>
       <div style={{ maxHeight: 280, overflowY: 'auto' }}>{events.length ? events.map(item => <p className="activity-row" key={item.eventId}><code>{item.type}</code><small>Event {item.sequence}</small></p>) : <p className="small-muted">{eventFeed.status === 'error' ? 'History could not be loaded.' : 'No events have been recorded yet.'}</p>}</div>
       {eventFeed.status === 'error' && eventFeed.error && <p role="alert" className="small-muted">{eventFeed.error}</p>}
       <p className="small-muted">{eventFeed.status === 'polling' ? 'Checking for new events every few seconds.' : eventFeed.status === 'paused' ? 'Automatic refresh stopped. Refresh to check again.' : ''}</p>
       <Button onClick={onRefresh}>Refresh history</Button></article>
+  </div>
+}
+
+function PreparationCard({ project, preparation, workspace }: { project: LiveProject; preparation: PreparationStatus | null; workspace: WorkspaceView }) {
+  const phaseLabel: Record<PreparationStatus['phase'], string> = {
+    queued: 'Queued',
+    preparing: 'Preparing the VM',
+    indexing: 'Indexing the project',
+    ready: 'Ready',
+    failed: 'Preparation failed',
+  }
+  const tone = preparation?.phase === 'ready' ? 'green' : preparation?.phase === 'failed' ? 'amber' : preparation ? 'violet' : 'gray'
+  const observed = workspace.status?.observedState
+  const facts = [
+    preparation?.fileCount !== undefined ? `${preparation.fileCount} files` : null,
+    preparation?.byteCount !== undefined ? `${preparation.byteCount} bytes` : null,
+    preparation?.indexElapsedMs !== undefined ? `index ${preparation.indexElapsedMs} ms` : null,
+    preparation?.elapsedMs !== undefined ? `elapsed ${preparation.elapsedMs} ms` : null,
+    preparation?.repositoryCommit ? `commit ${preparation.repositoryCommit}` : null,
+  ].filter((item): item is string => item !== null)
+  return <article className="detail-card" aria-label="Project preparation">
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+      <h3>Project</h3>
+      <StatusPill tone={tone}>{preparation ? phaseLabel[preparation.phase] : 'Not started'}</StatusPill>
+    </div>
+    <p role="status">{project.repositoryUrl ? `Connected repository: ${project.repositoryUrl}` : 'No repository connected yet.'}</p>
+    <p className="small-muted">{preparation ? 'Ask the engineer on the call to load the project. This follows the latest preparation event; nothing here is estimated.' : 'Connect an operator-approved checkout, then ask the engineer on the call to load the project. A remote URL by itself does not load files.'}</p>
+    {facts.length > 0 && <p className="small-muted">{facts.join(' · ')}</p>}
+    {preparation?.phase === 'failed' && <p role="alert" className="small-muted">{preparation.message ?? preparation.errorCode ?? 'Preparation failed. No files were marked ready.'}</p>}
+    {observed && <p className="small-muted">Workspace observed state: {observed}{workspace.status?.desiredState ? ` (desired ${workspace.status.desiredState})` : ''}.</p>}
+    {workspace.error && <p className="small-muted" role="status">Workspace status could not be read: {workspace.error}</p>}
+  </article>
+}
+
+function LiveMediaPanel({ live }: { live: LiveMedia }) {
+  const { voice, screen } = live
+  const voiceStep = { permission: 'Waiting for your browser’s microphone prompt…', session: 'Starting a call session…', relay: 'Connecting to the call relay…', ready: '' }
+  const screenStep = { permission: 'Waiting for the screen picker…', session: 'Starting a capture session…', preview: 'Waiting for the first video frame…' }
+  const header = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 7 } satisfies CSSProperties
+  const controls = { flexWrap: 'wrap', marginTop: 8, marginBottom: 0 } satisfies CSSProperties
+  const time = (iso: string | null) => iso ? new Date(iso).toLocaleTimeString() : 'unknown time'
+  const inspection = screen.inspection?.result ?? null
+  return <div className="voice-card" aria-label="Voice and screen" style={{ marginBottom: 10 }}>
+    <div style={header}><strong style={{ fontSize: 11, fontWeight: 500 }}>Voice call</strong><StatusPill tone={voice.phase === 'live' ? 'green' : voice.phase === 'starting' ? 'amber' : 'gray'}>{voice.phase === 'live' ? 'Live' : voice.phase === 'starting' ? 'Connecting' : 'Not connected'}</StatusPill></div>
+    {voice.phase === 'starting' && voice.step && <p className="small-muted" role="status">{voiceStep[voice.step]}</p>}
+    {voice.phase === 'live' && <p className="small-muted" role="status">Your microphone is on and sending audio to Ranger, which relays it to xAI. Ranger does not record it.{voice.responding ? ' Ranger is speaking.' : ''}</p>}
+    {voice.phase === 'idle' && live.voiceBlocked && <p className="small-muted" role="status">Calls are not offered: {live.voiceBlocked}</p>}
+    {voice.error && <p className="small-muted" role="alert">{voice.error}</p>}
+    {voice.notice && <p className="small-muted" role="status">{voice.notice}</p>}
+    {voice.cleanup.phase === 'ending' && <p className="small-muted" role="status">Ending the previous call on Ranger…</p>}
+    {voice.cleanup.phase === 'failed' && <p className="small-muted" role="alert">{voice.cleanup.message}</p>}
+    <div className="media-controls" style={controls}>
+      {voice.cleanup.phase === 'failed' && <Button onClick={live.onRetryVoiceCleanup}>Retry ending call</Button>}
+      {voice.phase === 'idle' && <Button onClick={live.onStartVoice} disabled={live.voiceBlocked !== null || voice.cleanup.phase !== 'idle'}>Start call</Button>}
+      {voice.phase === 'starting' && <Button onClick={live.onStopVoice}>Cancel</Button>}
+      {voice.phase === 'live' && <><Button onClick={live.onStopVoice}>End call</Button><Button onClick={live.onInterrupt}>Interrupt voice</Button></>}
+    </div>
+    <hr />
+    <div style={header}><strong style={{ fontSize: 11, fontWeight: 500 }}>Screen share</strong><StatusPill tone={screen.phase === 'sharing' ? 'green' : screen.phase === 'starting' ? 'amber' : 'gray'}>{screen.phase === 'sharing' ? 'Sharing' : screen.phase === 'starting' ? 'Starting' : 'Not shared'}</StatusPill></div>
+    {screen.phase === 'starting' && screen.step && <p className="small-muted" role="status">{screenStep[screen.step]}</p>}
+    {screen.phase === 'sharing' && <p className="small-muted" role="status">Ranger receives about one still frame per second and only looks when you ask. Frames are not recorded and Ranger cannot control your screen. {screen.lastFrame ? `${screen.framesSent} sent, latest ${screen.lastFrame.width}×${screen.lastFrame.height} at ${time(screen.lastFrame.capturedAt)}.` : 'No frame has reached Ranger yet.'}{screen.framesDropped > 0 ? ` ${screen.framesDropped} skipped.` : ''}</p>}
+    {screen.phase === 'sharing' && live.inspectBlocked && <p className="small-muted" role="status">Inspection is not offered: {live.inspectBlocked}</p>}
+    {screen.error && <p className="small-muted" role="alert">{screen.error}</p>}
+    {screen.notice && <p className="small-muted" role="status">{screen.notice}</p>}
+    {screen.cleanup.phase === 'ending' && <p className="small-muted" role="status">Ending the previous screen share on Ranger…</p>}
+    {screen.cleanup.phase === 'failed' && <p className="small-muted" role="alert">{screen.cleanup.message}</p>}
+    <div className="media-controls" style={controls}>
+      {screen.cleanup.phase === 'failed' && <Button onClick={live.onRetryScreenCleanup}>Retry ending screen share</Button>}
+      {screen.phase === 'idle' && <Button onClick={live.onStartScreen} disabled={live.screenBlocked !== null || screen.cleanup.phase !== 'idle'} title={live.screenBlocked ?? undefined}>Share screen</Button>}
+      {screen.phase === 'starting' && <Button onClick={live.onStopScreen}>Cancel</Button>}
+      {screen.phase === 'sharing' && <><Button onClick={live.onStopScreen}>Stop sharing</Button><Button onClick={live.onInspect} disabled={screen.inspecting || live.inspectBlocked !== null} title={live.inspectBlocked ?? undefined}>{screen.inspecting ? 'Looking…' : 'Inspect screen'}</Button></>}
+    </div>
+    {screen.phase === 'sharing' && inspection && <div style={{ marginTop: 8 }} role="status" aria-label="Screen inspection result">
+      {inspection.state === 'observed'
+        ? <><p className="small-muted">Ranger’s reading of the frame captured at {time(inspection.sourceTimestamp)} (frame {inspection.sourceFrameId}). It can be wrong.</p><ul className="plan-list">{inspection.observations.map((item, i) => <li key={`${item.text}-${i}`}>{item.text} <small>({Math.round(item.uncertainty * 100)}% uncertain)</small></li>)}</ul></>
+        : <p className="small-muted">No current frame was available ({inspection.freshness}), so nothing was inspected. Wait for the next frame and try again.</p>}
+    </div>}
   </div>
 }
 

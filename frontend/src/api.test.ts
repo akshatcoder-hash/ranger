@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { MANUAL_PLAN_SCOPE, rangerApi } from './api'
+import { MANUAL_PLAN_SCOPE, rangerApi, voiceRelayUrl } from './api'
 
 const PROJECT = 'prj_11111111-1111-1111-1111-111111111111'
 const CONVERSATION = 'cnv_22222222-2222-2222-2222-222222222222'
 const PLAN = 'pln_33333333-3333-3333-3333-333333333333'
+const VOICE = 'vcs_44444444-4444-4444-4444-444444444444'
+const CAPTURE = 'cap_55555555-5555-5555-5555-555555555555'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -283,7 +285,7 @@ describe('browser backend adapter', () => {
 
     await expect(rangerApi.getEvents(PROJECT, new AbortController().signal, 'opaque-cursor')).resolves.toEqual({
       ok: true,
-      data: { events: [{ eventId: 'evt_1', sequence: 4, type: 'conversation.message.created' }], cursor: 'opaque-next', hasMore: false },
+      data: { events: [{ eventId: 'evt_1', sequence: 4, type: 'conversation.message.created', data: { secret: 'hidden' } }], cursor: 'opaque-next', hasMore: false },
     })
 
     const controller = new AbortController()
@@ -339,21 +341,147 @@ describe('browser backend adapter', () => {
     if (!failed.ok) expect(failed.message).toContain('cursor-9')
   })
 
-  it('refuses media before creating a session and does not serialize the stream', async () => {
+  it('reads workspace status and keeps preparation event data', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path.endsWith('/workspace/status')) {
+        return json({
+          workspace: { projectId: PROJECT, adapter: 'instabox', adapterKind: 'vm', desiredState: 'running', observedState: 'ready', sourceRevision: 'abc123' },
+          requestId: 'req-workspace',
+        })
+      }
+      return json({
+        events: [
+          { eventId: 'evt_1', sequence: 1, type: 'conversation.message.created' },
+          { eventId: 'evt_2', sequence: 2, type: 'workspace.preparation.updated', data: { jobId: 'job_1', phase: 'indexing', fileCount: 40, indexElapsedMs: 900 } },
+        ],
+        nextCursor: null,
+        hasMore: false,
+        requestId: 'req-events',
+      })
+    }))
+
+    await expect(rangerApi.getWorkspaceStatus(PROJECT, new AbortController().signal)).resolves.toEqual({
+      ok: true,
+      data: { projectId: PROJECT, adapter: 'instabox', adapterKind: 'vm', desiredState: 'running', observedState: 'ready', sourceRevision: 'abc123' },
+    })
+    const events = await rangerApi.getEvents(PROJECT, new AbortController().signal)
+    expect(events.ok).toBe(true)
+    if (events.ok) {
+      expect(events.data.events[0]).toEqual({ eventId: 'evt_1', sequence: 1, type: 'conversation.message.created' })
+      expect(events.data.events[1]?.data).toEqual({ jobId: 'job_1', phase: 'indexing', fileCount: 40, indexElapsedMs: 900 })
+    }
+    await expect(rangerApi.getWorkspaceStatus('northstar', new AbortController().signal)).resolves.toMatchObject({ ok: false, reason: 'backend' })
+  })
+
+  it('starts a voice session and issues a relay ticket without exposing it outside the result', async () => {
+    vi.stubGlobal('window', { location: { origin: 'http://127.0.0.1:5173', protocol: 'http:', host: '127.0.0.1:5173' } })
+    const calls: { path: string; init?: RequestInit }[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ path: String(input), init })
+      if (String(input).endsWith('/voice/sessions')) {
+        return json({ session: { sessionId: VOICE, model: 'grok-voice-latest', state: 'active', expiresAt: '2026-01-01T00:00:00.000Z' } })
+      }
+      return json({ ticket: 'tkt-secret', expiresAt: '2026-01-01T00:01:00.000Z' })
+    }))
+
+    const started = await rangerApi.startVoiceSession(PROJECT, CONVERSATION, new AbortController().signal)
+    const ticket = await rangerApi.createRelayTicket(PROJECT, new AbortController().signal)
+
+    expect(started).toEqual({ ok: true, data: { sessionId: VOICE, model: 'grok-voice-latest', expiresAt: '2026-01-01T00:00:00.000Z' } })
+    expect(calls[0].path).toBe(`/v1/projects/${PROJECT}/voice/sessions`)
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ conversationId: CONVERSATION })
+    expect(new Headers(calls[0].init?.headers).get('idempotency-key')).toMatch(/^[0-9a-f]{32}$/)
+    expect(calls[1].path).toBe('/v1/auth/connection-tickets')
+    expect(JSON.parse(String(calls[1].init?.body))).toEqual({ projectId: PROJECT, purpose: 'voice-relay', origin: 'http://127.0.0.1:5173' })
+    expect(ticket).toEqual({ ok: true, data: { ticket: 'tkt-secret' } })
+  })
+
+  it('rejects incomplete or inactive media sessions instead of reporting a started call', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ session: { sessionId: VOICE, state: 'ended' } })))
+    await expect(rangerApi.startVoiceSession(PROJECT, CONVERSATION, new AbortController().signal)).resolves.toMatchObject({ ok: false, reason: 'backend' })
+    vi.stubGlobal('fetch', vi.fn(async () => json({ session: { sessionId: 'cap_bad id', state: 'active', generation: 1 } })))
+    await expect(rangerApi.startCaptureSession(PROJECT, CONVERSATION, new AbortController().signal)).resolves.toMatchObject({ ok: false, reason: 'backend' })
+  })
+
+  it('builds same-origin relay URLs and refuses foreign ids before any request', async () => {
+    expect(voiceRelayUrl(PROJECT, VOICE, 'a b/c', { protocol: 'http:', host: '127.0.0.1:5173' }))
+      .toBe(`ws://127.0.0.1:5173/v1/projects/${PROJECT}/voice/sessions/${VOICE}/relay?ticket=a%20b%2Fc`)
+    expect(voiceRelayUrl(PROJECT, VOICE, 't', { protocol: 'https:', host: 'ranger.example' })).toMatch(/^wss:\/\/ranger\.example\//)
+
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    const stream = { getTracks: () => [] } as unknown as MediaStream
-
-    const started = await rangerApi.startMediaSession({
-      kind: 'voice',
-      stream,
-      projectId: PROJECT,
-      conversationId: CONVERSATION,
-    }, new AbortController().signal)
-
-    expect(started).toMatchObject({ ok: false, reason: 'unsupported' })
+    const signal = new AbortController().signal
+    await expect(rangerApi.startVoiceSession('demo', CONVERSATION, signal)).resolves.toMatchObject({ ok: false })
+    await expect(rangerApi.cancelVoiceResponse(PROJECT, 'cap_1', signal)).resolves.toMatchObject({ ok: false })
+    await expect(rangerApi.ingestCaptureFrame({ projectId: PROJECT, sessionId: VOICE, frameId: 'f', imageBase64: 'AA==', captureTimestamp: 'x' }, signal)).resolves.toMatchObject({ ok: false })
     expect(fetchMock).not.toHaveBeenCalled()
-    expect(JSON.stringify(started)).not.toContain('MediaStream')
+  })
+
+  it('cancels only the voice response and ends sessions on their own routes', async () => {
+    const paths: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      paths.push(String(input))
+      return String(input).endsWith('/response/cancel') ? json({ ok: true, interrupted: true }) : json({ session: { state: 'ended' } })
+    }))
+    const signal = new AbortController().signal
+
+    await expect(rangerApi.cancelVoiceResponse(PROJECT, VOICE, signal)).resolves.toEqual({ ok: true, data: { interrupted: true } })
+    await expect(rangerApi.endVoiceSession(PROJECT, VOICE, signal)).resolves.toEqual({ ok: true, data: undefined })
+    await expect(rangerApi.endCaptureSession(PROJECT, CAPTURE, signal)).resolves.toEqual({ ok: true, data: undefined })
+
+    expect(paths).toEqual([
+      `/v1/projects/${PROJECT}/voice/sessions/${VOICE}/response/cancel`,
+      `/v1/projects/${PROJECT}/voice/sessions/${VOICE}/end`,
+      `/v1/projects/${PROJECT}/capture/sessions/${CAPTURE}/end`,
+    ])
+    expect(paths.join()).not.toContain('/runs')
+  })
+
+  it('starts capture, ingests a frame with its id and timestamp, and keeps error details for pacing', async () => {
+    const calls: { path: string; body: unknown }[] = []
+    let ingest = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input)
+      calls.push({ path, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+      if (path.endsWith('/capture/sessions')) return json({ session: { sessionId: CAPTURE, generation: 1, state: 'active' } })
+      ingest += 1
+      if (ingest === 1) return json({ frame: { frameId: 'f-1', sessionId: CAPTURE, byteSize: 10, width: 640, height: 360, captureTimestamp: '2026-01-01T00:00:00.000Z', stored: true } })
+      return json({ requestId: 'req-rate', error: { code: 'rate_limited', message: 'slow down', details: { reason: 'upload_rate', retryAfterMs: 250 } } }, 429)
+    }))
+    const signal = new AbortController().signal
+
+    const session = await rangerApi.startCaptureSession(PROJECT, CONVERSATION, signal)
+    const frame = { projectId: PROJECT, sessionId: CAPTURE, frameId: 'f-1', imageBase64: '/9j/AA==', captureTimestamp: '2026-01-01T00:00:00.000Z' }
+    const accepted = await rangerApi.ingestCaptureFrame(frame, signal)
+    const limited = await rangerApi.ingestCaptureFrame({ ...frame, frameId: 'f-2' }, signal)
+
+    expect(session).toEqual({ ok: true, data: { sessionId: CAPTURE, generation: 1 } })
+    expect(calls[0].body).toEqual({ conversationId: CONVERSATION })
+    expect(calls[1].body).toEqual({ frameId: 'f-1', imageBase64: '/9j/AA==', captureTimestamp: '2026-01-01T00:00:00.000Z' })
+    expect(accepted).toEqual({ ok: true, data: { frameId: 'f-1', width: 640, height: 360, byteSize: 10, captureTimestamp: '2026-01-01T00:00:00.000Z' } })
+    expect(limited).toMatchObject({ ok: false, code: 'rate_limited', detail: 'upload_rate', retryAfterMs: 250 })
+  })
+
+  it('maps inspections with uncertainty and source frame, and refuses a malformed result', async () => {
+    const inspection = {
+      state: 'observed',
+      observations: [{ text: 'A terminal shows a failing test.', uncertainty: 1.7, sourceFrameId: 'f-1', sourceTimestamp: '2026-01-01T00:00:00.000Z' }],
+      sourceFrameId: 'f-1',
+      sourceTimestamp: '2026-01-01T00:00:00.000Z',
+      freshness: 'current',
+    }
+    vi.stubGlobal('fetch', vi.fn(async () => json({ inspection })))
+    const signal = new AbortController().signal
+    const mapped = await rangerApi.requestInspection(PROJECT, CAPTURE, signal)
+    expect(mapped).toMatchObject({ ok: true, data: { state: 'observed', freshness: 'current', sourceFrameId: 'f-1' } })
+    if (mapped.ok) expect(mapped.data.observations[0].uncertainty).toBe(1)
+
+    vi.stubGlobal('fetch', vi.fn(async () => json({ inspection: { state: 'observed', observations: [], freshness: 'current' } })))
+    await expect(rangerApi.requestInspection(PROJECT, CAPTURE, signal)).resolves.toMatchObject({ ok: false, reason: 'backend' })
+
+    vi.stubGlobal('fetch', vi.fn(async () => json({ inspection: { state: 'fresh-frame-requested', observations: [], sourceFrameId: null, sourceTimestamp: null, freshness: 'absent' } })))
+    await expect(rangerApi.requestInspection(PROJECT, CAPTURE, signal)).resolves.toMatchObject({ ok: true, data: { state: 'fresh-frame-requested', freshness: 'absent' } })
   })
 })
 

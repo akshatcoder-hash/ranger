@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEMO_PROJECT_ID, applyEventPage, executionBlockers, isLiveProjectId, mergeEvents, parseLines, normalizeCredential, planCreateOutcome, projectViewEngineerName, validateRepositoryInput } from './liveHelpers'
+import { DEMO_PROJECT_ID, applyEventPage, executionBlockers, isLiveProjectId, latestPreparation, mergeEvents, parseLines, normalizeCredential, planCreateOutcome, projectViewEngineerName, validateRepositoryInput } from './liveHelpers'
 
 describe('isLiveProjectId', () => {
   it('accepts backend project ids and rejects the demo id', () => {
@@ -40,13 +40,52 @@ describe('executionBlockers', () => {
 })
 
 describe('validateRepositoryInput', () => {
-  it('requires https, no credentials and a clean ref', () => {
+  it('accepts https, an absolute local path and a hostless file URL', () => {
     expect(validateRepositoryInput('https://github.com/o/r', 'main')).toBeNull()
+    expect(validateRepositoryInput('/srv/checkouts/customer', 'main')).toBeNull()
+    expect(validateRepositoryInput('file:///srv/checkouts/customer', 'main')).toBeNull()
+  })
+
+  it('rejects a remote host, embedded credentials and other schemes', () => {
     expect(validateRepositoryInput('git@github.com:o/r.git', 'main')).not.toBeNull()
     expect(validateRepositoryInput('http://github.com/o/r', 'main')).not.toBeNull()
     expect(validateRepositoryInput('https://user:pw@github.com/o/r', 'main')).not.toBeNull()
+    expect(validateRepositoryInput('https://token@github.com/o/r', 'main')).not.toBeNull()
+    expect(validateRepositoryInput('file://files.example/repo', 'main')).not.toBeNull()
+    expect(validateRepositoryInput('file://user:pw@localhost/repo', 'main')).not.toBeNull()
+    expect(validateRepositoryInput('ssh://git@github.com/o/r.git', 'main')).not.toBeNull()
     expect(validateRepositoryInput('https://github.com/o/r', 'a b')).not.toBeNull()
     expect(validateRepositoryInput('https://github.com/o/r', '')).not.toBeNull()
+  })
+})
+
+describe('latestPreparation', () => {
+  const prep = (sequence: number, data: Record<string, unknown>) => ({ eventId: `e${sequence}`, sequence, type: 'workspace.preparation.updated', data })
+
+  it('keeps the latest phase and only the timings the event actually carried', () => {
+    const status = latestPreparation([
+      prep(1, { jobId: 'job_1', phase: 'queued' }),
+      prep(4, { jobId: 'job_1', phase: 'indexing', fileCount: 1280, indexElapsedMs: 840, elapsedMs: 2100, repositoryCommit: 'abc123' }),
+      prep(2, { jobId: 'job_1', phase: 'preparing' }),
+    ])
+    expect(status).toEqual({ jobId: 'job_1', phase: 'indexing', fileCount: 1280, indexElapsedMs: 840, elapsedMs: 2100, repositoryCommit: 'abc123' })
+    expect(latestPreparation([...[prep(4, { jobId: 'job_1', phase: 'indexing', fileCount: 1280, indexElapsedMs: 840 })], prep(5, { jobId: 'job_1', phase: 'ready' })]))
+      .toEqual({ jobId: 'job_1', phase: 'ready', fileCount: 1280, indexElapsedMs: 840 })
+  })
+
+  it('does not invent ready and ignores another event type or a phase without a job', () => {
+    expect(latestPreparation([{ sequence: 1, type: 'repository.connected', data: { phase: 'ready', jobId: 'job_1' } }])).toBeNull()
+    expect(latestPreparation([prep(1, { phase: 'ready' })])).toBeNull()
+    const ready = latestPreparation([prep(1, { jobId: 'job_1', phase: 'ready' })])
+    expect(ready?.phase).toBe('ready')
+    expect(ready?.fileCount).toBeUndefined()
+  })
+
+  it('isolates status to the events it is given', () => {
+    const other = latestPreparation([prep(9, { jobId: 'job_other', phase: 'ready', fileCount: 3 })])
+    const current = latestPreparation([prep(1, { jobId: 'job_current', phase: 'preparing' })])
+    expect(other?.jobId).toBe('job_other')
+    expect(current).toEqual({ jobId: 'job_current', phase: 'preparing' })
   })
 })
 

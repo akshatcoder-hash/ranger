@@ -29,16 +29,100 @@ export function executionBlockers(capabilities: Capabilities | null): string[] {
   return blockers
 }
 
-/** Returns a user-facing problem, or null when the repository URL and ref look acceptable. The backend still decides. */
+/**
+ * Returns a user-facing problem, or null when the repository reference and ref look acceptable.
+ * Accepts an https URL, an absolute local path, or a file URL with no host and no credentials.
+ * The backend still decides, including whether a local path is an operator-approved checkout.
+ */
 export function validateRepositoryInput(url: string, ref: string): string | null {
-  let parsed: URL
-  try { parsed = new URL(url.trim()) } catch { return 'Enter a full repository URL, for example https://github.com/owner/name.' }
-  if (parsed.protocol !== 'https:') return 'Only https repository URLs are supported.'
-  if (parsed.username || parsed.password) return 'Do not put credentials in the repository URL.'
+  const cleanUrl = url.trim()
+  if (!cleanUrl) return 'Enter an https repository URL, or an absolute local checkout path on the Ranger server.'
+  if (cleanUrl.startsWith('/')) {
+    if (cleanUrl.includes('\0') || cleanUrl.includes('\\')) return 'That local path is not a plain absolute path.'
+  } else {
+    let parsed: URL
+    try { parsed = new URL(cleanUrl) } catch { return 'Enter an https repository URL, an absolute local path, or a file:// URL for a checkout on the Ranger server.' }
+    if (parsed.protocol === 'file:') {
+      if (parsed.host) return 'A file URL cannot name another host. Use a local checkout path on the Ranger server.'
+      if (parsed.username || parsed.password) return 'Do not put credentials in the repository URL.'
+    } else if (parsed.protocol === 'https:') {
+      if (parsed.username || parsed.password) return 'Do not put credentials in the repository URL.'
+    } else {
+      return 'Use an https URL, an absolute local path, or a file:// URL. A remote URL is only a reference; it does not load files.'
+    }
+  }
   const cleanRef = ref.trim()
   if (!cleanRef) return 'Enter a branch, tag or commit to use.'
   if (cleanRef.length > 255 || /\s/.test(cleanRef)) return 'The ref cannot contain spaces.'
   return null
+}
+
+export const PREPARATION_EVENT = 'workspace.preparation.updated'
+export const PREPARATION_PHASES = ['queued', 'preparing', 'indexing', 'ready', 'failed'] as const
+export type PreparationPhase = (typeof PREPARATION_PHASES)[number]
+export type PreparationStatus = {
+  jobId: string
+  phase: PreparationPhase
+  fileCount?: number
+  byteCount?: number
+  indexElapsedMs?: number
+  elapsedMs?: number
+  errorCode?: string
+  message?: string
+  repositoryCommit?: string
+}
+
+type PreparationEvent = { sequence: number; type: string; data?: Record<string, unknown> }
+
+function optionalCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+function optionalText(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined
+}
+
+/** Latest preparation phase for one project. A later event keeps an earlier real count when it omits that field. Missing data never becomes ready. */
+export function latestPreparation(events: readonly PreparationEvent[]): PreparationStatus | null {
+  const ordered = [...events].filter(event => event.type === PREPARATION_EVENT && event.data).sort((left, right) => left.sequence - right.sequence)
+  let latest: PreparationStatus | null = null
+  for (const event of ordered) {
+    const data = event.data
+    if (!data) continue
+    const phase = data.phase
+    const jobId = data.jobId
+    if (typeof jobId !== 'string' || jobId === '' || typeof phase !== 'string' || !PREPARATION_PHASES.includes(phase as PreparationPhase)) continue
+    const previous: PreparationStatus | null = latest?.jobId === jobId ? latest : null
+    const carried: PreparationStatus = {
+      jobId,
+      phase: phase as PreparationPhase,
+      ...(previous?.fileCount !== undefined ? { fileCount: previous.fileCount } : {}),
+      ...(previous?.byteCount !== undefined ? { byteCount: previous.byteCount } : {}),
+      ...(previous?.indexElapsedMs !== undefined ? { indexElapsedMs: previous.indexElapsedMs } : {}),
+      ...(previous?.elapsedMs !== undefined ? { elapsedMs: previous.elapsedMs } : {}),
+      ...(previous?.errorCode ? { errorCode: previous.errorCode } : {}),
+      ...(previous?.message ? { message: previous.message } : {}),
+      ...(previous?.repositoryCommit ? { repositoryCommit: previous.repositoryCommit } : {}),
+    }
+    const fileCount = optionalCount(data.fileCount)
+    const byteCount = optionalCount(data.byteCount)
+    const indexElapsedMs = optionalCount(data.indexElapsedMs)
+    const elapsedMs = optionalCount(data.elapsedMs)
+    const errorCode = optionalText(data.errorCode)
+    const message = optionalText(data.message)
+    const repositoryCommit = optionalText(data.repositoryCommit)
+    latest = {
+      ...carried,
+      ...(fileCount !== undefined ? { fileCount } : {}),
+      ...(byteCount !== undefined ? { byteCount } : {}),
+      ...(indexElapsedMs !== undefined ? { indexElapsedMs } : {}),
+      ...(elapsedMs !== undefined ? { elapsedMs } : {}),
+      ...(errorCode ? { errorCode } : {}),
+      ...(message ? { message } : {}),
+      ...(repositoryCommit ? { repositoryCommit } : {}),
+    }
+  }
+  return latest
 }
 
 type CreateResult = { ok: true; data: { projectId: string } } | { ok: false; reason: string; message: string }
