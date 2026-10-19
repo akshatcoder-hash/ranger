@@ -55,6 +55,22 @@ export type WorkspaceStatus = {
   observedState: string
   sourceRevision: string | null
 }
+export type PlanState = { plan: LivePlan | null; approved: boolean }
+export type RunRecord = {
+  runId: string
+  projectId: string
+  planId: string
+  planVersion: number
+  state: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+  createdAt: string
+  updatedAt: string
+  failureCode?: string
+  failureMessage?: string
+}
+export type WorkspaceFile = { path: string; sizeBytes: number; text: string | null }
+export type WorkspaceDiff = { diff: string; changedFiles: string[] }
+export type TestResult = { testResultId: string; suite: string; state: string; exitCode: number; ranAt: string }
+export type RunTool = { callId: string; name: string; status: string; result?: Record<string, unknown>; error?: string; createdAt: string }
 export type ProjectEvent = { eventId: string; sequence: number; type: string; data?: Record<string, unknown> }
 
 export interface RangerApi {
@@ -62,6 +78,12 @@ export interface RangerApi {
   getSession(signal: AbortSignal): Promise<ApiResult<{ principalId: string }>>
   getCapabilities(signal: AbortSignal): Promise<ApiResult<{ xai: boolean; instabox: boolean; trace: boolean }>>
   createProject(request: ProjectRequest, signal: AbortSignal): Promise<ApiResult<{ projectId: string; conversationId: string }>>
+  getPlanState(projectId: string, signal: AbortSignal): Promise<ApiResult<PlanState>>
+  listRuns(projectId: string, signal: AbortSignal): Promise<ApiResult<RunRecord[]>>
+  readWorkspaceFile(projectId: string, path: string, signal: AbortSignal): Promise<ApiResult<WorkspaceFile>>
+  getWorkspaceDiff(projectId: string, signal: AbortSignal): Promise<ApiResult<WorkspaceDiff>>
+  listTestResults(projectId: string, signal: AbortSignal): Promise<ApiResult<TestResult[]>>
+  listRunTools(projectId: string, runId: string, signal: AbortSignal): Promise<ApiResult<RunTool[]>>
   loadProject(projectId: string, signal: AbortSignal): Promise<ApiResult<LiveProject>>
   renameEngineer(projectId: string, name: string, signal: AbortSignal): Promise<ApiResult<void>>
   sendMessage(projectId: string, conversationId: string, content: string, signal: AbortSignal): Promise<ApiResult<void>>
@@ -99,7 +121,7 @@ const TITLE_LIMIT = 200
 const MESSAGE_PAGE = '100'
 const EVENT_PAGE = '100'
 const MAX_EVENT_PAGES = 50
-const ID = /^(prj|cnv|pln|vcs|cap)_[0-9a-fA-F-]+$/
+const ID = /^(prj|cnv|pln|vcs|cap|run)_[0-9a-fA-F-]+$/
 
 type Envelope = { requestId?: string; error?: { code?: string; message?: string; details?: { reason?: unknown; retryAfterMs?: unknown } } }
 
@@ -201,7 +223,7 @@ class HttpRangerApi implements RangerApi {
 
     const [messages, planState, repository] = await Promise.all([
       conversationId === null ? Promise.resolve(ok<string[]>([])) : this.readMessages(projectId, conversationId, signal),
-      this.readPlan(projectId, signal),
+      this.getPlanState(projectId, signal),
       this.readRepository(projectId, signal),
     ])
     if (!messages.ok) return messages
@@ -310,6 +332,55 @@ class HttpRangerApi implements RangerApi {
     if (!result.ok) return result
     const workspace = toWorkspaceStatus(result.data.workspace)
     return workspace ? ok(workspace) : fail('backend', 'The workspace status response was incomplete.')
+  }
+
+  async listRuns(projectId: string, signal: AbortSignal): Promise<ApiResult<RunRecord[]>> {
+    if (!validId(projectId, 'prj')) return fail('backend', 'That project id is not a Ranger project id.')
+    const result = await this.request<{ runs?: RunRecord[] }>('GET', `/v1/projects/${projectId}/runs`, signal)
+    if (!result.ok) return result
+    const runs = result.data.runs
+    if (!Array.isArray(runs) || runs.some(run => !run || !validId(run.runId, 'run') || run.projectId !== projectId || !validId(run.planId, 'pln') || !Number.isInteger(run.planVersion) || !['queued', 'running', 'succeeded', 'failed', 'cancelled'].includes(run.state) || typeof run.createdAt !== 'string' || typeof run.updatedAt !== 'string')) return fail('backend', 'The run list response was incomplete.')
+    return ok([...runs].sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.runId.localeCompare(left.runId)))
+  }
+
+  async readWorkspaceFile(projectId: string, path: string, signal: AbortSignal): Promise<ApiResult<WorkspaceFile>> {
+    if (!validId(projectId, 'prj') || !path) return fail('backend', 'A project and file path are required.')
+    const result = await this.request<{ path?: string; contentBase64?: string; sizeBytes?: number }>('GET', `/v1/projects/${projectId}/workspace/file?${new URLSearchParams({ path })}`, signal)
+    if (!result.ok) return result
+    if (result.data.path !== path || typeof result.data.contentBase64 !== 'string' || typeof result.data.sizeBytes !== 'number') return fail('backend', 'The workspace file response was incomplete.')
+    let bytes: Uint8Array
+    try { bytes = Uint8Array.from(atob(result.data.contentBase64), character => character.charCodeAt(0)) }
+    catch { return fail('backend', 'The workspace file encoding was invalid.') }
+    if (bytes.length !== result.data.sizeBytes) return fail('backend', 'The workspace file size did not match its contents.')
+    let text: string | null = null
+    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); if (text.includes('\0')) text = null } catch { /* Binary content is not rendered as source. */ }
+    return ok({ path, sizeBytes: result.data.sizeBytes, text })
+  }
+
+  async getWorkspaceDiff(projectId: string, signal: AbortSignal): Promise<ApiResult<WorkspaceDiff>> {
+    if (!validId(projectId, 'prj')) return fail('backend', 'That project id is not a Ranger project id.')
+    const result = await this.request<WorkspaceDiff>('GET', `/v1/projects/${projectId}/workspace/diff`, signal)
+    if (!result.ok) return result
+    if (typeof result.data.diff !== 'string' || !Array.isArray(result.data.changedFiles) || result.data.changedFiles.some(path => typeof path !== 'string')) return fail('backend', 'The workspace diff response was incomplete.')
+    return ok({ diff: result.data.diff, changedFiles: result.data.changedFiles })
+  }
+
+  async listTestResults(projectId: string, signal: AbortSignal): Promise<ApiResult<TestResult[]>> {
+    if (!validId(projectId, 'prj')) return fail('backend', 'That project id is not a Ranger project id.')
+    const result = await this.request<{ testResults?: TestResult[] }>('GET', `/v1/projects/${projectId}/workspace/test-results`, signal)
+    if (!result.ok) return result
+    const rows = result.data.testResults
+    if (!Array.isArray(rows) || rows.some(row => !row || typeof row.testResultId !== 'string' || typeof row.suite !== 'string' || typeof row.state !== 'string' || !Number.isInteger(row.exitCode) || typeof row.ranAt !== 'string')) return fail('backend', 'The test results response was incomplete.')
+    return ok([...rows].sort((left, right) => right.ranAt.localeCompare(left.ranAt)))
+  }
+
+  async listRunTools(projectId: string, runId: string, signal: AbortSignal): Promise<ApiResult<RunTool[]>> {
+    if (!validId(projectId, 'prj') || !validId(runId, 'run')) return fail('backend', 'A project and run id are required.')
+    const result = await this.request<{ tools?: RunTool[] }>('GET', `/v1/projects/${projectId}/runs/${runId}/tools`, signal)
+    if (!result.ok) return result
+    const rows = result.data.tools
+    if (!Array.isArray(rows) || rows.some(row => !row || typeof row.callId !== 'string' || typeof row.name !== 'string' || typeof row.status !== 'string' || typeof row.createdAt !== 'string')) return fail('backend', 'The run tools response was incomplete.')
+    return ok(rows)
   }
 
   async getEvents(projectId: string, signal: AbortSignal, cursor?: string): Promise<ApiResult<{ events: ProjectEvent[]; cursor?: string; hasMore: boolean }>> {
@@ -461,10 +532,12 @@ class HttpRangerApi implements RangerApi {
     return ok(messages)
   }
 
-  private async readPlan(projectId: string, signal: AbortSignal): Promise<ApiResult<{ plan: LivePlan | null; approved: boolean }>> {
+  async getPlanState(projectId: string, signal: AbortSignal): Promise<ApiResult<PlanState>> {
+    if (!validId(projectId, 'prj')) return fail('backend', 'That project id is not a Ranger project id.')
     const listed = await this.request<{ plans?: RawPlan[] }>('GET', `/v1/projects/${projectId}/plans`, signal)
     if (!listed.ok) return listed
-    const plans = (listed.data.plans ?? []).filter(plan => typeof plan.version === 'number')
+    if (!Array.isArray(listed.data.plans) || listed.data.plans.some(plan => !toPlan(plan))) return fail('backend', 'The plan list response was incomplete.')
+    const plans = listed.data.plans
     const latest = plans.reduce<RawPlan | null>((current, plan) => (current === null || (plan.version ?? 0) > (current.version ?? 0) ? plan : current), null)
     const plan = toPlan(latest)
     if (!plan) return ok({ plan: null, approved: false })
@@ -474,6 +547,7 @@ class HttpRangerApi implements RangerApi {
       signal,
     )
     if (!approvals.ok) return approvals
+    if (!Array.isArray(approvals.data.approvals)) return fail('backend', 'The approval list response was incomplete.')
     const approved = (approvals.data.approvals ?? []).some(approval =>
       approval.planId === plan.planId && approval.version === plan.version && approval.status === 'active')
     return ok({ plan, approved })

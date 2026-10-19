@@ -204,6 +204,17 @@ describe('voice transport', () => {
     expect(JSON.stringify(ctx.api.startVoiceSession.mock.calls)).not.toContain('getTracks')
   })
 
+  it('ends the call and releases its session when the microphone disappears', async () => {
+    const ctx = setup()
+    await goLive(ctx)
+    ctx.mic.endFromBrowser()
+    await tick()
+    expect(ctx.voice.status).toMatchObject({ phase: 'idle', notice: expect.stringContaining('microphone disconnected') })
+    expect(ctx.audio.audio.close).toHaveBeenCalledOnce()
+    expect(ctx.api.endVoiceSession).toHaveBeenCalledWith(PROJECT, VOICE, expect.anything())
+    expect(ctx.sockets[0].close).toHaveBeenCalled()
+  })
+
   it('sends microphone PCM as base64 append frames only after ready and drops it when the socket is backed up', async () => {
     const ctx = setup()
     await ctx.voice.start(TARGET)

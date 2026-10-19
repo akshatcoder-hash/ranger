@@ -565,6 +565,11 @@ export class VoiceChannel extends Store<VoiceStatus> {
     }
     if (!this.lifecycle.attach(operation, stream)) return
     run.stream = stream
+    for (const track of stream.getTracks()) {
+      track.addEventListener('ended', () => {
+        if (this.isCurrent(run)) this.stop('The microphone disconnected or access was stopped in the browser.')
+      })
+    }
     this.set({ step: 'session' })
 
     // Not tied to the run's abort signal: a session created after cancellation must be ended, not orphaned.
@@ -598,7 +603,7 @@ export class VoiceChannel extends Store<VoiceStatus> {
       this.fail(run, 'The browser could not open the call connection.')
       return
     }
-    run.readyTimer = this.deps.setTimer(() => this.fail(run, 'The call connection did not become ready in time. Nothing was started.'), VOICE_READY_TIMEOUT_MS)
+    run.readyTimer = this.deps.setTimer(() => this.fail(run, 'The call connection did not become ready in time, so it was ended.'), VOICE_READY_TIMEOUT_MS)
   }
 
   /** Stops local playback immediately and asks Ranger to cancel only the in-flight voice response. */
