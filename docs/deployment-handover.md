@@ -1,9 +1,26 @@
 # Deployment handover
 
+This records the earlier deployment. Later cloud fixes and verification are in `cloud-validation-2026-10-19.md`; they are not deployed merely by committing or pushing them.
+
 Ranger's integrated app (backend at the repository root, frontend in
 `frontend/`) is deployed and verified live as of **2026-10-19**. This is
 user-demo-scope validation, not production. Local development is covered in
 `docs/local-full-stack.md` and is not repeated here.
+
+## Cumulative VM limit migration (2026-10-19)
+
+The user clarified that five is the account-wide **simultaneous** VM limit;
+released free machines may be replaced sequentially without a cumulative
+creation limit. Current code supports an explicit JSON
+`instabox.maxAdditionalCreations: null`. Numeric caps continue to be enforced.
+The earlier deployment ledger recorded below remains capped until its
+operator explicitly migrates that field under `withLedgerLock`, using
+`readLedger` and `writeLedger` to preserve every existing counter, machine,
+pending reservation, operation, xAI budget, and unknown field. Do not delete,
+reseed, or reset the ledger. Code changes alone do not migrate a deployed
+ledger. Local concurrency remains one, VM lifetime remains at most 600 seconds,
+and the SDK checks account inventory before each create. No remote deployment
+or deployed-ledger migration is implied by this note.
 
 ## Live deployment
 

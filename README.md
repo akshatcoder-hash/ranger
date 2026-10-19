@@ -88,6 +88,7 @@ Environment variables (all optional except `RANGER_DATA_DIR`):
 | `RANGER_PORT` | API port | `3100` |
 | `RANGER_PREVIEW_PORT` | Preview gateway port | `3101` |
 | `RANGER_SECRET_FILE` | Protected file (mode 0600) with provider keys | unset |
+| `RANGER_SECRET_SOURCE` | `file` (protected file) or explicit `environment` opt-in | `file` |
 | `RANGER_LIVE_BUDGET_FILE` | Shared live-test budget ledger JSON | unset |
 | `RANGER_APPROVED_SNAPSHOT_ROOTS` | Absolute paths (path-delimiter separated) of operator-approved synthetic roots whose local git worktrees may be inspected for repository snapshots | unset (local inspection denied) |
 | `RANGER_CONFIG_FILE` | Optional limits/provider overrides JSON | unset |
@@ -218,13 +219,30 @@ survives API/worker restarts (WAL, foreign keys, busy timeout).
 
 ## Secrets
 
-Provider keys (`XAI_API_KEY`, `INSTABOX_API_KEY`) live only in the protected
-file `RANGER_SECRET_FILE` (mode 0600, e.g. `/etc/droid/environment`). Values
+Provider keys (`XAI_API_KEY`, `INSTABOX_API_KEY`) are selected from the protected
+file `RANGER_SECRET_FILE` by default (mode 0600, e.g. `/etc/droid/environment`). Values
 are read into the requesting process memory on demand and are never logged,
 committed, echoed into errors, or forwarded to guests/browsers. Nothing in
 this repository contains secret values; `src/secrets.ts` refuses permissive
 file modes and unknown names, and reports `not_configured` when no file is
-set.
+set. Ambient provider keys do not enable providers in the default mode.
+
+For a secret manager that injects credentials into process memory, explicitly
+set `RANGER_SECRET_SOURCE=environment` and leave `RANGER_SECRET_FILE` unset.
+Only the two known provider keys are read; values are never copied into config,
+written to disk, shell-evaluated, or sent to the frontend. For example, after
+selecting the intended Doppler project/config and configuring the data and
+budget paths:
+
+```sh
+doppler run -- env -u RANGER_SECRET_FILE RANGER_SECRET_SOURCE=environment npm run start:api
+doppler run -- env -u RANGER_SECRET_FILE RANGER_SECRET_SOURCE=environment npm run start:worker
+```
+
+The source selector must be an explicit environment setting; the JSON config
+file cannot enable it. Configuring both sources is an error. Missing or empty
+keys fail closed, with no fallback to another source. Never place provider
+keys in `VITE_*` variables or start the frontend with the injected keys.
 
 ## Shared live budget (never reset)
 
@@ -232,12 +250,13 @@ set.
 (`provider-budget.json`). All live tests across all workers/validators share
 it: xAI paid operations are admitted only while recorded spend plus a
 conservative estimate stays at or below the **$4 soft admission stop** within
-the **$5 total cap** (the remaining $1 is reserve); Instabox allows at most
-**nine additional VM creations cumulative** (the six historical mission
-creations remain spent and preserved, plus three newly authorized sequential
-windows), one at a time, each with a server-side
-10-minute kill timeout and early cleanup, and never more than the account's
-five live machines. The ledger is locked, written
+the **$5 total cap** (the remaining $1 is reserve). Instabox permits one local
+machine at a time, each with a server-side 10-minute kill timeout and early
+cleanup, and checks account inventory before creation against the five-machine
+simultaneous limit. A numeric `instabox.maxAdditionalCreations` remains a
+cumulative cap; explicit `null` permits unlimited sequential replacements.
+Existing capped ledgers require an authorized, locked update of that field
+only, never a counter/history reset. The ledger is locked, written
 atomically, preserves history and unknown fields, and **must never be reset
 by tests** (tests use temporary copies). Uncertain accounting refuses the
 operation instead of guessing.

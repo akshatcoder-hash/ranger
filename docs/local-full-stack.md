@@ -8,13 +8,26 @@ dependency tree. The original source branches are preserved untouched;
 `integration/full-stack` combines their source histories and no claim is
 made here that a remote push of this branch has been verified.
 
-## Current goal (narrow scope)
+## Current goal: a real local FDE workflow
 
-ONE voice call → preselected local project → VM with the complete
-committed source → Trace index → grounded question. Explicitly **not**
-required for this goal: GitHub App, Atom, repository browser, manual
-plans, refund test, coding-workflow surfaces, desktop stream. This is
-user-demo-scope validation, not production.
+Voice discussion → prepared local repository and Trace grounding →
+voice-drafted plan → UI review and approval of that exact version and scope
+→ explicit voice start → durable worker edits and tests → observed run,
+file and test evidence in Changes/Checks/Review.
+
+Preparation alone is not the complete demo. The customer must be able to
+review the actual latest plan, authorize it, request execution, and inspect
+what really happened. Screen inspection is available when sharing is active;
+a physical microphone/speaker or screen-permission claim requires separate
+human-device evidence. No GitHub App, new framework or production deployment
+is required. A preview may be launched only when the proposed plan explicitly
+includes launch scope and the customer approves that scope; never silently
+widen an existing approval.
+
+The browser implementation and offline regression tests do not establish
+live FDE acceptance. The historical run records below are labelled as such;
+use the current authorized runtime and shared budget ledger for any new
+external attempt. Never reset a ledger or infer permission from this guide.
 
 ## Requirements
 
@@ -79,9 +92,11 @@ checkout as the repository connect root for the root services, so no
 GitHub App is needed. The live-budget ledger is the authoritative
 external shared file and is never reset.
 
-> **Warning:** the VM allowance is exhausted (9/9 used, all released,
-> 0 pending) and the recorded attempt spend stands. **Do NOT launch a new
-> voice-prep or live attempt** without a new explicit VM allowance.
+> **Historical budget warning:** the recorded attempt below exhausted its
+> allowance (9/9 used, all released, 0 pending). Those figures are not a
+> current budget check. Before any new live attempt, verify the current
+> shared ledger and explicit allowance; do not reuse or reset an exhausted
+> allowance. This document does not authorize provider usage.
 
 Terminal 1 — API, from the repository root:
 
@@ -111,7 +126,8 @@ npm run dev   # browse http://127.0.0.1:5173; Vite proxies /v1 to 127.0.0.1:3100
 ```
 
 The earlier `bootstrap --create-principal` step (below) is unchanged; the
-preview gateway is not required for the current goal.
+preview gateway is needed only for a separately approved preview-launch
+step. API and worker are both required for engineering execution.
 
 ## Backend data and credentials (never in the repository)
 
@@ -204,8 +220,9 @@ verification via `npm run bootstrap -- --trace`.
   once to establish the browser session → HttpOnly browser session),
   capability reporting, project creation with an
   initial conversation and message, project load, engineer rename,
-  messaging, manual plan creation and approval decisions, repository
-  connection and event replay — with scoped idempotency keys, explicit
+  messaging, manual plan creation, current voice-plan review and
+  exact-version approval decisions, repository connection, run/tool reads,
+  workspace inventory/source reads, test-result reads and event replay — with scoped idempotency keys, explicit
   partial-failure reporting and honest error envelopes instead of faked
   success.
 - Browser media is implemented: same-origin voice WebSocket relay with
@@ -221,42 +238,48 @@ verification via `npm run bootstrap -- --trace`.
   load. If a media-session cleanup call fails, the session id is kept in
   memory and an explicit retry is offered — a reload is not claimed to
   recover the session.
-- Live status: the single real end-to-end attempt has **finished and
-  failed** (see the report below); the live-run guest timeout behaviour
-  is still unknown, and **no repeat is permitted without a new explicit
-  VM allowance**. Runtime provider keys are present in the local
-  protected file (mode 0600, never echoed; no values recorded here).
-- Nothing here claims live product acceptance: the verified scope is the
-  local control plane plus the recorded failed attempt (see the report
-  below); live engineering is **NOT accepted**. No Factory
-  runtime credentials are used and no model downloads are performed in
-  this setup. The `/diagnostic` client and the shared live budget ledger
-  govern live evidence.
+- The workspace exposes Review plan and fetches the latest version on each
+  opening; approval rechecks its id, version, contents and permitted scope.
+  Voice-drafted revisions therefore require a new customer review.
+- Changes/Checks/Review use actual read-only API endpoints. The current
+  diff endpoint is a saved-file inventory, not a patch. Successful latest-run
+  edit outcomes link to current saved source; test results are labelled as
+  project-wide command history because that endpoint has no run id. Empty,
+  loading, failed and unavailable states remain distinct. Read refresh uses
+  the existing bounded event loop plus view opens/manual refresh, without
+  a new timer or execution trigger.
+- The historical live attempt below failed. It is retained as evidence of
+  that attempt only, not a statement of current provider configuration,
+  budget, or the outcome of later validation. Local frontend gates do not
+  prove real provider execution, human media, preview, or full FDE success.
 
 ## Local verification report
 
-Status: **real local control-plane verified** — the initial manual browser
+Historical status: **real local control-plane verified** — the initial manual browser
 journey passed and the two defects it surfaced were fixed and re-tested in
 a focused follow-up that also passed. The one real end-to-end live attempt
 **finished and failed** (below); live engineering is **NOT accepted**.
 
-### Automated gates (Node 24)
+### Current frontend gates and historical backend gates (Node 24)
 
-- Backend current: typecheck and lint pass; **254 unit tests across 26
+- Backend historical record: typecheck and lint pass; **254 unit tests across 26
   files, all passing** (after the retired live-harness archive was
   removed — 772 lines deleted and its initial-test diff reversed). The
   build was green before that harness cleanup.
 - Backend integration/e2e: the previously merged full gates (84
   integration tests; e2e 16 passed / 7 skipped) are **historical**; the
-  **current** passing coverage is the focused voice-workspace-prep, API
+  then-passing focused coverage was the focused voice-workspace-prep, API
   Trace-index smoke, and voice/retrieval/runs integration tests. The
   full e2e suite was **not** rerun after the feature work.
-- Frontend: typecheck, lint, build green; **100 tests** passed (current
-  count, including the media implementation).
+- Frontend after FDE result wiring: typecheck, lint, build green; **124
+  tests across 8 files** passed. The 22 new tests use labelled fake HTTP/API
+  responses or static rendering. They cover exact-plan freshness,
+  scope preservation, stale/dismissed reads, result/source adapters and
+  honest evidence states. They do not prove a real worker or provider run.
 
-### Real end-to-end attempt (finished — FAILED)
+### Historical real end-to-end preparation attempt (finished — FAILED)
 
-One real attempt was made at the current goal, recorded in a sanitized
+One real attempt was made at the earlier preparation-only goal, recorded in a sanitized
 local mission evidence record (paths and identifiers not reproduced
 here). A brief note first: an
 earlier driver defect (POST used where PUT was required) returned a 404
