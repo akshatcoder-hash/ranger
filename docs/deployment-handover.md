@@ -4,15 +4,19 @@ Ranger is a recording build, not a public product launch. Backend code is at
 the repository root; the frontend is in `frontend/`. Earlier component
 verification is recorded in `cloud-validation-2026-10-19.md`.
 
+The recording build is deployed as of **2026-10-20**. Fly image:
+`deployment-01M5AZS5X5PVR3AFA00KNQ4BDB`; Cloudflare Worker version:
+`77fe330d-a8a7-471b-9202-b7e2783d9b29`.
+
 ## Cumulative VM limit migration (2026-10-19)
 
 The user clarified that five is the account-wide **simultaneous** VM limit;
 released free machines may be replaced sequentially without a cumulative
 creation limit. Current code supports an explicit JSON
 `instabox.maxAdditionalCreations: null`. Numeric caps continue to be enforced.
-The earlier deployment ledger recorded below remains capped until its
-operator runs the migration script on the deployed Machine (after deploying
-an image that contains it; the image working directory is `/app/ranger`):
+To migrate an older capped deployment, run the script on the deployed
+Machine after deploying an image that contains it (the image working
+directory is `/app/ranger`):
 
 ```
 fly ssh console -a ranger-backend-akshats -C "node /app/ranger/scripts/migrate-instabox-ledger.mjs"
@@ -25,8 +29,8 @@ pending reservation, operation, xAI budget, and unknown field is preserved; a
 missing ledger fails loudly. Do not delete, reseed, or reset the ledger. Code
 changes alone do not migrate a deployed ledger. Local concurrency remains one,
 VM lifetime remains at most 600 seconds, and the SDK checks account inventory
-before each create. No remote deployment or deployed-ledger migration is
-implied by this note.
+before each create. The deployed script was run on 2026-10-20 and reported
+`null -> null`: the cap was already removed, and history was preserved.
 
 ## Credential-free UI and remote repositories
 
@@ -53,7 +57,8 @@ for `/v1` and `/v1/*` and forwards HTTP and WebSocket upgrades to
 ONLY the exact Origin `https://ranger.akshats.xyz` to the backend origin;
 any other present Origin is rejected `403 origin_mismatch` (verified
 live), while a missing Origin passes through for CLI/CSRF-header clients
-(backend answered `401 unauthenticated`, verified). API responses are
+(backend answered `401 unauthenticated`, verified). Connection-ticket origins
+receive the same translation as WebSocket headers. API responses are
 `Cache-Control: no-store` — nothing is cached.
 
 ## How to use
@@ -87,17 +92,50 @@ variables or browser storage.
 - Review and approve the plan, then: “Start the approved work.”
 - In **VM**, try `node -e "console.log(require('./normalize-number')('42.25'))"`.
 
-## How it was verified (2026-10-19)
+### Other tiny repositories
 
-- Live: `GET /v1/capabilities` through the public domain → xai
-  configured, instabox configured (VM adapter available), trace configured
-  (sibling checkout + model cache detected); Atom/Orbit grounding
-  disabled. Origin mismatch returns `403 origin_mismatch`; missing Origin
-  passes and the backend answers `401 unauthenticated`. `GET /health`
-  passing.
-- Tests (Node 24, all typecheck/lint/build green): backend 254 unit +
-  focused integration; Cloudflare proxy 10 unit tests; fly start script
-  2 node:test tests; frontend 101 tests.
+| Repository | Branch | Source size | Short adaptation |
+| --- | --- | --- | --- |
+| [jonschlinkert/is-number](https://github.com/jonschlinkert/is-number) | `master` | 15 files, 24.5 KB | Normalize customer CSV amounts. Verified end to end. |
+| [ap1311/todo](https://github.com/ap1311/todo) | `main` | 4 files, 19.6 KB | Turn personal tasks into support triage with priorities and an urgent filter. |
+| [WebDevSimplified/Vanilla-JavaScript-Calculator](https://github.com/WebDevSimplified/Vanilla-JavaScript-Calculator) | `master` | 3 files, 5.9 KB | Add discount/tax calculations and keyboard input. |
+
+Sizes exclude Git history and dependencies. The two visual apps need no
+dependency installation. Their source was inspected, but their adapted UI
+and Ranger preview path have **not** been rehearsed live. The tested
+`is-number` recording shows its changed behavior in the VM command console.
+
+## Verified recording path (2026-10-20)
+
+A public-domain API driver opened an anonymous session, connected the public
+`is-number` repository, requested preparation through the real xAI relay,
+used code search/read tools, approved a scoped CSV-adapter change, and ran it.
+
+| Measurement | Observed |
+| --- | --- |
+| Clone | 1.058 seconds |
+| Trace index | 13.668 seconds |
+| Total preparation | 25.527 seconds |
+| Approved change | 13.914 seconds, four model turns |
+| Reported coding cost | $0.009503 (excludes voice) |
+| New VM creations | Exactly one; preparation and coding reused it |
+| Cleanup | No active provider VMs; no reserved xAI spend |
+
+Independent Node assertions inside the guest confirmed `normalize-number.js`
+returns numbers for valid inputs and null for invalid inputs. Real command
+start/finish events and guest-console access were also verified. Historical
+VM creation count increased from 9 to 10, not by a second create for coding.
+
+The relay received text input, not a human microphone recording. The plan
+and approval used the public API; a single uninterrupted browser call through
+UI approval and results was not verified. Local browser checks covered the
+token-free landing and repository dialog. The frontend's 157 tests,
+typecheck, lint and build passed. Final backend checks passed: typecheck,
+lint, build, 409 unit tests and 110 integration tests.
+
+Earlier checks caught and fixed a proxy ticket-origin mismatch and an old
+Git runtime missing `--attr-source`. A private-repository attempt failed
+before VM creation as expected. The runtime now checks Git support at build.
 
 ## Redeploy and rollback
 
