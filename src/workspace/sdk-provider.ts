@@ -1,4 +1,5 @@
 import { Sandbox, type SandboxInfo } from '@insforge/instabox-sdk';
+import { INSTABOX_MAX_ACCOUNT_CONCURRENT } from '../budget/ledger.js';
 import { translateCommandExitError } from './diagnostics.js';
 import { elevatedKillCommand, processListCommand } from './signals.js';
 import type {
@@ -45,6 +46,13 @@ export class SdkInstaboxProvider implements InstaboxProvider {
     }
     if (request.envs !== undefined && Object.keys(request.envs).length > 0) {
       throw new Error('Instabox create refused: guest env injection is not allowed');
+    }
+    // Local reservations serialize Ranger creation, but other clients can
+    // occupy this account. Fail closed if inventory cannot be read or is
+    // already full. Use the same explicit account key for list and create.
+    const account = await Sandbox.list(connection(request.apiKey));
+    if (account.length >= INSTABOX_MAX_ACCOUNT_CONCURRENT) {
+      throw new Error('Instabox create refused: account simultaneous-machine limit reached');
     }
     const sandbox = await Sandbox.create(request.template, {
       apiKey: request.apiKey,

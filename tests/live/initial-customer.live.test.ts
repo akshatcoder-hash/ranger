@@ -6,7 +6,9 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { Sandbox } from '@insforge/instabox-sdk';
 import { RangerClient, RangerApiError } from '../../src/clients/ranger-client.js';
 import { readLedger } from '../../src/budget/ledger.js';
+import { loadConfig } from '../../src/config.js';
 import { SecretResolver } from '../../src/secrets.js';
+import { browserProcessEnv, requireLiveBrowser } from '../helpers/live-browser.js';
 import { createWindowRunner } from '../helpers/window-harness.js';
 
 /**
@@ -21,7 +23,7 @@ import { createWindowRunner } from '../helpers/window-harness.js';
  * step is halted, and the cleanup deletes + verifies — never a replacement
  * create and never a retry.
  *
- * Requires RANGER_LIVE_INITIAL_CUSTOMER=1 plus RANGER_SECRET_FILE and
+ * Requires RANGER_LIVE_INITIAL_CUSTOMER=1 plus an explicit secret source and
  * RANGER_LIVE_BUDGET_FILE. Uses the SHARED Ranger data directory and the
  * shared mission ledger; evidence records statuses, counts and sanitized
  * fields only — no keys, tickets, stream URLs or bearer values.
@@ -29,10 +31,10 @@ import { createWindowRunner } from '../helpers/window-harness.js';
 
 const enabled = process.env['RANGER_LIVE_INITIAL_CUSTOMER'] === '1';
 const describeLive = enabled ? describe : describe.skip;
+const browserEnv = browserProcessEnv(process.env);
 
 const REPO = process.cwd();
 const SHARED_DATA_DIR = process.env['RANGER_DATA_DIR'] ?? '/home/factory-user/.local/share/ranger';
-const SECRET_FILE = process.env['RANGER_SECRET_FILE'] ?? '/etc/droid/environment';
 const LIVE_BUDGET_FILE = process.env['RANGER_LIVE_BUDGET_FILE'] ?? '';
 const CUSTOMER_REPO = process.env['RANGER_CUSTOMER_REPO'] ?? path.join(SHARED_DATA_DIR, 'fixture-roots', 'acme-support');
 const EVIDENCE_DIR = process.env['RANGER_EVIDENCE_DIR'] ?? mkdtempSync(path.join(tmpdir(), 'ranger-window2-'));
@@ -48,12 +50,16 @@ const CANCEL_BY_MS = 540_000;
 const childEnv: NodeJS.ProcessEnv = {
   ...process.env,
   RANGER_DATA_DIR: SHARED_DATA_DIR,
-  RANGER_SECRET_FILE: SECRET_FILE,
   RANGER_LIVE_BUDGET_FILE: LIVE_BUDGET_FILE,
   RANGER_APPROVED_SNAPSHOT_ROOTS: path.join(SHARED_DATA_DIR, 'fixture-roots'),
   RANGER_HOST: '127.0.0.1',
   RANGER_LOG_LEVEL: 'error',
 };
+
+/** Resolve only on an enabled live path; never infer a protected-file location. */
+async function instaboxApiKey(): Promise<string> {
+  return SecretResolver.fromConfig(await loadConfig(childEnv)).get('INSTABOX_API_KEY');
+}
 
 let apiProc: ChildProcess | null = null;
 let workerProc: ChildProcess | null = null;
@@ -116,7 +122,7 @@ async function cancelOwnedRunBounded(): Promise<void> {
     hook['publicCancel'] = `unavailable: ${String(cause instanceof Error ? cause.message : cause).slice(0, 120)}`;
     if (machineId !== '') {
       try {
-        const key = new SecretResolver(SECRET_FILE).get('INSTABOX_API_KEY');
+        const key = await instaboxApiKey();
         await bounded(Sandbox.kill(machineId, { apiKey: key }), 30_000, 'provider kill');
         hook['providerKill'] = 'executed';
       } catch (killCause) {
@@ -226,7 +232,7 @@ afterAll(async () => {
   // Cleanup only: destroy any live VM of this window and verify zero machines.
   try {
     if (machineId !== '') {
-      const key = new SecretResolver(SECRET_FILE).get('INSTABOX_API_KEY');
+      const key = await instaboxApiKey();
       const listed = await Sandbox.list({ apiKey: key });
       if (listed.some((item) => item.sandboxId === machineId)) {
         await Sandbox.kill(machineId, { apiKey: key });
@@ -238,7 +244,7 @@ afterAll(async () => {
     evidence['cleanupError'] = String(cause instanceof Error ? cause.message : cause).slice(0, 200);
   }
   try {
-    execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'close'], { stdio: 'ignore', timeout: 20_000 });
+    execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'close'], { env: browserEnv, stdio: 'ignore', timeout: 20_000 });
   } catch {
     // never opened
   }
@@ -252,13 +258,20 @@ afterAll(async () => {
 
 describeLive('window2: one approved run, one VM, real initial customer integration', () => {
   it('starts the control services and verifies the window2 preconditions', () => windowStep(async () => {
+    requireLiveBrowser(process.env);
     expect(LIVE_BUDGET_FILE).not.toBe('');
     const ledger = readLedger(LIVE_BUDGET_FILE);
-    expect(ledger.instabox.additionalCreations).toBe(7);
+    // This window consumes exactly one additional creation from the existing
+    // ledger. Its starting count is historical state, never a fixed fixture
+    // value and never reset; the final assertion verifies the +1 delta.
+    expect(ledger.instabox.additionalCreations).toBeGreaterThanOrEqual(0);
+    if (ledger.instabox.maxAdditionalCreations !== null) {
+      expect(ledger.instabox.additionalCreations).toBeLessThan(ledger.instabox.maxAdditionalCreations);
+    }
     expect(ledger.instabox.pendingReservations ?? []).toHaveLength(0);
     ledgerCreationsBefore = ledger.instabox.additionalCreations;
 
-    const key = new SecretResolver(SECRET_FILE).get('INSTABOX_API_KEY');
+    const key = await instaboxApiKey();
     providerIdsBefore = (await Sandbox.list({ apiKey: key })).map((item) => item.sandboxId);
     expect(providerIdsBefore.length).toBeLessThanOrEqual(4);
 
@@ -396,7 +409,7 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
       return status.workspace.observedState === 'running' ? status.workspace : null;
     });
 
-    const key = new SecretResolver(SECRET_FILE).get('INSTABOX_API_KEY');
+    const key = await instaboxApiKey();
     const listed = await Sandbox.list({ apiKey: key });
     // Exactly ONE new provider machine: the deterministic one-creation
     // rehearsal — no hidden second create, no replacement.
@@ -521,10 +534,10 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
     expect(JSON.stringify(desktop)).not.toContain('http');
     const ticket = await client.createConnectionTicket({ body: { projectId, purpose: 'desktop-stream' } });
     const viewUrl = `${PREVIEW_URL}${desktop.session.gatewayPath.replace('/stream', '/view')}?ticket=${encodeURIComponent(ticket.ticket)}`;
-    execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'open', viewUrl], { timeout: 30_000, stdio: 'ignore' });
-    execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'wait', '--load', 'networkidle'], { timeout: 20_000, stdio: 'ignore' });
+    execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'open', viewUrl], { env: browserEnv, timeout: 30_000, stdio: 'ignore' });
+    execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'wait', '--load', 'networkidle'], { env: browserEnv, timeout: 20_000, stdio: 'ignore' });
     const viewer1Path = path.join(tmpdir(), 'ranger-window2-desktop-1.png');
-    execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'screenshot', viewer1Path], { timeout: 20_000, stdio: 'ignore' });
+    execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'screenshot', viewer1Path], { env: browserEnv, timeout: 20_000, stdio: 'ignore' });
     viewer1 = readFileSync(viewer1Path);
     expect(viewer1.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
     expect(viewer1.toString('latin1')).not.toContain('dashboard.instabox');
@@ -640,7 +653,7 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
     // Second viewer state after a REAL interaction on the guest desktop:
     // the provider SDK test tooling opens the running integration in the
     // guest browser; the viewer must show the changed desktop.
-    const key = new SecretResolver(SECRET_FILE).get('INSTABOX_API_KEY');
+    const key = await instaboxApiKey();
     const guest = await Sandbox.connect(machineId, { apiKey: key, resume: false });
     await guest.desktop.start();
     await guest.desktop.open('http://127.0.0.1:8080/');
@@ -648,21 +661,21 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
     const desktop2 = await client.createDesktopSession({ path: { projectId }, body: { ttlSeconds: 30 } });
     const ticket2 = await client.createConnectionTicket({ body: { projectId, purpose: 'desktop-stream' } });
     const viewUrl2 = `${PREVIEW_URL}${desktop2.session.gatewayPath.replace('/stream', '/view')}?ticket=${encodeURIComponent(ticket2.ticket)}`;
-    execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'open', viewUrl2], { timeout: 30_000, stdio: 'ignore' });
-    execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'wait', '--load', 'networkidle'], { timeout: 20_000, stdio: 'ignore' });
+    execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'open', viewUrl2], { env: browserEnv, timeout: 30_000, stdio: 'ignore' });
+    execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'wait', '--load', 'networkidle'], { env: browserEnv, timeout: 20_000, stdio: 'ignore' });
     const viewer2Path = path.join(tmpdir(), 'ranger-window2-desktop-2.png');
-    execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'screenshot', viewer2Path], { timeout: 20_000, stdio: 'ignore' });
+    execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'screenshot', viewer2Path], { env: browserEnv, timeout: 20_000, stdio: 'ignore' });
     const viewer2 = readFileSync(viewer2Path);
     expect(viewer2.equals(viewer1!)).toBe(false);
     rmSync(viewer2Path, { force: true });
 
     // Revocation is judged from viewer state, not provider HTTP status.
     await client.revokeDesktopSession({ path: { projectId, sessionId: desktop2.session.sessionId } });
-    execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'reload'], { timeout: 20_000, stdio: 'ignore' });
+    execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'reload'], { env: browserEnv, timeout: 20_000, stdio: 'ignore' });
     await new Promise((resolve) => setTimeout(resolve, 2_000));
-    const afterRevoke = execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'snapshot'], { timeout: 20_000, encoding: 'utf8' });
+    const afterRevoke = execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'snapshot'], { env: browserEnv, timeout: 20_000, encoding: 'utf8' });
     expect(afterRevoke.toLowerCase()).toMatch(/revoked|unauthorized|not active|closed/);
-    execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'close'], { timeout: 20_000, stdio: 'ignore' });
+    execFileSync('agent-browser', ['--session', BROWSER_SESSION, 'close'], { env: browserEnv, timeout: 20_000, stdio: 'ignore' });
 
     // THE live cancellation of the SAME active run.
     const cancelRequested = await client.cancelRun({ path: { projectId, runId } });
@@ -684,7 +697,7 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
       const status = await client.getWorkspaceStatus({ path: { projectId } });
       return status.workspace.observedState === 'destroyed' ? status.workspace : null;
     });
-    const key2 = new SecretResolver(SECRET_FILE).get('INSTABOX_API_KEY');
+    const key2 = await instaboxApiKey();
     const after = await Sandbox.list({ apiKey: key2 });
     expect(after.some((item) => item.sandboxId === machineId)).toBe(false);
 

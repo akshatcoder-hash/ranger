@@ -10,12 +10,11 @@ import { AppError, Errors } from '../errors.js';
  * - xAI: $5 total; a paid operation is admitted only while recorded spend
  *   plus a conservative estimate stays at or below the $4 soft admission stop.
  *   The remaining $1 is reserve for in-flight/accounting uncertainty.
- * - Instabox: at most nine additional VM creations cumulative (the six
- *   historical mission creations plus three newly authorized sequential
- *   windows: workspace validation, initial customer run, changed-requirement
- *   run), one at a time, each with a server-side kill timeout of at most
- *   600 s and early cleanup. Outstanding (pending) reservations count against
- *   both the concurrency and total caps until they are confirmed or released,
+ * - Instabox: one local machine at a time, each with a server-side kill
+ *   timeout of at most 600 s and early cleanup. A numeric ledger creation
+ *   cap is honored; explicit null permits unlimited sequential replacements.
+ *   Outstanding (pending) reservations count against concurrency and any
+ *   configured cumulative cap until they are confirmed or released,
  *   and the requested kill timeout is validated at reserve time, before any
  *   provider create can be attempted. The provider account quota itself is
  *   five live machines, checked against the provider list before each create.
@@ -25,8 +24,9 @@ import { AppError, Errors } from '../errors.js';
  *   per reservation id, under the ledger lock. A repeated or unknown
  *   settlement never frees another reservation's headroom or double counts
  *   usage, so admission can never be inflated past the caps.
- * - Ledger-configured limits may only lower the approved ceilings; missing,
- *   negative, non-finite or inflated limits fail closed (refuse admission).
+ * - xAI, concurrency and lifetime limits may only lower the approved ceilings.
+ *   Missing or malformed limits fail closed; unlimited cumulative Instabox
+ *   admission requires an explicit null, never an omitted field.
  * - When accounting is uncertain, refuse: stop paid work and report.
  *
  * All mutations happen under an exclusive lock file next to the ledger so
@@ -35,15 +35,8 @@ import { AppError, Errors } from '../errors.js';
 
 export const XAI_TOTAL_LIMIT_USD = 5;
 export const XAI_SOFT_ADMISSION_USD = 4;
-/**
- * Cumulative Instabox creation ceiling for the whole mission: the six
- * historical creations remain spent and preserved, and the user authorized
- * exactly three more sequential windows (workspace validation plus the two
- * customer conversations). A ledger may lower this but never exceed it, so
- * with the shared ledger at count 6 the reserves for creations 7, 8 and 9
- * are admitted and the fourth future reserve fails closed.
- */
-export const INSTABOX_MAX_ADDITIONAL_CREATIONS = 9;
+/** Account-wide simultaneous-machine ceiling, checked before provider create. */
+export const INSTABOX_MAX_ACCOUNT_CONCURRENT = 5;
 export const INSTABOX_MAX_CONCURRENT = 1;
 export const INSTABOX_MAX_LIFETIME_SECONDS = 600;
 
@@ -88,7 +81,8 @@ export interface BudgetLedgerData {
     operations: LedgerOperation[];
   };
   instabox: {
-    maxAdditionalCreations: number;
+    /** Explicit null removes only the cumulative cap; history is never reset. */
+    maxAdditionalCreations: number | null;
     maxConcurrent: number;
     maxLifetimeSeconds: number;
     additionalCreations: number;
@@ -206,7 +200,7 @@ function isFinitePositive(value: unknown): value is number {
 }
 
 function isNonNegativeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 /**
@@ -247,8 +241,7 @@ function requireInstabox(data: BudgetLedgerData): BudgetLedgerData['instabox'] {
   }
   const instabox = data.instabox;
   const malformed =
-    !isNonNegativeInteger(instabox.maxAdditionalCreations) ||
-    instabox.maxAdditionalCreations > INSTABOX_MAX_ADDITIONAL_CREATIONS ||
+    (instabox.maxAdditionalCreations !== null && !isNonNegativeInteger(instabox.maxAdditionalCreations)) ||
     !isNonNegativeInteger(instabox.maxConcurrent) ||
     instabox.maxConcurrent > INSTABOX_MAX_CONCURRENT ||
     !isFinitePositive(instabox.maxLifetimeSeconds) ||
@@ -443,7 +436,10 @@ export function reserveInstaboxCreation(
         pendingReservations: pending.length,
       });
     }
-    if (instabox.additionalCreations + pending.length >= instabox.maxAdditionalCreations) {
+    if (instabox.additionalCreations + pending.length >= Number.MAX_SAFE_INTEGER) {
+      throw new BudgetLedgerError('Instabox creation counter cannot be incremented safely', { ledger: 'counter_exhausted' });
+    }
+    if (instabox.maxAdditionalCreations !== null && instabox.additionalCreations + pending.length >= instabox.maxAdditionalCreations) {
       throw new BudgetLedgerError(
         'Instabox additional creation allowance is exhausted; stop and report',
         {

@@ -14,16 +14,18 @@ import { createProjectRecord } from '../../src/projects/store.js';
 import { RangerClient } from '../../src/clients/ranger-client.js';
 import { readLedger } from '../../src/budget/ledger.js';
 import { SecretResolver } from '../../src/secrets.js';
+import { browserProcessEnv, requireLiveBrowser } from '../helpers/live-browser.js';
 
 /**
  * LIVE Instabox evidence. Not part of npm test.
  * One VM covers lifecycle, isolation, cancellation, desktop and private preview.
- * Requires RANGER_LIVE_INSTABOX=1, RANGER_SECRET_FILE and RANGER_LIVE_BUDGET_FILE.
+ * Requires RANGER_LIVE_INSTABOX=1, an explicit secret source and RANGER_LIVE_BUDGET_FILE.
  * Evidence records statuses and counts only. No stream URLs, tickets or keys.
  */
 
 const enabled = process.env['RANGER_LIVE_INSTABOX'] === '1';
 const describeLive = enabled ? describe : describe.skip;
+const browserEnv = browserProcessEnv(process.env);
 
 describeLive('live Instabox workspace (one combined VM)', () => {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'ranger-live-ws-'));
@@ -53,6 +55,7 @@ describeLive('live Instabox workspace (one combined VM)', () => {
   });
 
   it('creates, works, isolates, cancels, views and destroys through the public API', async () => {
+    requireLiveBrowser(process.env);
     const config = await loadConfig({
       ...process.env,
       RANGER_DATA_DIR: dataDir,
@@ -80,13 +83,15 @@ describeLive('live Instabox workspace (one combined VM)', () => {
         baseUrl: `http://127.0.0.1:${apiPort}`,
         headers: { authorization: `Bearer ${secret}` },
       });
-    const providerKey = new SecretResolver(config.secretFile).get('INSTABOX_API_KEY');
+    const providerKey = SecretResolver.fromConfig(config).get('INSTABOX_API_KEY');
     const before = await Sandbox.list({ apiKey: providerKey });
     // Account quota is five machines: this one window requires headroom of at
     // least one live machine before any reserve/create is attempted.
     expect(before.length).toBeLessThanOrEqual(4);
     const ledgerBefore = readLedger(config.liveBudgetFile!);
-    expect(ledgerBefore.instabox.additionalCreations).toBeLessThanOrEqual(8);
+    if (ledgerBefore.instabox.maxAdditionalCreations !== null) {
+      expect(ledgerBefore.instabox.additionalCreations).toBeLessThan(ledgerBefore.instabox.maxAdditionalCreations);
+    }
     let created: Awaited<ReturnType<typeof client.createWorkspace>>;
     try {
       created = await client.createWorkspace({
@@ -241,10 +246,10 @@ describeLive('live Instabox workspace (one combined VM)', () => {
     });
     const sessionName = '894a48a8f4fc';
     const viewUrl = `http://127.0.0.1:${previewPort}${desktop.session.gatewayPath.replace('/stream', '/view')}?ticket=${encodeURIComponent(ticket.ticket)}`;
-    execFileSync('agent-browser', ['--session', sessionName, 'open', viewUrl], { timeout: 30_000 });
-    execFileSync('agent-browser', ['--session', sessionName, 'wait', '--load', 'networkidle'], { timeout: 20_000 });
+    execFileSync('agent-browser', ['--session', sessionName, 'open', viewUrl], { env: browserEnv, timeout: 30_000 });
+    execFileSync('agent-browser', ['--session', sessionName, 'wait', '--load', 'networkidle'], { env: browserEnv, timeout: 20_000 });
     const viewer1Path = path.join(tmpdir(), 'ranger-live-desktop-1.png');
-    execFileSync('agent-browser', ['--session', sessionName, 'screenshot', viewer1Path], { timeout: 20_000 });
+    execFileSync('agent-browser', ['--session', sessionName, 'screenshot', viewer1Path], { env: browserEnv, timeout: 20_000 });
     const viewer1 = readFileSync(viewer1Path);
     expect(viewer1.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
     expect(viewer1.toString('latin1')).not.toContain('dashboard.instabox');
@@ -254,7 +259,7 @@ describeLive('live Instabox workspace (one combined VM)', () => {
     await sandboxConn.desktop.open('http://127.0.0.1:8080/');
     await new Promise((resolve) => setTimeout(resolve, 4_000));
     const viewer2Path = path.join(tmpdir(), 'ranger-live-desktop-2.png');
-    execFileSync('agent-browser', ['--session', sessionName, 'screenshot', viewer2Path], { timeout: 20_000 });
+    execFileSync('agent-browser', ['--session', sessionName, 'screenshot', viewer2Path], { env: browserEnv, timeout: 20_000 });
     const viewer2 = readFileSync(viewer2Path);
     expect(viewer2.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
     expect(viewer2.equals(viewer1)).toBe(false);
@@ -267,14 +272,14 @@ describeLive('live Instabox workspace (one combined VM)', () => {
     expect(afterPng.equals(beforePng)).toBe(false);
 
     await client.revokeDesktopSession({ path: { projectId, sessionId: desktop.session.sessionId } });
-    execFileSync('agent-browser', ['--session', sessionName, 'reload'], { timeout: 20_000 });
+    execFileSync('agent-browser', ['--session', sessionName, 'reload'], { env: browserEnv, timeout: 20_000 });
     await new Promise((resolve) => setTimeout(resolve, 2_000));
-    const afterRevoke = execFileSync('agent-browser', ['--session', sessionName, 'snapshot'], {
+    const afterRevoke = execFileSync('agent-browser', ['--session', sessionName, 'snapshot'], { env: browserEnv,
       timeout: 20_000,
       encoding: 'utf8',
     });
     expect(afterRevoke.toLowerCase()).toMatch(/revoked|unauthorized|not active|closed/);
-    execFileSync('agent-browser', ['--session', sessionName, 'close'], { timeout: 15_000 });
+    execFileSync('agent-browser', ['--session', sessionName, 'close'], { env: browserEnv, timeout: 15_000 });
     rmSync(viewer1Path, { force: true });
     rmSync(viewer2Path, { force: true });
 
@@ -304,7 +309,9 @@ describeLive('live Instabox workspace (one combined VM)', () => {
     expect(saved.includes(Buffer.from('live = 1'))).toBe(true);
     const ledger = readLedger(config.liveBudgetFile!);
     expect(ledger.instabox.additionalCreations).toBe(ledgerBefore.instabox.additionalCreations + 1);
-    expect(ledger.instabox.additionalCreations).toBeLessThanOrEqual(ledger.instabox.maxAdditionalCreations);
+    if (ledger.instabox.maxAdditionalCreations !== null) {
+      expect(ledger.instabox.additionalCreations).toBeLessThanOrEqual(ledger.instabox.maxAdditionalCreations);
+    }
     expect(ledger.instabox.pendingReservations ?? []).toHaveLength(0);
     expect(ledger.instabox.machines.filter((item) => item.releasedAt == null)).toHaveLength(0);
     const recorded = ledger.instabox.machines.find((item) => item.machineId === machineId);

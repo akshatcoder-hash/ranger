@@ -10,6 +10,7 @@ import {
   WORKLOAD_PROJECT,
   WORKLOAD_UID,
   WORKLOAD_USER,
+  fencedWorkloadCommand,
 } from './limits.js';
 import type { InstaboxProvider } from './provider.js';
 
@@ -57,7 +58,8 @@ export function bootstrapScript(): string {
     `printf '%s\\n' '${WORKLOAD_MEMORY_BYTES}' > ${WORKLOAD_CGROUP}/memory.max`,
     `printf '%s\\n' '0' > ${WORKLOAD_CGROUP}/memory.swap.max`,
     `printf '%s\\n' '${WORKLOAD_PIDS_MAX}' > ${WORKLOAD_CGROUP}/pids.max`,
-    'echo 1 > /sys/fs/cgroup/cgroup.procs',
+    // Never move PID 1 or provider-control processes: systemd owns their
+    // cgroups. The trusted workload launcher moves only its own process.
     WORKLOAD_EGRESS_RULES,
     'nft list table inet ranger >/dev/null',
     `test "$(id -u ${WORKLOAD_USER})" = "${WORKLOAD_UID}"`,
@@ -73,9 +75,20 @@ export async function bootstrapWorkload(provider: InstaboxProvider, machineId: s
     command: `sudo --non-interactive /bin/bash -lc ${shellQuote(script)}`,
     timeoutMs: 60_000,
   });
-  if (result.exitCode !== 0) {
+  if (result.exitCode !== 0 || result.timedOut || result.truncated) {
     const detail = `${result.stderr}\n${result.stdout}`.replace(/[A-Za-z0-9_\-]{24,}/g, '[redacted]').slice(0, 500);
     throw new Error(`workload bootstrap failed: ${detail}`);
+  }
+  // A successful bootstrap shell can still break future provider exec.
+  // Prove a fresh request reaches the restricted identity before success.
+  const ready = await provider.exec({
+    machineId,
+    command: fencedWorkloadCommand('id -u'),
+    user: WORKLOAD_USER,
+    timeoutMs: 10_000,
+  });
+  if (ready.exitCode !== 0 || ready.timedOut || ready.truncated || ready.stdout.trim() !== String(WORKLOAD_UID)) {
+    throw new Error(`workload bootstrap failed: readiness exitCode=${ready.exitCode} timedOut=${ready.timedOut} truncated=${ready.truncated}`);
   }
   return { uid: WORKLOAD_UID };
 }
@@ -92,9 +105,9 @@ export function isolationProbeScript(): string {
     'echo GROUPS=$(id -Gn | tr " " ",")',
     'echo NNP=$(awk "/NoNewPrivs/ {print \\$2}" /proc/self/status)',
     'echo CGROUP=$(cat /proc/self/cgroup)',
-    'echo MEMMAX=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo missing)',
-    'echo PIDSMAX=$(cat /sys/fs/cgroup/pids.max 2>/dev/null || echo missing)',
-    'echo CPUMAX=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo missing)',
+    `echo MEMMAX=$(cat ${WORKLOAD_CGROUP}/memory.max 2>/dev/null || echo missing)`,
+    `echo PIDSMAX=$(cat ${WORKLOAD_CGROUP}/pids.max 2>/dev/null || echo missing)`,
+    `echo CPUMAX=$(cat ${WORKLOAD_CGROUP}/cpu.max 2>/dev/null || echo missing)`,
     'sudo -n true >/dev/null 2>&1; echo SUDO=$?',
     'docker info >/dev/null 2>&1; echo DOCKER=$?',
     'test -S /var/run/docker.sock; echo DOCKER_SOCK=$?',

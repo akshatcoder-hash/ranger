@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MAX_STDIN_BYTES } from '@insforge/instabox-sdk';
 import type { FastifyInstance } from 'fastify';
 import { loadConfig } from '../../src/config.js';
@@ -22,7 +22,7 @@ import {
   WORKLOAD_PROJECT,
   splitFencedCommand,
 } from '../../src/workspace/limits.js';
-import { WRITE_PATH_ENV, parseWriteTargetFromPayload } from '../../src/workspace/guest-write.js';
+import { WRITE_PATH_ENV, guestWriteReceipt, parseWriteTargetFromPayload } from '../../src/workspace/guest-write.js';
 
 /**
  * Deterministic regressions for the offline workspace repair. No provider
@@ -700,5 +700,60 @@ describe('guest transport cap derived from the real SDK stdin rule (deterministi
     await ws.writeFile("prj_1", "src/we'ird.ts", 'export const q = 1;\n');
     const saved = await ws.persistSource('prj_1');
     expect(saved.files).toEqual(["src/we'ird.ts"]);
+  });
+});
+
+
+describe('unverified zero-exit writes fail closed (deterministic, not live)', () => {
+  const content = Buffer.from('requested source');
+  it.each([
+    ['silent success', { stdout: '' }],
+    ['legacy acknowledgement', { stdout: 'guest-write-ok\n' }],
+    ['wrong readback', { stdout: guestWriteReceipt(Buffer.from('different source')) }],
+    ['timeout flag', { stdout: guestWriteReceipt(content), timedOut: true }],
+    ['truncated response', { stdout: guestWriteReceipt(content), truncated: true }],
+  ])('does not persist or publish %s', async (_label, returned) => {
+    const h = await harness();
+    await createWorkspace(h);
+    vi.spyOn(h.provider, 'exec').mockResolvedValueOnce({
+      stderr: '', exitCode: 0, timedOut: false, truncated: false, ...returned,
+    });
+    const written = await h.app.inject({
+      method: 'PUT',
+      url: `/v1/projects/${h.projectId}/workspace/file`,
+      headers: h.ownerAuth,
+      payload: { path: 'source.ts', contentBase64: content.toString('base64') },
+    });
+    expect(written.statusCode).toBe(409);
+    expect(written.json()).toMatchObject({
+      error: { details: { reason: 'guest_write_failed', detail: 'guest-write-verification-failed', exitCode: 0 } },
+    });
+    const listed = await h.app.inject({
+      method: 'GET', url: `/v1/projects/${h.projectId}/workspace/files?path=`, headers: h.ownerAuth,
+    });
+    expect(listed.json()).toMatchObject({ files: [] });
+    await h.app.close();
+  });
+
+  it('does not replace a previously saved file when the new readback is unverified', async () => {
+    const h = await harness();
+    await createWorkspace(h);
+    const url = `/v1/projects/${h.projectId}/workspace/file`;
+    const first = await h.app.inject({
+      method: 'PUT', url, headers: h.ownerAuth,
+      payload: { path: 'source.ts', contentBase64: content.toString('base64') },
+    });
+    expect(first.statusCode).toBe(200);
+    vi.spyOn(h.provider, 'exec').mockResolvedValueOnce({
+      stdout: '', stderr: '', exitCode: 0, timedOut: false, truncated: false,
+    });
+    const failed = await h.app.inject({
+      method: 'PUT', url, headers: h.ownerAuth,
+      payload: { path: 'source.ts', contentBase64: Buffer.from('replacement').toString('base64') },
+    });
+    expect(failed.statusCode).toBe(409);
+    const read = await h.app.inject({ method: 'GET', url: `${url}?path=source.ts`, headers: h.ownerAuth });
+    expect(read.json()).toMatchObject({ contentBase64: content.toString('base64') });
+    await h.app.close();
   });
 });

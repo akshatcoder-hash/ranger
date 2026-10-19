@@ -1,0 +1,45 @@
+import { Sandbox, type SandboxInfo } from '@insforge/instabox-sdk';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ProviderCreateRequest } from '../../src/workspace/provider.js';
+import { SdkInstaboxProvider } from '../../src/workspace/sdk-provider.js';
+
+const request: ProviderCreateRequest = {
+  template: 'agent-browser', vault: false, timeoutMs: 600_000,
+  onTimeout: 'kill', autoSuspendMs: 0, metadata: { rangerProject: 'prj_fixture' },
+  apiKey: 'synthetic-fixture-key',
+};
+const info = {
+  sandboxId: 'm_fixture', state: 'running', vault: false,
+  onTimeout: 'kill', metadata: request.metadata,
+} as SandboxInfo;
+
+afterEach(() => vi.restoreAllMocks());
+
+describe('SDK account-wide create admission (offline mocks only)', () => {
+  it('checks account headroom using the same key before creating the fifth machine', async () => {
+    const list = vi.spyOn(Sandbox, 'list').mockResolvedValue(Array(4).fill(info));
+    const create = vi.spyOn(Sandbox, 'create').mockResolvedValue({ getInfo: async () => info } as Sandbox);
+    const provider = new SdkInstaboxProvider('different-synthetic-constructor-key');
+    await expect(provider.create(request)).resolves.toMatchObject({ machineId: 'm_fixture' });
+    expect(list).toHaveBeenCalledExactlyOnceWith({ apiKey: request.apiKey });
+    expect(create).toHaveBeenCalledExactlyOnceWith('agent-browser', {
+      apiKey: request.apiKey, vault: false, timeoutMs: 600_000,
+      onTimeout: 'kill', autoSuspendMs: 0, metadata: request.metadata,
+    });
+    expect(list.mock.invocationCallOrder[0]).toBeLessThan(create.mock.invocationCallOrder[0]!);
+  });
+
+  it.each([5, 6])('refuses before create when the account already contains %i machines', async (count) => {
+    vi.spyOn(Sandbox, 'list').mockResolvedValue(Array(count).fill(info));
+    const create = vi.spyOn(Sandbox, 'create').mockRejectedValue(new Error('must not run'));
+    await expect(new SdkInstaboxProvider().create(request)).rejects.toThrow('account simultaneous-machine limit');
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('fails closed without a create when account inventory cannot be verified', async () => {
+    vi.spyOn(Sandbox, 'list').mockRejectedValue(new Error('synthetic inventory failure'));
+    const create = vi.spyOn(Sandbox, 'create').mockRejectedValue(new Error('must not run'));
+    await expect(new SdkInstaboxProvider().create(request)).rejects.toThrow('synthetic inventory failure');
+    expect(create).not.toHaveBeenCalled();
+  });
+});

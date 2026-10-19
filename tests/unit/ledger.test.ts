@@ -265,9 +265,9 @@ describe('Instabox creation allowance', () => {
     expect(instabox.pendingReservations).toHaveLength(0);
   });
 
-  it('admits exactly the three post-six windows and fails the fourth future reserve closed', () => {
-    // Mirrors the real shared ledger: six historical creations spent, six
-    // machine records preserved, ceiling raised from 6 to 9.
+  it('preserves an existing numeric cumulative cap and its historical records', () => {
+    // A legacy ledger remains capped until its operator explicitly changes
+    // that limit; loading new code never silently expands its allowance.
     const historicalMachines = Array.from({ length: 6 }, (_, i) => ({
       machineId: `m_hist_${i}`,
       createdAt: 1792345456838 + i * 1000,
@@ -311,6 +311,59 @@ describe('Instabox creation allowance', () => {
       recordInstaboxRelease(file, `m_lowered_${i}`);
     }
     expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(/allowance/i);
+  });
+
+  it('admits sequential replacements past nine only with an explicit unlimited cap, preserving all history', () => {
+    const historical = Array.from({ length: 9 }, (_, i) => ({ machineId: `m_history_${i}`, createdAt: i, releasedAt: i + 1 }));
+    const historicalOperation = { id: 'history', ts: 1, provider: 'instabox', kind: 'creation', feature: 'test' };
+    const { file } = tempLedger((fixture) => {
+      Object.assign(fixture.instabox as object, {
+        maxAdditionalCreations: null,
+        additionalCreations: 9,
+        machines: historical,
+        operations: [historicalOperation],
+        operatorAnnotation: 'preserve me',
+      });
+    });
+    const originalXai = readLedger(file).xai;
+    for (let i = 10; i <= 12; i += 1) {
+      const reservation = reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 });
+      expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(/one at a time/i);
+      confirmInstaboxCreation(file, { reservationId: reservation.reservationId, machineId: `m_replacement_${i}` });
+      expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(/one at a time/i);
+      recordInstaboxRelease(file, `m_replacement_${i}`);
+    }
+    const saved = readLedger(file);
+    expect(saved.instabox.maxAdditionalCreations).toBeNull();
+    expect(saved.instabox.additionalCreations).toBe(12);
+    expect(saved.instabox.machines.slice(0, 9)).toEqual(historical);
+    expect(saved.instabox.machines).toHaveLength(12);
+    expect(saved.instabox.pendingReservations).toEqual([]);
+    expect(saved.instabox).toMatchObject({ operatorAnnotation: 'preserve me', operations: [historicalOperation, ...Array(9).fill(expect.any(Object))] });
+    expect(saved.xai).toEqual(originalXai);
+    expect(saved['readinessExcluded']).toEqual(fixtureLedger()['readinessExcluded']);
+    const raw = readFileSync(file, 'utf8');
+    expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600001 })).toThrow(/kill timeout/i);
+    expect(readFileSync(file, 'utf8')).toBe(raw);
+  });
+
+  it('honors explicitly configured finite caps above the historical nine-creation limit', () => {
+    const { file } = tempLedger((fixture) => {
+      Object.assign(fixture.instabox as object, { maxAdditionalCreations: 10, additionalCreations: 9 });
+    });
+    const reservation = reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 });
+    confirmInstaboxCreation(file, { reservationId: reservation.reservationId, machineId: 'm_tenth' });
+    recordInstaboxRelease(file, 'm_tenth');
+    expect(readLedger(file).instabox.additionalCreations).toBe(10);
+    expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(/allowance/i);
+  });
+
+  it('fails closed before an unlimited historical counter could lose integer precision', () => {
+    const { file, raw } = tempLedger((fixture) => {
+      Object.assign(fixture.instabox as object, { maxAdditionalCreations: null, additionalCreations: Number.MAX_SAFE_INTEGER });
+    });
+    expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(/counter/i);
+    expect(readFileSync(file, 'utf8')).toBe(raw);
   });
 
   it('enforces one concurrent machine', () => {
@@ -425,7 +478,16 @@ describe('Instabox creation allowance', () => {
         delete (fixture.instabox as Record<string, unknown>).maxAdditionalCreations;
       },
       (fixture) => {
-        (fixture.instabox as Record<string, unknown>).maxAdditionalCreations = 10;
+        (fixture.instabox as Record<string, unknown>).maxAdditionalCreations = 'unlimited';
+      },
+      (fixture) => {
+        (fixture.instabox as Record<string, unknown>).maxAdditionalCreations = -1;
+      },
+      (fixture) => {
+        (fixture.instabox as Record<string, unknown>).maxAdditionalCreations = 10.5;
+      },
+      (fixture) => {
+        (fixture.instabox as Record<string, unknown>).maxAdditionalCreations = Number.MAX_SAFE_INTEGER + 1;
       },
       (fixture) => {
         delete (fixture.instabox as Record<string, unknown>).maxConcurrent;
@@ -452,6 +514,12 @@ describe('Instabox creation allowance', () => {
       // Refusal wrote nothing.
       expect(readFileSync(file, 'utf8')).toBe(raw);
     }
+  });
+
+  it('rejects a non-finite cumulative cap rather than treating it as explicit unlimited admission', () => {
+    const { file, raw } = tempLedgerPatched('"maxAdditionalCreations":9', '"maxAdditionalCreations":1e999');
+    expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(/malformed/i);
+    expect(readFileSync(file, 'utf8')).toBe(raw);
   });
 });
 

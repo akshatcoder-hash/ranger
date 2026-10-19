@@ -8,8 +8,9 @@ import type {
   ProviderSignal,
   ProviderSshCredentials,
 } from './provider.js';
+import { createHash } from 'node:crypto';
 import { MAX_STDIN_BYTES } from '@insforge/instabox-sdk';
-import { parseWriteTargetFromPayload } from './guest-write.js';
+import { guestWriteReceipt, parseWriteTargetFromPayload } from './guest-write.js';
 import { LAUNCHER_STAGE_CGROUP_ENTER, LAUNCHER_STAGE_CGROUP_MISSING, splitFencedCommand } from './limits.js';
 import { sanitizeProviderError } from './diagnostics.js';
 
@@ -57,7 +58,7 @@ export class FakeInstabox implements InstaboxProvider {
   private nextPid = 4000;
   private machines = new Map<string, ProviderMachine>();
   private processes: FakeProcess[] = [];
-  private files = new Map<string, Map<string, string>>();
+  private files = new Map<string, Map<string, Buffer>>();
   private symlinks = new Map<string, Map<string, string>>();
   private failAmbiguous: string | null = null;
   private failDefinite = false;
@@ -201,7 +202,7 @@ export class FakeInstabox implements InstaboxProvider {
 
   /** Test-support read of the modeled guest file state (deterministic). */
   machineFile(machineId: string, relativePath: string): string | null {
-    return this.files.get(machineId)?.get(relativePath) ?? null;
+    return this.files.get(machineId)?.get(relativePath)?.toString('utf8') ?? null;
   }
 
   async listByOperation(operationKey: string): Promise<ProviderMachine | null> {
@@ -278,7 +279,7 @@ export class FakeInstabox implements InstaboxProvider {
    */
   private interpretWorkload(request: ProviderCommandRequest, payload: string): ProviderCommandResult {
     const machineId = request.machineId;
-    const files = this.files.get(machineId) ?? new Map<string, string>();
+    const files = this.files.get(machineId) ?? new Map<string, Buffer>();
     this.files.set(machineId, files);
     const planted = this.symlinks.get(machineId) ?? new Map<string, string>();
 
@@ -287,7 +288,7 @@ export class FakeInstabox implements InstaboxProvider {
     // guest script.
     const writeTarget = parseWriteTargetFromPayload(payload);
     if (writeTarget !== null && payload.includes('python3 -c')) {
-      return this.interpretWrite(request, files, planted, writeTarget);
+      return this.interpretWrite(request, files, planted, writeTarget, payload);
     }
     if (payload.includes('echo')) {
       const tokens = [...payload.matchAll(/'([^'\\]+)'/g)].map((match) => match[1] ?? '');
@@ -316,7 +317,7 @@ export class FakeInstabox implements InstaboxProvider {
 
   private interpret(request: ProviderCommandRequest): ProviderCommandResult {
     const machineId = request.machineId;
-    const files = this.files.get(machineId) ?? new Map<string, string>();
+    const files = this.files.get(machineId) ?? new Map<string, Buffer>();
     this.files.set(machineId, files);
     // Supervision discovery wire: pgrep for the foreground marker, then the
     // pgid lookup. Modeled against the hung group's real process state.
@@ -370,9 +371,10 @@ export class FakeInstabox implements InstaboxProvider {
 
   private interpretWrite(
     request: ProviderCommandRequest,
-    files: Map<string, string>,
+    files: Map<string, Buffer>,
     planted: Map<string, string>,
     relativePath: string,
+    commandPayload: string,
   ): ProviderCommandResult {
     const refused = (errno: number): ProviderCommandResult => ({
       stdout: '',
@@ -393,9 +395,17 @@ export class FakeInstabox implements InstaboxProvider {
     for (let depth = 1; depth <= parts.length; depth += 1) {
       if (planted.has(parts.slice(0, depth).join('/'))) return refused(40);
     }
-    const payload = Buffer.from(request.stdin ?? '', 'base64').toString('utf8');
+    const size = Number(/RANGER_WRITE_SIZE='([0-9]+)'/.exec(commandPayload)?.[1] ?? '-1');
+    const expectedHash = /RANGER_WRITE_SHA256='([0-9a-f]{64})'/.exec(commandPayload)?.[1];
+    const encodedSize = Math.ceil(size / 3) * 4;
+    const encoded = (request.stdin ?? '').slice(0, encodedSize);
+    const payload = Buffer.from(encoded, 'base64');
+    if (size < 0 || encoded.length !== encodedSize || payload.length !== size
+      || payload.toString('base64') !== encoded || createHash('sha256').update(payload).digest('hex') !== expectedHash) {
+      return { stdout: '', stderr: 'guest-write-refused stage=input_digest\n', exitCode: 3, timedOut: false, truncated: false };
+    }
     files.set(parts.join('/'), payload);
-    return { stdout: 'guest-write-ok\n', stderr: '', exitCode: 0, timedOut: false, truncated: false };
+    return { stdout: `${guestWriteReceipt(payload)}\n`, stderr: '', exitCode: 0, timedOut: false, truncated: false };
   }
 
   async signal(request: ProviderSignal): Promise<boolean> {
