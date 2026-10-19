@@ -290,7 +290,7 @@ function traceConfigured(config: RangerConfig): boolean {
 }
 
 /** Re-write every saved source file into the fresh VM (previous run output). */
-async function seedSavedSource(db: DatabaseSync, projectId: string, workspace: WorkspaceService): Promise<void> {
+export async function seedSavedSource(db: DatabaseSync, projectId: string, workspace: WorkspaceService): Promise<void> {
   const files = listAllSourceFiles(db, projectId);
   for (const file of files) {
     await workspace.writeFile(projectId, file.path, file.content);

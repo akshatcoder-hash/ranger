@@ -48,6 +48,39 @@ const INITIAL_BOUNDS = { maxFiles: HASH_FILE_CAP, maxFileBytes: GUEST_TRANSPORT_
  * Throws an explicit error BEFORE any create when the recorded checkout
  * cannot materialize.
  */
+function requireLocalCommitRoot(repo: RepositoryRecord): string {
+  // A remote/reference-only record has no snapshot to bridge: there is no
+  // in-VM checkout service, so the initial run would boot empty. Fail
+  // explicitly before the create instead.
+  const root = localRepositoryPath(repo.url);
+  if (root === null || repo.commit === '') {
+    throw new Error(
+      'The connected repository is a remote or reference-only record with no resolved commit; ' +
+        'the initial source cannot materialize before the workspace create. ' +
+        'Connect a repository under an operator-approved snapshot root.',
+    );
+  }
+  return root;
+}
+
+/**
+ * Whether the project's saved source is EXACTLY the recorded commit's tree
+ * (same paths, same bytes). Saved source from other work is never silently
+ * treated as the connected revision.
+ */
+export async function savedSourceMatchesCommit(
+  db: DatabaseSync,
+  projectId: string,
+  repo: RepositoryRecord,
+  approvedSnapshotRoots: string[],
+): Promise<boolean> {
+  const root = requireLocalCommitRoot(repo);
+  const committed = await readCommitSourceFiles(root, repo.commit, approvedSnapshotRoots, INITIAL_BOUNDS);
+  const saved = new Map(listAllSourceFiles(db, projectId).map((file) => [file.path, file.content]));
+  if (saved.size !== committed.length) return false;
+  return committed.every((file) => saved.get(file.path)?.equals(file.content) === true);
+}
+
 export async function materializeInitialSource(
   db: DatabaseSync,
   projectId: string,
@@ -60,17 +93,7 @@ export async function materializeInitialSource(
   if (listAllSourceFiles(db, projectId).length > 0) {
     return { materialized: false, commit: null, files: 0 };
   }
-  // A remote/reference-only record has no snapshot to bridge: there is no
-  // in-VM checkout service, so the initial run would boot empty. Fail
-  // explicitly before the create instead.
-  const root = localRepositoryPath(repo.url);
-  if (root === null || repo.commit === '') {
-    throw new Error(
-      'The connected repository is a remote or reference-only record with no resolved commit; ' +
-        'the initial source cannot materialize before the workspace create. ' +
-        'Connect a repository under an operator-approved snapshot root.',
-    );
-  }
+  const root = requireLocalCommitRoot(repo);
   const files = await readCommitSourceFiles(root, repo.commit, approvedSnapshotRoots, INITIAL_BOUNDS);
   // Persist atomically, then verify by byte readback: the run never claims a
   // seeded source that is not exactly what the recorded commit holds.

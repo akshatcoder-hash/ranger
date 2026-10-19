@@ -286,6 +286,22 @@ export const EVENT_TYPES: EventTypeDef[] = [
       toolCalls: int({ minimum: 0 }),
     }),
   },
+  {
+    name: 'workspace.preparation.updated',
+    description:
+      'Voice-requested project workspace preparation progress (read-only sandbox + code index); the latest event is the durable preparation status',
+    dataSchema: obj(['jobId', 'phase'], {
+      jobId: str({ maxLength: 128 }),
+      phase: str({ enum: ['queued', 'preparing', 'indexing', 'ready', 'failed'] }),
+      fileCount: int({ minimum: 0 }),
+      byteCount: int({ minimum: 0 }),
+      indexElapsedMs: int({ minimum: 0 }),
+      elapsedMs: int({ minimum: 0 }),
+      errorCode: str({ maxLength: 64 }),
+      message: str({ maxLength: 400 }),
+      repositoryCommit: str({ maxLength: 64 }),
+    }),
+  },
   { name: 'workspace.command.finished', description: 'Supervised command finished with real exit status', dataSchema: { type: 'object' } },
   { name: 'workspace.artifact.created', description: 'Artifact collected', dataSchema: { type: 'object' } },
   { name: 'preview.session.updated', description: 'Preview or desktop session state changed', dataSchema: { type: 'object' } },

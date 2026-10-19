@@ -6,6 +6,7 @@ import { engineeringRunHandler } from '../runs/executor.js';
 import { reconcileInterruptedRuns } from '../runs/reconcile.js';
 import { RUN_JOB_TYPE } from '../runs/service.js';
 import { RetrievalService } from '../retrieval/service.js';
+import { PREPARE_JOB_TYPE, projectWorkspacePrepHandler } from '../workspace/prepare.js';
 import { SecretResolver } from '../secrets.js';
 import { FakeInstabox } from '../workspace/instabox.js';
 import { setWorkspaceProviderForTests, workspaceProviderForTests } from '../workspace/runtime.js';
@@ -17,7 +18,9 @@ import { installGracefulShutdown } from './lifecycle.js';
 /**
  * Ranger worker entrypoint (durable engineering work; never in API requests).
  *
- * Registers the engineering-run job handler: one durable run executes one
+ * Registers the project-workspace preparation handler (read-only voice
+ * preparation: one VM + real Trace index, see workspace/prepare.ts) and the
+ * engineering-run job handler: one durable run executes one
  * approved plan version on one ephemeral Instabox workspace with the real
  * xAI/Trace tool loop. At startup and every 30s the reconciliation
  * controller fails runs whose worker lease expired (interrupted control
@@ -45,6 +48,7 @@ export async function main(): Promise<void> {
   const retrieval = new RetrievalService({ db, config });
   const handlers = new Map<string, JobHandler>();
   handlers.set(RUN_JOB_TYPE, engineeringRunHandler({ db, config, retrieval, transportFactory: scriptTransport ?? undefined }));
+  handlers.set(PREPARE_JOB_TYPE, projectWorkspacePrepHandler({ db, config, retrieval }));
 
   // Interrupted-run reconciliation at startup and on a fixed sweep. The
   // provider resolves lazily so a worker without provider credentials still

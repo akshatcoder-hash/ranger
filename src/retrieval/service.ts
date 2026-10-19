@@ -2,11 +2,12 @@ import type { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import type { RangerConfig } from '../config.js';
 import { Errors } from '../errors.js';
-import { ProjectMirror, mirrorRootFor } from './mirror.js';
+import { ProjectMirror, fingerprintSource, mirrorRootFor } from './mirror.js';
 import { TraceMcpClient } from './trace-mcp.js';
 import { indexMirror, runIndexedExclusively, type TraceIndexStats } from './trace-index.js';
 import { TRACE_SUPPORTED_EXTENSIONS, TRACE_SUPPORTED_LANGUAGES, verifyTracePin } from './trace-pin.js';
-import { readSourceFile, listSourceFiles } from '../workspace/store.js';
+import { readIndexState, writeIndexState, type PersistedIndexState } from './index-state.js';
+import { readSourceFile, listSourceFiles, listAllSourceFiles } from '../workspace/store.js';
 
 /**
  * Project-scoped Trace retrieval over the real pinned Trace MCP server.
@@ -55,6 +56,31 @@ export interface RetrievalSearchResponse {
   staleDropped?: number;
 }
 
+/**
+ * Whether the persisted index provably describes the CURRENT saved source.
+ * `not_indexed`: no usable index record. `stale`: the saved source changed
+ * since the index. `mirror_mismatch`: the mirror is not at the indexed head.
+ */
+export type IndexReadiness =
+  | { ready: true; state: PersistedIndexState }
+  | { ready: false; reason: 'not_indexed' | 'stale' | 'mirror_mismatch'; state: PersistedIndexState | null };
+
+export interface SourceSlice {
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  totalLines: number;
+  content: string;
+  contentHash: string;
+  snapshotId: string;
+  commit: string;
+  repositoryCommit: string | null;
+}
+
+/** Bounds for one cited source slice. */
+const SOURCE_SLICE_MAX_LINES = 200;
+const SOURCE_SLICE_MAX_CHARS = 12_000;
+
 interface ProjectRetrievalState {
   mcp: TraceMcpClient | null;
   snapshot: TraceIndexStats | null;
@@ -91,13 +117,88 @@ interface EvidenceBundle {
   items?: EvidenceItem[];
 }
 
+function notReadyError(reason: 'not_indexed' | 'stale' | 'mirror_mismatch'): ReturnType<typeof Errors.conflict> {
+  return reason === 'not_indexed'
+    ? Errors.conflict('Retrieval index does not exist for this project yet', { reason: 'retrieval_not_indexed' })
+    : Errors.conflict('The retrieval index no longer matches the project source', {
+        reason: 'retrieval_index_stale',
+        detail: reason,
+      });
+}
+
+function sourceStamp(db: DatabaseSync, projectId: string): string {
+  const row = db
+    .prepare(
+      'SELECT COUNT(*) AS c, COALESCE(SUM(size_bytes), 0) AS b, COALESCE(MAX(updated_at), 0) AS m FROM workspace_source_files WHERE project_id = ?',
+    )
+    .get(projectId) as { c: number; b: number; m: number };
+  return `${row.c}:${row.b}:${row.m}`;
+}
+
+function toIndexStats(state: PersistedIndexState): TraceIndexStats {
+  return {
+    snapshotId: state.snapshotId,
+    commit: state.commit,
+    branch: state.branch,
+    dirty: state.dirty,
+    indexedAt: state.indexedAt,
+    embeddingModel: state.embeddingModel,
+    embeddedChunks: state.embeddedChunks,
+    filesIndexed: state.filesIndexed,
+  };
+}
+
 export class RetrievalService {
   private readonly states = new Map<string, ProjectRetrievalState>();
+  /** Last fully verified (snapshot, source stamp) per project: skips re-hashing every call. */
+  private readonly verified = new Map<string, string>();
 
   constructor(private readonly options: RetrievalServiceOptions) {}
 
+  /** Explicit failure unless the pinned real Trace sibling is usable (no VM or index work happens first). */
+  async assertAvailable(): Promise<void> {
+    await verifyTracePin({
+      traceRoot: this.options.config.providers.traceRoot,
+      pinnedCommit: this.options.config.providers.tracePinnedCommit,
+    });
+  }
+
+  /**
+   * Cross-process readiness: reads the durable index record (written by any
+   * process that indexed) and proves it still describes the current saved
+   * source and the mirror head. Never trusts the record alone.
+   */
+  readiness(projectId: string): IndexReadiness {
+    const persisted = readIndexState(this.options.config.dataDir, projectId);
+    if (persisted === null) return { ready: false, reason: 'not_indexed', state: null };
+    const stamp = sourceStamp(this.options.db, projectId);
+    const key = `${persisted.snapshotId}:${persisted.mirrorHead}:${stamp}`;
+    if (this.verified.get(projectId) === key) return { ready: true, state: persisted };
+    const current = fingerprintSource(listAllSourceFiles(this.options.db, projectId));
+    if (current.fingerprint !== persisted.sourceFingerprint) {
+      this.verified.delete(projectId);
+      return { ready: false, reason: 'stale', state: persisted };
+    }
+    if (this.mirrorFor(projectId).headCommit() !== persisted.mirrorHead) {
+      this.verified.delete(projectId);
+      return { ready: false, reason: 'mirror_mismatch', state: persisted };
+    }
+    this.verified.set(projectId, key);
+    return { ready: true, state: persisted };
+  }
+
   status(projectId: string): RetrievalStatus {
     const state = this.states.get(projectId);
+    const readiness = this.readiness(projectId);
+    if (readiness.ready) {
+      return {
+        provider: 'trace',
+        indexed: true,
+        snapshotId: readiness.state.snapshotId,
+        lastIndexedAt: readiness.state.indexedAt,
+        languages: [...TRACE_SUPPORTED_LANGUAGES],
+      };
+    }
     return {
       provider: 'trace',
       indexed: state?.snapshot !== undefined && state?.snapshot !== null,
@@ -113,14 +214,28 @@ export class RetrievalService {
    * index/restart work is serialized process-wide.
    */
   async reindex(projectId: string): Promise<RetrievalStatus> {
-    const pin = await verifyTracePin({
-      traceRoot: this.options.config.providers.traceRoot,
-      pinnedCommit: this.options.config.providers.tracePinnedCommit,
-    });
-    void pin;
+    const indexed = await this.reindexDetailed(projectId);
+    return {
+      provider: 'trace',
+      indexed: true,
+      snapshotId: indexed.snapshotId,
+      lastIndexedAt: indexed.indexedAt,
+      languages: [...TRACE_SUPPORTED_LANGUAGES],
+    };
+  }
+
+  /**
+   * Reindex and durably record exactly what was indexed (snapshot, source
+   * fingerprint, counts, timing, caller provenance) so other processes can
+   * serve the same index.
+   */
+  async reindexDetailed(projectId: string, options: { provenance?: Record<string, string> } = {}): Promise<PersistedIndexState> {
+    await this.assertAvailable();
     const mirror = this.mirrorFor(projectId);
     const state = this.stateFor(projectId);
-    const snapshot = await runIndexedExclusively(async () => {
+    return runIndexedExclusively(async () => {
+      const startedAt = Date.now();
+      const stampBefore = sourceStamp(this.options.db, projectId);
       const synced = await mirror.sync(this.options.db, projectId);
       const stats = await indexMirror({
         traceRoot: this.options.config.providers.traceRoot,
@@ -142,17 +257,73 @@ export class RetrievalService {
         await mcp.close();
         throw cause;
       }
+      const persisted: PersistedIndexState = {
+        version: 1,
+        projectId,
+        snapshotId: stats.snapshotId,
+        commit: stats.commit,
+        branch: stats.branch,
+        dirty: stats.dirty,
+        indexedAt: stats.indexedAt,
+        embeddingModel: stats.embeddingModel,
+        embeddedChunks: stats.embeddedChunks,
+        filesIndexed: stats.filesIndexed,
+        mirrorHead: synced.headCommit,
+        sourceFingerprint: synced.sourceFingerprint,
+        fileCount: synced.fileCount,
+        byteCount: synced.byteCount,
+        indexElapsedMs: Date.now() - startedAt,
+        provenance: { ...(options.provenance ?? {}) },
+      };
+      writeIndexState(this.options.config.dataDir, persisted);
       state.mcp = mcp;
       state.headCommit = synced.headCommit;
       state.snapshot = stats;
-      return stats;
+      this.verified.set(projectId, `${persisted.snapshotId}:${persisted.mirrorHead}:${stampBefore}`);
+      return persisted;
     });
+  }
+
+  /**
+   * Bounded verbatim slice of one saved source file, cited against the
+   * current index. Refused unless the index provably matches the source.
+   */
+  readSource(projectId: string, filePath: string, startLine: number, endLine: number): SourceSlice {
+    const readiness = this.readiness(projectId);
+    if (!readiness.ready) throw notReadyError(readiness.reason);
+    if (
+      filePath.length === 0 ||
+      filePath.length > 512 ||
+      filePath.startsWith('/') ||
+      filePath.includes('\0') ||
+      filePath.split('/').includes('..')
+    ) {
+      throw Errors.validation('Source path must be project-relative', { reason: 'path_escape' });
+    }
+    if (!Number.isInteger(startLine) || !Number.isInteger(endLine) || startLine < 1 || endLine < startLine) {
+      throw Errors.validation('Line range must be 1-based integers with endLine >= startLine', { reason: 'line_range_invalid' });
+    }
+    if (endLine - startLine + 1 > SOURCE_SLICE_MAX_LINES) {
+      throw Errors.validation(`At most ${SOURCE_SLICE_MAX_LINES} lines can be read at once`, { reason: 'line_range_too_large' });
+    }
+    const content = readSourceFile(this.options.db, projectId, filePath);
+    if (content === null) throw Errors.notFound('Source file not found in the indexed project', { reason: 'source_not_found' });
+    const lines = content.toString('utf8').split('\n');
+    const totalLines = lines.length > 1 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length;
+    if (startLine > totalLines) {
+      throw Errors.validation('Line range is beyond the end of the file', { reason: 'line_range_invalid', totalLines });
+    }
+    const end = Math.min(endLine, totalLines);
     return {
-      provider: 'trace',
-      indexed: true,
-      snapshotId: snapshot.snapshotId,
-      lastIndexedAt: snapshot.indexedAt,
-      languages: [...TRACE_SUPPORTED_LANGUAGES],
+      filePath,
+      startLine,
+      endLine: end,
+      totalLines,
+      content: lines.slice(startLine - 1, end).join('\n').slice(0, SOURCE_SLICE_MAX_CHARS),
+      contentHash: sha256(content),
+      snapshotId: readiness.state.snapshotId,
+      commit: readiness.state.commit ?? readiness.state.mirrorHead,
+      repositoryCommit: readiness.state.provenance['repositoryCommit'] ?? null,
     };
   }
 
@@ -161,6 +332,7 @@ export class RetrievalService {
     // closing MCP runtime.
     return runIndexedExclusively(async () => {
       const state = this.stateFor(projectId);
+      await this.adoptPersistedIndex(projectId, state);
       if (state.snapshot === null) {
         throw Errors.conflict('Retrieval index does not exist for this project yet', {
           reason: 'retrieval_not_indexed',
@@ -191,6 +363,45 @@ export class RetrievalService {
       }
       return { provider: 'trace', results: [], staleDropped: verified.staleDropped };
     });
+  }
+
+  /**
+   * Cross-process adoption: when this process holds no index (a cold API)
+   * or another process reindexed since, start the Trace runtime on the
+   * durable index record. A record that no longer matches the saved source
+   * is never adopted; a process that already serves an index keeps serving
+   * it (its citations are re-verified against current source anyway).
+   */
+  private async adoptPersistedIndex(projectId: string, state: ProjectRetrievalState): Promise<void> {
+    const persisted = readIndexState(this.options.config.dataDir, projectId);
+    if (persisted === null) return;
+    if (state.snapshot !== null && state.snapshot.snapshotId === persisted.snapshotId) return;
+    const readiness = this.readiness(projectId);
+    if (!readiness.ready) {
+      if (state.snapshot === null) throw notReadyError(readiness.reason);
+      return;
+    }
+    const mirror = this.mirrorFor(projectId);
+    const previous = state.mcp;
+    state.mcp = null;
+    if (previous !== null) await previous.close();
+    const mcp = TraceMcpClient.spawn({
+      traceRoot: this.options.config.providers.traceRoot,
+      mirrorRoot: mirror.root,
+      traceHome: this.options.config.providers.traceHome,
+    });
+    try {
+      await mcp.initialize();
+    } catch (cause) {
+      await mcp.close();
+      throw Errors.notConfigured('Trace retrieval runtime could not start on the persisted index', {
+        reason: 'trace_unavailable',
+        detail: cause instanceof Error ? cause.message.slice(0, OUTPUT_PREVIEW_CAP) : String(cause).slice(0, OUTPUT_PREVIEW_CAP),
+      });
+    }
+    state.mcp = mcp;
+    state.headCommit = readiness.state.mirrorHead;
+    state.snapshot = toIndexStats(readiness.state);
   }
 
   async closeAll(): Promise<void> {

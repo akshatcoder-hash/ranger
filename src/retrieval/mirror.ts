@@ -28,6 +28,29 @@ export interface MirrorSyncResult {
   headCommit: string;
   changed: boolean;
   fileCount: number;
+  byteCount: number;
+  /** Content fingerprint of exactly the file set this sync materialized. */
+  sourceFingerprint: string;
+}
+
+/**
+ * Deterministic fingerprint of a saved source set (path + content hash per
+ * file, path-sorted). Index state records it so a later process can prove
+ * the index still describes the current saved source.
+ */
+export function fingerprintSource(files: Array<{ path: string; content: Buffer }>): {
+  fingerprint: string;
+  fileCount: number;
+  byteCount: number;
+} {
+  const sorted = [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const hash = createHash('sha256');
+  let byteCount = 0;
+  for (const file of sorted) {
+    byteCount += file.content.byteLength;
+    hash.update(`${file.path}\0${createHash('sha256').update(file.content).digest('hex')}\n`);
+  }
+  return { fingerprint: hash.digest('hex'), fileCount: sorted.length, byteCount };
 }
 
 function mirrorParent(dataDir: string): string {
@@ -83,7 +106,14 @@ export class ProjectMirror {
       await git(this.root, ['commit', '--no-verify', '-m', 'ranger mirror sync'], 60_000);
     }
     const head = (await git(this.root, ['rev-parse', 'HEAD'])).trim();
-    return { headCommit: head, changed, fileCount: files.length };
+    const summary = fingerprintSource(files);
+    return {
+      headCommit: head,
+      changed,
+      fileCount: summary.fileCount,
+      byteCount: summary.byteCount,
+      sourceFingerprint: summary.fingerprint,
+    };
   }
 
   headCommit(): string | null {

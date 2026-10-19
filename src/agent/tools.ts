@@ -111,7 +111,7 @@ export function codingTools(options: CodingToolsOptions): CodingToolDef[] {
           const reason = typeof details?.reason === 'string' ? details.reason : null;
           // A missing index or a dead runtime is transient state, not a tool
           // failure; anything else (unexpected) still ends the run honestly.
-          if (reason === 'retrieval_not_indexed' || reason === 'trace_unavailable') {
+          if (reason === 'retrieval_not_indexed' || reason === 'retrieval_index_stale' || reason === 'trace_unavailable') {
             return { provider: 'unavailable', results: [], reason };
           }
           throw cause;

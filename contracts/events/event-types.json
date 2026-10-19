@@ -855,6 +855,62 @@
       }
     },
     {
+      "name": "workspace.preparation.updated",
+      "description": "Voice-requested project workspace preparation progress (read-only sandbox + code index); the latest event is the durable preparation status",
+      "dataSchema": {
+        "type": "object",
+        "required": [
+          "jobId",
+          "phase"
+        ],
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "preparing",
+              "indexing",
+              "ready",
+              "failed"
+            ]
+          },
+          "fileCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "byteCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "indexElapsedMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "elapsedMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "errorCode": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 400
+          },
+          "repositoryCommit": {
+            "type": "string",
+            "maxLength": 64
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "workspace.command.finished",
       "description": "Supervised command finished with real exit status",
       "dataSchema": {

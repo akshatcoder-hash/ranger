@@ -10,19 +10,32 @@ import type { HandlerContext, OperationHandler } from './handlers.js';
  * per API process; closeRetrievalRuntimes stops its MCP children at shutdown.
  */
 
-let activeService: RetrievalService | null = null;
+const servicesByContext = new WeakMap<HandlerContext, RetrievalService>();
+const openServices = new Set<RetrievalService>();
+
+/**
+ * The one retrieval service of an API context, shared by the retrieval
+ * routes and the voice code tools (one Trace runtime per project per API).
+ */
+export function retrievalServiceFor(ctx: HandlerContext): RetrievalService {
+  let service = servicesByContext.get(ctx);
+  if (service === undefined) {
+    service = new RetrievalService({ db: ctx.db, config: ctx.config });
+    servicesByContext.set(ctx, service);
+    openServices.add(service);
+  }
+  return service;
+}
 
 /** Close every Trace MCP child process (API shutdown). */
 export async function closeRetrievalRuntimes(): Promise<void> {
-  if (activeService !== null) {
-    await activeService.closeAll();
-    activeService = null;
-  }
+  const services = [...openServices];
+  openServices.clear();
+  for (const service of services) await service.closeAll();
 }
 
 export function registerRetrievalHandlers(ctx: HandlerContext, handlers: Map<string, OperationHandler>): void {
-  const service = new RetrievalService({ db: ctx.db, config: ctx.config });
-  activeService = service;
+  const service = retrievalServiceFor(ctx);
 
   const authorize = (req: FastifyRequest): string => {
     const principalId = requirePrincipalId(req);

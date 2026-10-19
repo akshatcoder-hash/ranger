@@ -8,6 +8,7 @@ import { listCommandsForRun, getWorkspace, markWorkspaceDestroyed } from '../wor
 import { terminateCommandRow } from '../workspace/terminate.js';
 import { closeRecordedSessions } from '../workspace/cleanup.js';
 import type { InstaboxProvider } from '../workspace/provider.js';
+import { PREPARE_JOB_TYPE, failInterruptedPreparations } from '../workspace/prepare.js';
 
 /**
  * Reconciliation controller: the honest end for interrupted work.
@@ -149,6 +150,9 @@ export async function reconcileInterruptedRuns(deps: ReconcileDeps): Promise<Rec
     }
   }
 
+  // A preparation whose worker died is failed first (it no longer shields
+  // its VM), then the orphan sweep reclaims the recorded machine.
+  failInterruptedPreparations(db, now);
   report.destroyedWorkspaces.push(...(await destroyOrphanedWorkspaces({ db, provider, ledgerFile })));
 
   report.resolvedUncertainWorkspaces = await reconcileUncertainWorkspaces({ db, provider, ledgerFile });
@@ -156,7 +160,8 @@ export async function reconcileInterruptedRuns(deps: ReconcileDeps): Promise<Rec
 }
 
 /**
- * Destroy recorded workspaces whose project has no active run. This covers
+ * Destroy recorded workspaces whose project has no active run (a live or
+ * still-valid ready voice preparation shields its own VM until its deadline). This covers
  * the window between "run failed" and "workspace destroyed": if the destroy
  * of a failed run's machine failed once (or the control process died right
  * after the run was failed), later sweeps still reclaim the provider
@@ -171,9 +176,18 @@ async function destroyOrphanedWorkspaces(deps: { db: DatabaseSync; provider: Ins
          AND w.observed_state != 'uncertain'
          AND NOT EXISTS (
            SELECT 1 FROM runs r WHERE r.project_id = w.project_id AND r.state IN ('queued', 'running')
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM jobs j
+           WHERE j.type = ? AND json_extract(j.payload, '$.projectId') = w.project_id
+             AND (
+               j.status = 'pending'
+               OR (j.status = 'claimed' AND j.lease_expires_at IS NOT NULL AND j.lease_expires_at >= ?)
+               OR (j.status = 'succeeded' AND w.deadline_at IS NOT NULL AND w.deadline_at > ?)
+             )
          )`,
     )
-    .all() as Array<{ project_id: string; machine_id: string; reservation_id: string | null }>;
+    .all(PREPARE_JOB_TYPE, Date.now(), Date.now()) as Array<{ project_id: string; machine_id: string; reservation_id: string | null }>;
   const destroyed: string[] = [];
   for (const row of rows) {
     try {
