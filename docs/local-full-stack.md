@@ -8,6 +8,14 @@ dependency tree. The original source branches are preserved untouched;
 `integration/full-stack` combines their source histories and no claim is
 made here that a remote push of this branch has been verified.
 
+## Current goal (narrow scope)
+
+ONE voice call → preselected local project → VM with the complete
+committed source → Trace index → grounded question. Explicitly **not**
+required for this goal: GitHub App, Atom, repository browser, manual
+plans, refund test, coding-workflow surfaces, desktop stream. This is
+user-demo-scope validation, not production.
+
 ## Requirements
 
 - Node.js >= 24 (developed against 24.21+), npm 11. No other services;
@@ -61,9 +69,49 @@ npm ci
 npm run dev   # browse http://127.0.0.1:5173; Vite proxies /v1 to 127.0.0.1:3100
 ```
 
-The worker and preview gateway processes were not started for the verified
-control-plane journey (no live work was exercised), so their start commands
-are documented in the root `README.md` rather than repeated here.
+## Starting the services for the live goal
+
+The runtime provider keys are provisioned in the local protected file
+`/Users/akshat/.secrets/ranger.env` (mode 0600, both key names present;
+never echoed — no values are recorded in this document, and the file is
+never `cat`-ed). `RANGER_APPROVED_SNAPSHOT_ROOTS` approves the local Trace
+checkout as the repository connect root for the root services, so no
+GitHub App is needed. The live-budget ledger is the authoritative
+external shared file and is never reset.
+
+> **Warning:** the VM allowance is exhausted (9/9 used, all released,
+> 0 pending) and the recorded attempt spend stands. **Do NOT launch a new
+> voice-prep or live attempt** without a new explicit VM allowance.
+
+Terminal 1 — API, from the repository root:
+
+```sh
+export RANGER_SECRET_FILE=/Users/akshat/.secrets/ranger.env
+export RANGER_LIVE_BUDGET_FILE=/Users/akshat/.local/share/ranger-live-2026-10-19-h4lvWX/provider-budget.json
+export RANGER_APPROVED_SNAPSHOT_ROOTS="$(cd ../trace && pwd)"
+RANGER_DATA_DIR=~/.local/share/ranger npm run start:api   # 127.0.0.1:3100
+```
+
+Terminal 2 — worker, from the repository root (same three variables):
+
+```sh
+export RANGER_SECRET_FILE=/Users/akshat/.secrets/ranger.env
+export RANGER_LIVE_BUDGET_FILE=/Users/akshat/.local/share/ranger-live-2026-10-19-h4lvWX/provider-budget.json
+export RANGER_APPROVED_SNAPSHOT_ROOTS="$(cd ../trace && pwd)"
+RANGER_DATA_DIR=~/.local/share/ranger npm run start:worker
+```
+
+Terminal 3 — frontend, from the integrated checkout's `frontend/`
+directory:
+
+```sh
+cd frontend   # from the repository root
+npm ci
+npm run dev   # browse http://127.0.0.1:5173; Vite proxies /v1 to 127.0.0.1:3100
+```
+
+The earlier `bootstrap --create-principal` step (below) is unchanged; the
+preview gateway is not required for the current goal.
 
 ## Backend data and credentials (never in the repository)
 
@@ -160,50 +208,82 @@ verification via `npm run bootstrap -- --trace`.
   connection and event replay — with scoped idempotency keys, explicit
   partial-failure reporting and honest error envelopes instead of faked
   success.
-- Voice and screen-frame transport are **not wired in the frontend**:
-  `startMediaSession`/`endMediaSession` return an explicit `unsupported`
-  result and create no session. Provider-unconfigured states stay honest —
-  `GET /v1/capabilities` reports what is actually configured and the UI
-  surfaces unconfigured providers as unconfigured.
-- No live attempt is made in this setup for two concrete reasons: no
-  provider secrets are provisioned at runtime (`RANGER_SECRET_FILE` with
-  `XAI_API_KEY`/`INSTABOX_API_KEY` is absent), and the live-run guest
-  timeout behaviour is unknown/unresolved. Note the distinction: the
-  bootstrap credential is a locally generated operator credential, created
-  by the bootstrap CLI and used for the verified control-plane journey —
-  it is NOT the missing piece. The missing piece is the provider secret
-  file. This is a statement about this validation setup, not a permanent
-  prohibition: the user has already authorized a bounded live budget, so
-  live attempts remain possible once provider keys are provisioned and the
-  guest timeout is understood. (Factory's Grok validator authentication is
-  native to Factory and independent of Ranger runtime credentials.)
-- Consequently nothing beyond the local control plane was exercised: no
-  model calls, no Instabox VM creation, no worker process, no preview
-  gateway, and no run execution (`startRun` was never invoked).
+- Browser media is implemented: same-origin voice WebSocket relay with
+  24 kHz PCM playback, capture and interruption, plus independent
+  latest-frame capture at 1 fps with on-demand inspection. Provider
+  states stay honest — `GET /v1/capabilities` reports what is actually
+  configured and the UI surfaces unconfigured providers as unconfigured.
+  Device and socket tests are fake doubles; the real xAI WebSocket and
+  tools are confirmed by the synthetic driver, but human-microphone and
+  browser media remain **not verified** (physical media NOT PASS).
+- Media buttons are enabled only inside an actual project/conversation
+  with known capabilities; no device permission is requested on page
+  load. If a media-session cleanup call fails, the session id is kept in
+  memory and an explicit retry is offered — a reload is not claimed to
+  recover the session.
+- Live status: the single real end-to-end attempt has **finished and
+  failed** (see the report below); the live-run guest timeout behaviour
+  is still unknown, and **no repeat is permitted without a new explicit
+  VM allowance**. Runtime provider keys are present in the local
+  protected file (mode 0600, never echoed; no values recorded here).
 - Nothing here claims live product acceptance: the verified scope is the
-  local control plane (see the report below); live engineering is **NOT
-  accepted**. No Factory runtime credentials are used, no live paid
-  provider calls are made, and no model downloads are performed in this
-  setup. The `/diagnostic` client and the shared live budget ledger govern
-  any future live evidence.
+  local control plane plus the recorded failed attempt (see the report
+  below); live engineering is **NOT accepted**. No Factory
+  runtime credentials are used and no model downloads are performed in
+  this setup. The `/diagnostic` client and the shared live budget ledger
+  govern live evidence.
 
 ## Local verification report
 
 Status: **real local control-plane verified** — the initial manual browser
-journey passed, the two defects it surfaced were fixed and re-tested in a
-focused follow-up that also passed, and final Grok code review found no
-issues. Live engineering is **NOT accepted**: nothing here is a claim of
-full live engineering acceptance.
+journey passed and the two defects it surfaced were fixed and re-tested in
+a focused follow-up that also passed. The one real end-to-end live attempt
+**finished and failed** (below); live engineering is **NOT accepted**.
 
 ### Automated gates (Node 24)
 
-- Backend: typecheck, lint, build green; **254 unit** tests and **84
-  integration** tests passed; e2e **16 passed / 7 skipped** (live-window
-  skips) — unchanged across the final run.
-- Frontend: typecheck, lint, build green; **35 tests** passed (final
-  count, after the UI follow-up added tests).
-- Grok code review: **final — no issues** (it had earlier cleared the
-  API and UI defects found mid-stream).
+- Backend current: typecheck and lint pass; **254 unit tests across 26
+  files, all passing** (after the retired live-harness archive was
+  removed — 772 lines deleted and its initial-test diff reversed). The
+  build was green before that harness cleanup.
+- Backend integration/e2e: the previously merged full gates (84
+  integration tests; e2e 16 passed / 7 skipped) are **historical**; the
+  **current** passing coverage is the focused voice-workspace-prep, API
+  Trace-index smoke, and voice/retrieval/runs integration tests. The
+  full e2e suite was **not** rerun after the feature work.
+- Frontend: typecheck, lint, build green; **100 tests** passed (current
+  count, including the media implementation).
+
+### Real end-to-end attempt (finished — FAILED)
+
+One real attempt was made at the current goal, recorded in a sanitized
+local mission evidence record (paths and identifiers not reproduced
+here). A brief note first: an
+earlier driver defect (POST used where PUT was required) returned a 404
+before any provider call or cost; it was corrected, and exactly one real
+attempt followed.
+
+Attempt facts:
+
+- A real xAI WebSocket voice session was driven with synthetic PCM and
+  text — no physical microphone and no browser audio.
+- The server-declared prepare tool was called; deduplication held and
+  exactly one VM was created.
+- The pinned Trace checkout materialized on the control source: 70 files
+  / 465,313 bytes matching the recorded commit — materialized before the
+  copy step; they were not seeded into the VM.
+- The guest source copy **FAILED**: `guest_write_failed` after 96,748 ms.
+- Phases reached queued → preparing → failed. Trace indexing **never
+  started** (`indexElapsedMs` absent); no citations and no grounded
+  answer were produced.
+- Total attempt duration: 105,540 ms.
+- Shutdown was clean: the voice session ended, the workspace public
+  delete completed, the SDK list reported 0 machines, and all own
+  processes closed.
+- Accounting: xAI spend delta $0.1361 (total $0.7336, reserved $0); VM
+  usage 9/9 with all machines released and 0 pending.
+- No repeat is permitted without a new explicit VM allowance; no source
+  fix is speculated here; this is not a full-working-success claim.
 
 ### Initial manual browser journey (historical record)
 
@@ -240,9 +320,9 @@ Verified in that journey:
 
 This journey surfaced two defects — bootstrap token normalization and a
 lingering engineer name on invalid routes. Both UI findings are closed:
-each was fixed and covered by the follow-up checks below. Live flows
-remain blocked (see "What is and is not wired"); nothing beyond the UI
-findings is implied by this closure.
+each was fixed and covered by the follow-up checks below. At that time
+live media was disabled; the current implementation is described in
+"What is and is not wired".
 
 ### Focused follow-up journey (manual, unique headless session)
 
@@ -284,6 +364,10 @@ live generation of any kind occurred.
 
 ### Cleanup
 
-After the follow-up, all service PIDs were stopped exactly as launched and
-ports 3100 and 5173 were confirmed free. No worker, preview gateway, run,
-model, VM or provider call was made at any point.
+After the verification journeys, all service PIDs were stopped exactly as
+launched and ports 3100 and 5173 were confirmed free. The verification
+journeys themselves made no worker, preview-gateway, run, model, VM or
+provider call. The one real end-to-end attempt has since finished and
+failed with a clean shutdown: voice ended, workspace public delete
+completed, SDK list 0, all own processes closed, and all VMs released
+(details above).

@@ -54,27 +54,33 @@ here; empty-value lines are rejected by local tests), engineer
 rename persistence across reload, invalid-route isolation, project
 navigation/state isolation (the same authorized user switching projects),
 and latest-event rendering in the UI. Both defects the initial journey
-surfaced are closed; final Grok code review found no
-issues. The full verification report, its stated limitations (headless
-input via DOM setters/React events, no screenshot evidence) and cleanup
-record live in `docs/local-full-stack.md` at the repository root. This
-verifies the local control plane only — live engineering is not accepted
-and live flows remain blocked.
+surfaced are closed. The full verification report, its stated limitations
+(headless input via DOM setters/React events, no screenshot evidence) and
+cleanup record live in `docs/local-full-stack.md` at the repository root.
+That report verifies the local control plane (100 frontend tests, current
+count) — this is user-demo-scope validation, not production; live
+engineering is not accepted. The one real end-to-end live attempt has
+finished and FAILED (guest source copy failed after Trace materialized;
+indexing never started), the live-run guest timeout is still unknown, and
+no repeat is permitted without a new explicit VM allowance.
 
-Voice and screen-frame relay are **not wired**: `startMediaSession` and
-`endMediaSession` return an explicit `unsupported` result without creating
-any session, rather than pretending media works. Provider configuration is
-read honestly from `GET /v1/capabilities` — unconfigured providers surface
-as unconfigured, never as faked capability.
+Browser media is implemented: a same-origin voice WebSocket relay with
+24 kHz PCM playback, capture and interruption, plus independent
+latest-frame capture at 1 fps with on-demand inspection. Media buttons
+are enabled only inside an actual project/conversation with known
+capabilities — no device permission is requested on page load. Device
+and socket tests use fake doubles; the real xAI WebSocket and tools are
+confirmed by the synthetic driver, but human-microphone and browser
+media remain **not verified** (physical media NOT PASS). If a
+media-session cleanup call fails, the session id stays in
+memory and an explicit retry is offered (a reload is not claimed to
+recover the session).
+
+Provider configuration is read honestly from `GET /v1/capabilities` —
+unconfigured providers surface as unconfigured, never as faked capability.
 
 No provider keys or secret values belong in this package — all provider
 interaction goes through the Ranger backend.
-
-Live browser microphone and screen capture are **disabled until the media
-transport is wired**: the UI makes no device permission prompts, and demo
-mode uses synthetic data with no capture. The media-track lifecycle unit
-checks (tracks stopped when a session cannot connect, when sharing ends,
-and on unmount) are retained.
 
 ## Checks
 
