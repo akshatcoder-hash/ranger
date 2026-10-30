@@ -27,6 +27,24 @@ describe('SDK account-wide create admission (offline mocks only)', () => {
     vi.spyOn(Sandbox, 'create').mockRejectedValue(new Error('lost response'));
     await expect(new SdkInstaboxProvider().create(request)).rejects.toMatchObject({ details: { reason: 'uncertain_create' } });
   });
+  it('re-dials once without the idle override when a free account refuses it', async () => {
+    vi.spyOn(Sandbox, 'list').mockResolvedValue([]);
+    const refusal = Object.assign(new Error('Free users are not able to change idle time'), { code: 'permission_denied', status: 403 });
+    const create = vi
+      .spyOn(Sandbox, 'create')
+      .mockRejectedValueOnce(refusal)
+      .mockResolvedValue({ getInfo: async () => info } as Sandbox);
+    await expect(new SdkInstaboxProvider().create(request)).resolves.toMatchObject({ machineId: 'm_fixture' });
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(create.mock.calls[1]?.[1]).not.toHaveProperty('autoSuspendMs');
+  });
+  it('reports a provider quota refusal as capacity, not an uncertain create', async () => {
+    vi.spyOn(Sandbox, 'list').mockResolvedValue([]);
+    vi.spyOn(Sandbox, 'create').mockRejectedValue(
+      Object.assign(new Error('sandbox limit reached (1 of 1)'), { code: 'quota_exceeded', status: 429 }),
+    );
+    await expect(new SdkInstaboxProvider().create(request)).rejects.toMatchObject({ details: { reason: 'vm_capacity' } });
+  });
   it('checks account headroom using the same key before creating the fifth machine', async () => {
     const list = vi.spyOn(Sandbox, 'list').mockResolvedValue(Array(4).fill(info));
     const create = vi.spyOn(Sandbox, 'create').mockResolvedValue({ getInfo: async () => info } as Sandbox);

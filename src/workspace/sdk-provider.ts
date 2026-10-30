@@ -1,6 +1,6 @@
 import { Sandbox, type SandboxInfo } from '@insforge/instabox-sdk';
 import { INSTABOX_MAX_ACCOUNT_CONCURRENT } from '../budget/ledger.js';
-import { Errors } from '../errors.js';
+import { Errors, isAppError } from '../errors.js';
 import { translateCommandExitError } from './diagnostics.js';
 import { elevatedKillCommand, processListCommand } from './signals.js';
 import type {
@@ -39,6 +39,25 @@ function connection(apiKey: string | undefined): { apiKey: string } | undefined 
   return apiKey === undefined || apiKey.length === 0 ? undefined : { apiKey };
 }
 
+/**
+ * The provider refuses an idle-pause override on free accounts (403
+ * `permission_denied`) before a machine is created. Only that refusal may be
+ * re-dialled without the override; everything else stays a failed create.
+ */
+function idleOverrideRefused(cause: unknown): boolean {
+  const error = cause as { code?: unknown; message?: unknown } | null;
+  return error?.code === 'permission_denied' && typeof error.message === 'string' && /idle|autosuspend/i.test(error.message);
+}
+
+/**
+ * The provider refused the create because the account's sandbox limit is
+ * reached (a free plan allows one). Deterministic, before any machine exists.
+ */
+function quotaReached(cause: unknown): boolean {
+  const error = cause as { code?: unknown; status?: unknown } | null;
+  return error?.code === 'quota_exceeded' || error?.status === 429;
+}
+
 export class SdkInstaboxProvider implements InstaboxProvider {
   constructor(private readonly apiKey?: string) {}
 
@@ -56,20 +75,35 @@ export class SdkInstaboxProvider implements InstaboxProvider {
     if (account.length >= INSTABOX_MAX_ACCOUNT_CONCURRENT) {
       throw Errors.conflict('Instabox account simultaneous-machine limit reached; stop an existing VM first', { reason: 'vm_capacity' });
     }
+    const base = {
+      apiKey: request.apiKey,
+      vault: false,
+      ...(request.timeoutMs === null ? {} : { timeoutMs: request.timeoutMs }),
+      onTimeout: 'kill' as const,
+      metadata: request.metadata,
+    };
     try {
-      const sandbox = await Sandbox.create(request.template, {
-        apiKey: request.apiKey,
-        vault: false,
-        ...(request.timeoutMs === null ? {} : { timeoutMs: request.timeoutMs }),
-        onTimeout: 'kill',
-        autoSuspendMs: 0,
-        metadata: request.metadata,
-      });
+      let sandbox: Sandbox;
+      try {
+        sandbox = await Sandbox.create(request.template, { ...base, autoSuspendMs: 0 });
+      } catch (cause) {
+        // A free Instabox account cannot disable the idle pause; the request is
+        // refused with 403 BEFORE any machine exists, so one re-dial with the
+        // account's own default cannot duplicate a create.
+        if (!idleOverrideRefused(cause)) throw cause;
+        sandbox = await Sandbox.create(request.template, base);
+      }
       const info = await sandbox.getInfo();
       const endAt = info.endAt?.getTime();
       const timeoutMs = endAt === undefined ? request.timeoutMs : Math.max(0, endAt - Date.now());
       return fromInfo(info, timeoutMs);
-    } catch {
+    } catch (cause) {
+      if (isAppError(cause)) throw cause;
+      // The provider's own account limit: deterministic refusal, no machine
+      // exists, so this is reported as capacity rather than an uncertain create.
+      if (quotaReached(cause)) {
+        throw Errors.conflict('Instabox sandbox limit reached; stop the running VM before starting another', { reason: 'vm_capacity' });
+      }
       // A lost create response may still have created a VM. Reconcile by operation key.
       throw Errors.conflict('Instabox create outcome is uncertain', { reason: 'uncertain_create' });
     }

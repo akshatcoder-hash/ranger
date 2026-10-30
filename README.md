@@ -9,7 +9,8 @@ On this `integration/full-stack` branch the backend lives at the repository
 root and the product frontend lives in `frontend/`; the deployed app is
 live at https://ranger.akshats.xyz — see `docs/deployment-handover.md` for
 the deployment architecture, login, redeploy/rollback, secrets/budget rules
-and known limitations. Local development is covered in
+and known limitations. Recording the call → plan → run demo is covered in
+`docs/demo-runbook.md`. Local development is covered in
 `docs/local-full-stack.md`; the backend-only contract reference a future
 frontend would use remains in `docs/frontend-guide.md`.
 

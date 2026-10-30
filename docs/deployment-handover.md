@@ -253,6 +253,30 @@ lock, preserving all counters, reservations and history. It is idempotent and
 refuses a missing ledger. It was already run on the deployed ledger; do not
 reseed or reset the ledger.
 
+### Free-plan idle pause and VM slot reconciliation (2026-10-30)
+
+A free Instabox account cannot disable the provider's 30-minute idle pause:
+`autoSuspendAfterSeconds: 0` is refused with `403 permission_denied` **before**
+any machine exists. The provider adapter now re-dials that one refused create
+without the idle override and uses the account default instead; every other
+create failure is still `uncertain_create` with no retry. On a free plan a
+long-idle sandbox may therefore pause; Ranger does not resume it implicitly.
+
+Ledger machine records that outlive their provider machine keep occupying
+concurrent-VM admission slots (`vm_capacity`). Reconcile them against the
+provider (history, counters and unknown fields are preserved; a released
+record only gains `releasedAt`):
+
+```
+fly ssh console -a ranger-backend-akshats -C "node /app/ranger/scripts/reconcile-instabox-ledger.mjs"
+```
+
+It releases recorded machines the provider no longer reports and drops pending
+reservations older than 15 minutes, then prints the released ids and the live
+machine count. Run it when admission refuses for capacity although the
+provider dashboard shows free slots.
+
+
 **Show VM screen** captures a fresh desktop image every three seconds after
 the previous capture completes. Frames are not saved as artifacts and
 refresh pauses in background tabs. **Control VM** enables clicks,
@@ -444,8 +468,11 @@ before VM creation as expected. The runtime now checks Git support at build.
   pinned Trace for the image build:
   `git -C /path/to/trace bundle create /absolute/path/to/ranger/.fly-build/trace.bundle HEAD`
   (pinned `bd7f255339a45a5bf41bcdc2be650626c497e2b2`; the image is built
-  from the bundle, no network fetch of Trace). Then `fly deploy` (remote
-  builder). Status: `fly status -a ranger-backend-akshats`; logs:
+  from the bundle, no network fetch of Trace). If no local Trace checkout
+  exists, take the bundle from the running Machine instead:
+  `fly ssh console -a ranger-backend-akshats -C "git -C /app/trace bundle create /tmp/trace.bundle --all bd7f255339a45a5bf41bcdc2be650626c497e2b2"`
+  then `fly sftp get /tmp/trace.bundle .fly-build/trace.bundle`.
+  Then `fly deploy` (remote builder). Status: `fly status -a ranger-backend-akshats`; logs:
   `fly logs -a ranger-backend-akshats`; machines:
   `fly machine list -a ranger-backend-akshats`. Rollback: redeploy a
   previous image from `fly releases`.

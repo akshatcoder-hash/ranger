@@ -23,9 +23,10 @@ kill_timeout = 30
   RANGER_LIVE_BUDGET_FILE = '/data/provider-budget.json'
   RANGER_CONFIG_FILE = '/run/ranger/ranger.config.json'
   RANGER_LOG_LEVEL = 'info'
-  # Recording-only: all anonymous sessions share this demo project.
-  # Remove and redeploy to revoke demo-granted memberships.
-  RANGER_DEMO_PROJECT_ID = 'prj_6f5b65e6-e85d-4380-9b52-67c7a12fde4c'
+  # Guest access is per-visitor: POST /v1/auth/anonymous-session mints a Guest
+  # principal and the browser owns its own project, so every demo take starts
+  # from the repository at HEAD with a fresh VM. Pin RANGER_DEMO_PROJECT_ID to
+  # one project only if you want every guest to share that project and its VM.
 
 [http_service]
   internal_port = 8080
