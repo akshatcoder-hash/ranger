@@ -1,4 +1,5 @@
 import type {
+  DesktopInput,
   InstaboxProvider,
   ProviderCommandRequest,
   ProviderCommandResult,
@@ -45,6 +46,10 @@ const TEMPLATE_ACCESSIBLE_CWDS = new Set(['/data/home', '/tmp', '/data', '/']);
  * and never dials the network. Unknown commands fail closed.
  */
 export class FakeInstabox implements InstaboxProvider {
+  readonly desktopInputs: Array<{ machineId: string; input: DesktopInput }> = [];
+  async desktopInput(machineId: string, input: DesktopInput): Promise<void> {
+    this.desktopInputs.push({ machineId, input });
+  }
   readonly creates: ProviderCreateRequest[] = [];
   readonly commands: ProviderCommandRequest[] = [];
   readonly signals: ProviderSignal[] = [];

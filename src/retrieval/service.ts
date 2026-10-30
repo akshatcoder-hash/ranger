@@ -1,5 +1,8 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { withTransaction } from '../db/db.js';
+import { appendProjectEvent } from '../events/store.js';
+import { diagnostic } from '../observability.js';
 import type { RangerConfig } from '../config.js';
 import { Errors } from '../errors.js';
 import { ProjectMirror, fingerprintSource, mirrorRootFor } from './mirror.js';
@@ -64,6 +67,19 @@ export interface RetrievalSearchResponse {
 export type IndexReadiness =
   | { ready: true; state: PersistedIndexState }
   | { ready: false; reason: 'not_indexed' | 'stale' | 'mirror_mismatch'; state: PersistedIndexState | null };
+
+export interface DetailedIndexOptions {
+  provenance?: Record<string, string>;
+  /**
+   * Preparation only: reuse this project's own durable index when it provably
+   * matches the current saved source, mirror head and indexer, and Trace can
+   * open it. Anything else rebuilds. Without it the index is always rebuilt.
+   */
+  reuseReady?: boolean;
+}
+
+/** `reused` is true when `indexElapsedMs` measured loading an existing index, not building one. */
+export type DetailedIndexResult = PersistedIndexState & { reused?: boolean };
 
 export interface SourceSlice {
   filePath: string;
@@ -232,15 +248,20 @@ export class RetrievalService {
   /**
    * Reindex and durably record exactly what was indexed (snapshot, source
    * fingerprint, counts, timing, caller provenance) so other processes can
-   * serve the same index.
+   * serve the same index. With `reuseReady` an existing same-project index is
+   * adopted instead when it is proven current (see tryReuseIndex).
    */
-  async reindexDetailed(projectId: string, options: { provenance?: Record<string, string> } = {}): Promise<PersistedIndexState> {
+  async reindexDetailed(projectId: string, options: DetailedIndexOptions = {}): Promise<DetailedIndexResult> {
     await this.assertAvailable();
     const mirror = this.mirrorFor(projectId);
     const state = this.stateFor(projectId);
     return runIndexedExclusively(async () => {
       const startedAt = Date.now();
       const stampBefore = sourceStamp(this.options.db);
+      if (options.reuseReady === true) {
+        const reused = await this.tryReuseIndex(projectId, mirror, state, options.provenance, startedAt, stampBefore);
+        if (reused !== null) return reused;
+      }
       const synced = await mirror.sync(this.options.db, projectId);
       const stats = await indexMirror({
         traceRoot: this.options.config.providers.traceRoot,
@@ -278,6 +299,7 @@ export class RetrievalService {
         fileCount: synced.fileCount,
         byteCount: synced.byteCount,
         indexElapsedMs: Date.now() - startedAt,
+        indexerVersion: this.options.config.providers.tracePinnedCommit,
         provenance: { ...(options.provenance ?? {}) },
       };
       writeIndexState(this.options.config.dataDir, persisted);
@@ -287,6 +309,74 @@ export class RetrievalService {
       this.verified.set(projectId, `${persisted.snapshotId}:${persisted.mirrorHead}:${stampBefore}`);
       return persisted;
     });
+  }
+
+  /**
+   * Adopt this project's own existing index, or null when it must be rebuilt.
+   *
+   * The index lives under a path-derived namespace of this project's mirror,
+   * so it is never copied or shared between projects. It is reused only when
+   * the durable record names the pinned indexer, the mirror (re-synced from
+   * the saved source) is unchanged at the recorded head with the recorded
+   * fingerprint, and a fresh Trace runtime opened on it reports the recorded
+   * snapshot. Provenance is rebound to the caller only after all of that
+   * holds; the build metadata (snapshot, indexedAt, build time) stays as
+   * recorded, while the returned `indexElapsedMs` is this load's own time.
+   * Must run inside runIndexedExclusively.
+   */
+  private async tryReuseIndex(
+    projectId: string,
+    mirror: ProjectMirror,
+    state: ProjectRetrievalState,
+    provenance: Record<string, string> | undefined,
+    startedAt: number,
+    stampBefore: string,
+  ): Promise<DetailedIndexResult | null> {
+    const { config } = this.options;
+    const { dataDir } = config;
+    const persisted = readIndexState(dataDir, projectId);
+    if (persisted === null || persisted.indexerVersion !== config.providers.tracePinnedCommit) return null;
+    if (mirror.headCommit() !== persisted.mirrorHead) return null;
+    const synced = await mirror.sync(this.options.db, projectId);
+    if (
+      synced.changed ||
+      synced.headCommit !== persisted.mirrorHead ||
+      synced.sourceFingerprint !== persisted.sourceFingerprint
+    ) {
+      return null;
+    }
+    const mcp = TraceMcpClient.spawn({
+      traceRoot: config.providers.traceRoot,
+      mirrorRoot: mirror.root,
+      traceHome: config.providers.traceHome,
+    });
+    try {
+      await mcp.initialize();
+      const status = await mcp.callTool('repo_status', {});
+      const revision = status.data['revision'] as { snapshotId?: unknown } | undefined;
+      const vectors = status.data['vectorSearch'] as { available?: unknown } | undefined;
+      if (
+        status.isError ||
+        revision?.snapshotId !== persisted.snapshotId ||
+        (persisted.embeddedChunks > 0 && vectors?.available !== true)
+      ) {
+        await mcp.close();
+        return null;
+      }
+    } catch {
+      await mcp.close();
+      return null;
+    }
+    const previous = state.mcp;
+    state.mcp = null;
+    if (previous !== null) await previous.close();
+    const next: PersistedIndexState = { ...persisted, provenance: { ...(provenance ?? persisted.provenance) } };
+    if (JSON.stringify(next.provenance) !== JSON.stringify(persisted.provenance)) writeIndexState(dataDir, next);
+    state.mcp = mcp;
+    state.headCommit = next.mirrorHead;
+    state.snapshot = toIndexStats(next);
+    this.verified.set(projectId, `${next.snapshotId}:${next.mirrorHead}:${stampBefore}`);
+    return { ...next, indexElapsedMs: Date.now() - startedAt, reused: true };
   }
 
   /**
@@ -333,9 +423,10 @@ export class RetrievalService {
   }
 
   async search(projectId: string, query: string, limit: number): Promise<RetrievalSearchResponse> {
+    const startedAt = performance.now();
     // Serialized with indexing: a search never races a reindex or reads a
     // closing MCP runtime.
-    return runIndexedExclusively(async () => {
+    const response: RetrievalSearchResponse = await runIndexedExclusively(async () => {
       const state = this.stateFor(projectId);
       await this.adoptPersistedIndex(projectId, state);
       if (state.snapshot === null) {
@@ -368,6 +459,21 @@ export class RetrievalService {
       }
       return { provider: 'trace', results: [], staleDropped: verified.staleDropped };
     });
+    // End-to-end server retrieval, including queueing, runtime startup and
+    // citation checks. Never substitute preparation time or record the query.
+    const durationMs = Math.max(0, Math.round((performance.now() - startedAt) * 10) / 10);
+    const record = () => appendProjectEvent(this.options.db, {
+      projectId,
+      type: 'retrieval.search.completed',
+      data: { provider: response.provider, durationMs, resultCount: response.results.length },
+      requestId: `search_${randomUUID()}`,
+    });
+    try {
+      withTransaction(this.options.db, record);
+    } catch {
+      diagnostic('retrieval.search.metric_failed', { projectId });
+    }
+    return response;
   }
 
   /**

@@ -109,6 +109,23 @@ export function scopeCoversEdit(scope: string[], path: string): boolean {
   });
 }
 
+/**
+ * Whether an exact `edit:<file>` entry also authorizes a NEW sibling file in
+ * the same directory (its test or helper). The run may create a path that is
+ * not in the saved source; modifying any existing unapproved file stays denied
+ * because callers check existence first.
+ */
+export function scopeCoversNewSibling(scope: string[], path: string): boolean {
+  const dirOf = (value: string): string => (value.includes('/') ? value.slice(0, value.lastIndexOf('/')) : '');
+  const dir = dirOf(path);
+  return scope.some((entry) => {
+    if (!entry.startsWith('edit:')) return false;
+    const prefix = entry.slice(5);
+    if (prefix.endsWith('/')) return false;
+    return dirOf(prefix) === dir;
+  });
+}
+
 /** Whether an approved scope covers a fixed sandbox category. */
 export function scopeAllows(scope: string[], scopeName: 'command' | 'launch' | 'evidence'): boolean {
   return scope.includes(scopeName);

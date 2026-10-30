@@ -50,6 +50,15 @@ const COMMAND_EVENT_SCHEMA = obj(['commandId', 'command', 'state', 'exitCode', '
 
 export const EVENT_TYPES: EventTypeDef[] = [
   {
+    name: 'retrieval.search.completed',
+    description: 'Actual server-side retrieval duration, including queueing, runtime startup and citation verification; no query or source content',
+    dataSchema: obj(['provider', 'durationMs', 'resultCount'], {
+      provider: str({ enum: ['trace', 'file-search-fallback'] }),
+      durationMs: num({ minimum: 0 }),
+      resultCount: int({ minimum: 0 }),
+    }),
+  },
+  {
     name: 'project.updated',
     description: 'Project or engineer display name changed',
     dataSchema: obj(['name', 'engineerDisplayName'], {

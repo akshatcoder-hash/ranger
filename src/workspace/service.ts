@@ -14,7 +14,6 @@ import {
   COMMAND_OUTPUT_CAP_BYTES,
   FIXED_PREVIEW_PORTS,
   GUEST_TRANSPORT_CAP_BYTES,
-  VM_KILL_TIMEOUT_MS,
   WORKLOAD_USER,
   fencedWorkloadCommand,
   foregroundCommandMarker,
@@ -29,7 +28,7 @@ import { rememberDesktopStream, forgetDesktopStream } from './viewing.js';
 import { mintPreviewKeypair, openPreviewTunnel, registerPreviewTunnel, stopPreviewTunnel, type TunnelHandle } from './preview-tunnel.js';
 import { terminateCommandRow, terminateForegroundGroups } from './terminate.js';
 import { workspaceProviderForTests } from './runtime.js';
-import type { InstaboxProvider, ProviderCommandResult, ProviderCreateRequest } from './provider.js';
+import type { DesktopInput, InstaboxProvider, ProviderCommandResult, ProviderCreateRequest } from './provider.js';
 import {
   getArtifact,
   getCommand,
@@ -48,6 +47,7 @@ import {
   markCommandTerminated,
   markWorkspaceRunning,
   markWorkspaceUncertain,
+  clearFailedWorkspace,
   readSourceFile,
   revokeDesktopSession,
   saveSourceFile,
@@ -120,19 +120,20 @@ export class WorkspaceService {
       });
     }
     const operationKey = `ws-${projectId}-${randomUUID()}`;
-    if (this.options.db.isTransaction) {
-      insertWorkspace(this.options.db, { projectId, operationKey, sourceRevision });
-    } else {
-      withTransaction(this.options.db, () => {
-        insertWorkspace(this.options.db, { projectId, operationKey, sourceRevision });
-      });
-    }
     const ledgerFile = requireLedger(this.options.config);
+    const apiKey = apiKeyFor(this.options);
     const reservation = reserveInstaboxCreation(ledgerFile, {
       feature: FEATURE,
       purpose: projectId,
-      killTimeoutMs: VM_KILL_TIMEOUT_MS,
     });
+    // Admission can fail before any provider request. Never leave a creating row then.
+    try {
+      if (this.options.db.isTransaction) insertWorkspace(this.options.db, { projectId, operationKey, sourceRevision });
+      else withTransaction(this.options.db, () => { insertWorkspace(this.options.db, { projectId, operationKey, sourceRevision }); });
+    } catch (cause) {
+      releaseInstaboxReservation(ledgerFile, reservation.reservationId);
+      throw cause;
+    }
     const request: ProviderCreateRequest = {
       template: 'agent-browser',
       vault: false,
@@ -144,7 +145,7 @@ export class WorkspaceService {
         rangerOperation: operationKey,
         rangerFeature: FEATURE,
       },
-      apiKey: apiKeyFor(this.options),
+      apiKey,
     };
     try {
       const machine = await providerFor(this.options).create(request);
@@ -153,7 +154,7 @@ export class WorkspaceService {
         machineId: machine.machineId,
         purpose: projectId,
       });
-      const deadlineAt = Date.now() + reservation.killTimeoutMs;
+      const deadlineAt = reservation.killTimeoutMs === null ? null : Date.now() + reservation.killTimeoutMs;
       markWorkspaceRunning(this.options.db, {
         projectId,
         machineId: machine.machineId,
@@ -172,7 +173,7 @@ export class WorkspaceService {
         });
         throw cause;
       }
-      armWorkspaceWatchdog({
+      if (deadlineAt !== null) armWorkspaceWatchdog({
         deadlineAt,
         onDeadline: () =>
           destroyRecordedWorkspace({
@@ -191,7 +192,7 @@ export class WorkspaceService {
           details: { reason: 'uncertain_create' },
         });
       }
-      if (cause instanceof AppError) throw cause;
+      if (cause instanceof AppError && cause.details?.['reason'] !== 'vm_capacity') throw cause;
       if (/bootstrap/i.test(message)) {
         throw Errors.conflict('Workload bootstrap failed; the machine was destroyed', {
           reason: 'bootstrap_failed',
@@ -199,6 +200,9 @@ export class WorkspaceService {
         });
       }
       releaseInstaboxReservation(ledgerFile, reservation.reservationId);
+      const failed = getWorkspace(this.options.db, projectId);
+      if (failed?.machineId === null && !failed.uncertain) clearFailedWorkspace(this.options.db, projectId);
+      if (cause instanceof AppError) throw cause;
       throw Errors.notConfigured('Instabox provider is not available', { reason: 'provider_unavailable' });
     }
   }
@@ -443,12 +447,16 @@ export class WorkspaceService {
     return this.command(projectId, commandId);
   }
 
-  async screenshot(projectId: string): Promise<{ artifactId: string; contentBase64: string }> {
+  async screenshot(projectId: string, saveArtifact = true): Promise<{ artifactId: string | null; contentBase64: string }> {
     const workspace = this.requireRunning(projectId);
     const png = await providerFor(this.options).screenshot(workspace.machineId!);
     const content = Buffer.from(png);
-    const artifact = insertArtifact(this.options.db, projectId, 'screenshot.png', content);
-    return { artifactId: artifact.id, contentBase64: content.toString('base64') };
+    const artifact = saveArtifact ? insertArtifact(this.options.db, projectId, 'screenshot.png', content) : null;
+    return { artifactId: artifact?.id ?? null, contentBase64: content.toString('base64') };
+  }
+  async desktopInput(projectId: string, input: DesktopInput): Promise<void> {
+    const workspace = this.requireRunning(projectId);
+    await providerFor(this.options).desktopInput(workspace.machineId!, input);
   }
 
   diff(projectId: string): { diff: string; changedFiles: string[] } {

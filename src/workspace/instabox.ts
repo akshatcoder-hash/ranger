@@ -11,7 +11,6 @@ import {
 import {
   COMMAND_OUTPUT_CAP_BYTES,
   GUEST_TRANSPORT_CAP_BYTES,
-  VM_KILL_TIMEOUT_MS,
   WORKLOAD_USER,
   fencedWorkloadCommand,
 } from './limits.js';
@@ -42,7 +41,7 @@ export interface WorkspaceCreateInput {
 export interface CreatedWorkspace {
   machineId: string;
   vault: false;
-  killTimeoutMs: number;
+  killTimeoutMs: number | null;
   onTimeout: 'kill';
 }
 
@@ -135,7 +134,6 @@ export class InstaboxWorkspace {
     const reservation = reserveInstaboxCreation(this.options.ledgerFile, {
       feature: this.options.feature,
       purpose: input.projectId,
-      killTimeoutMs: VM_KILL_TIMEOUT_MS,
     });
     const request: ProviderCreateRequest = {
       template: 'agent-browser',

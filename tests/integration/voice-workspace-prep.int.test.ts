@@ -17,7 +17,7 @@ import { createVoiceSessionRow } from '../../src/voice/store.js';
 import { runVoiceWorkspaceTool, VOICE_TOOLS } from '../../src/voice/tools.js';
 import { RetrievalService } from '../../src/retrieval/service.js';
 import { claimNextJob } from '../../src/worker/loop.js';
-import { PREPARE_JOB_TYPE, projectWorkspacePrepHandler, type PrepareRetrieval } from '../../src/workspace/prepare.js';
+import { PREPARE_JOB_TYPE, projectWorkspacePrepHandler, requestProjectWorkspacePrep, type PrepareRetrieval } from '../../src/workspace/prepare.js';
 import { createRepositoryCloner, type RepositoryCloner } from '../../src/repositories/clone.js';
 import { disconnectRepository, getRepositoryRecord } from '../../src/repositories/store.js';
 import { listAllSourceFiles } from '../../src/workspace/store.js';
@@ -78,7 +78,7 @@ interface Fixture {
   otherId: string;
 }
 
-async function fixture(options: { repoUrl?: string; approveDataDir?: boolean } = {}): Promise<Fixture> {
+async function fixture(options: { repoUrl?: string; approveDataDir?: boolean; withoutVoice?: boolean } = {}): Promise<Fixture> {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'ranger-voice-prep-'));
   tempDirs.push(dataDir);
   const ledger = path.join(dataDir, 'ledger.json');
@@ -105,7 +105,7 @@ async function fixture(options: { repoUrl?: string; approveDataDir?: boolean } =
   const otherProject = createProjectRecord(db, { name: 'Other', engineerDisplayName: 'Ranger', principalId: other.id });
   const conversationId = createConversationRow(db, project.id, 'call').id;
   await connectRepository(db, project.id, owner.principalId, { url: repo.url, ref: 'main' }, config.approvedSnapshotRoots);
-  const sessionId = withTransaction(db, () =>
+  const sessionId = options.withoutVoice ? '' : withTransaction(db, () =>
     createVoiceSessionRow(db, { projectId: project.id, conversationId, principalId: owner.principalId, model: 'grok-voice-3.0' }).id,
   );
   const provider = new FakeInstabox();
@@ -159,6 +159,21 @@ const stubRetrieval: PrepareRetrieval = {
 };
 
 describe('voice project preparation (worker index -> fresh API retrieval)', () => {
+  it('runs a null-session preparation to ready without creating any voice session', { timeout: LONG }, async () => {
+    const f = await fixture({ withoutVoice: true });
+    try {
+      withTransaction(f.db, () => requestProjectWorkspacePrep(f.db, {
+        projectId: f.projectId, conversationId: '', sessionId: null, requestId: 'connect', readiness: () => null,
+      }));
+      await runPrepJob(f, new RetrievalService({ db: f.db, config: f.config }));
+      expect(f.provider.creates).toHaveLength(1);
+      expect(phases(f).at(-1)?.['phase']).toBe('ready');
+      expect(f.db.prepare('SELECT count(*) AS n FROM voice_sessions').get()?.['n']).toBe(0);
+      await expect(projectWorkspacePrepHandler({ db: f.db, config: f.config, retrieval: stubRetrieval })({
+        id: 'bad', type: PREPARE_JOB_TYPE, payload: { projectId: f.projectId }, claimEpoch: 1,
+      })).rejects.toMatchObject({ code: 'validation_failed' });
+    } finally { f.db.close(); }
+  });
   it('enqueues fast and deduplicated, prepares one VM, and a fresh service answers with citations', { timeout: LONG }, async () => {
     const f = await fixture();
     expect(VOICE_TOOLS.map((t) => t.name)).toEqual([

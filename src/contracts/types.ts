@@ -80,6 +80,7 @@ export interface EventSchemasResponse extends OkResponse {
 export interface PrincipalResponse extends OkResponse {
   principalId: string;
   displayName: string;
+  demoProject?: { projectId: string; repositoryUrl: string; ref: string };
 }
 
 export interface ApiTokenCreatedResponse extends OkResponse {

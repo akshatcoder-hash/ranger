@@ -142,6 +142,16 @@ describe('conversations and transactional events', () => {
     return collected;
   }
 
+  function textTurnJobsFor(messageId: string): number {
+    const jobsDb = openDatabase(dataDir);
+    try {
+      const rows = jobsDb.prepare("SELECT payload FROM jobs WHERE type = 'text_assistant_turn'").all() as Array<{ payload: string }>;
+      return rows.filter((row) => (JSON.parse(row.payload) as { messageId: string }).messageId === messageId).length;
+    } finally {
+      jobsDb.close();
+    }
+  }
+
   beforeAll(async () => {
     const made = await makeApp({});
     app = made.app;
@@ -310,6 +320,7 @@ describe('conversations and transactional events', () => {
     const list = await inject('GET', `/v1/projects/${store.projectId}/conversations/${store.conversationId}/messages`, { headers: bearerA });
     const messages = (list.json() as { messages: Array<{ content: string }> }).messages;
     expect(messages.filter((m) => m.content === 'Exactly once')).toHaveLength(1);
+    expect(textTurnJobsFor(messageId)).toBe(1);
   });
 
   it('keeps conversation data unchanged across an API restart on the same data dir', async () => {
@@ -364,12 +375,12 @@ describe('conversations and transactional events', () => {
     expect(ahead.statusCode).toBe(400);
     expect((ahead.json() as { error: { code: string } }).error.code).toBe('invalid_cursor');
 
-    // Replay is a pure read: head unchanged, no jobs (no tools invoked).
+    // Replay is a pure read: head unchanged, no tool jobs (user posts alone legitimately queue text turns).
     const afterReplay = await allEvents(store.projectId, bearerA);
     expect(afterReplay).toHaveLength(headCount);
     const freshDb = openDatabase(dataDir);
     try {
-      const jobs = freshDb.prepare('SELECT COUNT(*) AS count FROM jobs').get() as { count: number };
+      const jobs = freshDb.prepare("SELECT COUNT(*) AS count FROM jobs WHERE type != 'text_assistant_turn'").get() as { count: number };
       expect(jobs.count).toBe(0);
     } finally {
       freshDb.close();
@@ -780,5 +791,19 @@ describe('conversations and transactional events', () => {
     } finally {
       expiringSubscriber.destroy();
     }
+  });
+
+  it('enqueues a text-assistant turn only for user posts, never agent or system posts', async () => {
+    const post = async (role: string): Promise<string> => {
+      const res = await inject('POST', `/v1/projects/${store.projectId}/conversations/${store.conversationId}/messages`, {
+        headers: bearerA,
+        body: { role, content: `${role} post` },
+      });
+      expect(res.statusCode).toBe(200);
+      return (res.json() as { message: { messageId: string } }).message.messageId;
+    };
+    expect(textTurnJobsFor(await post('user'))).toBe(1);
+    expect(textTurnJobsFor(await post('agent'))).toBe(0);
+    expect(textTurnJobsFor(await post('system'))).toBe(0);
   });
 });

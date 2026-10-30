@@ -15,7 +15,9 @@ const execFileAsync = promisify(execFile);
  * promise chain, so at most one indexing job runs in this process.
  */
 
-const INDEX_TIMEOUT_MS = 5 * 60_000;
+// Cold indexing of a full dashboard can exceed five minutes on the shared CPU.
+// Warm preparation validates the existing index instead of paying this cost again.
+const INDEX_TIMEOUT_MS = 15 * 60_000;
 /** Conservative default budget estimate floor so reservations never guess down. */
 const MAX_INDEX_STDIO_BYTES = 2 * 1024 * 1024;
 

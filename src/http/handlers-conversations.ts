@@ -23,6 +23,7 @@ import {
   type VersionedThread,
 } from '../conversations/store.js';
 import { appendProjectEvent } from '../events/store.js';
+import { enqueueTextTurn } from '../conversations/text-assistant.js';
 import { Errors } from '../errors.js';
 import { iso } from './serialize.js';
 import { runScopedMutation } from './idempotency.js';
@@ -181,6 +182,8 @@ export function registerConversationHandlers(ctx: HandlerContext, handlers: Map<
         data: { conversationId: params.conversationId, messageId: row.id, role: row.role },
         requestId: req.id,
       });
+      // Only a human `user` post is a command. The job commits with the message, so replays enqueue nothing.
+      if (role === 'user') enqueueTextTurn(db, { projectId, conversationId: params.conversationId, messageId: row.id, principalId });
       return { message: messagePayload(row) };
     });
   });

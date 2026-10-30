@@ -406,6 +406,6 @@ describeLive('live xAI voice relay and vision (shared budget, bounded sessions)'
     const ledger = readLedger(config.liveBudgetFile!);
     const delta = Math.round((ledger.xai.observedUsd - ledgerBefore.observedUsd) * 10000) / 10000;
     expect(delta).toBeLessThanOrEqual(0.5);
-    expect(ledger.xai.observedUsd).toBeLessThanOrEqual(ledger.xai.softAdmissionUsd);
+    if (ledger.xai.softAdmissionUsd !== null) expect(ledger.xai.observedUsd).toBeLessThanOrEqual(ledger.xai.softAdmissionUsd);
   });
 });

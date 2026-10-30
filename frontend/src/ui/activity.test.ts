@@ -4,6 +4,15 @@ import { describeEvent, hasActiveRun, isNoisyEvent, projectRecordRevision } from
 const event = (sequence: number, type: string, data?: Record<string, unknown>) => ({ eventId: `e${sequence}`, sequence, type, ...(data ? { data } : {}) })
 
 describe('describeEvent', () => {
+  it('shows actual search latency and result counts without mislabeling fallback', () => {
+    expect(describeEvent(event(1, 'retrieval.search.completed', { provider: 'trace', durationMs: 12.8, resultCount: 3 })))
+      .toEqual({ title: 'Trace search · 12.8 ms', detail: '3 retrieved results · retrieval and citation checks', tone: 'good' })
+    expect(describeEvent(event(2, 'retrieval.search.completed', { provider: 'file-search-fallback', durationMs: 0, resultCount: 0 })).title)
+      .toBe('File search fallback · 0 ms')
+    expect(describeEvent(event(3, 'retrieval.search.completed', { provider: 'trace', durationMs: NaN, resultCount: 1 })).title)
+      .toBe('Search completed')
+  })
+
   it('reads preparation phases and shows only the fields the event carried', () => {
     expect(describeEvent(event(1, 'workspace.preparation.updated', { jobId: 'j', phase: 'preparing' }))).toEqual({ title: 'Provisioning the VM and loading the repository', tone: 'neutral' })
     const ready = describeEvent(event(2, 'workspace.preparation.updated', { jobId: 'j', phase: 'ready', fileCount: 1280, cloneElapsedMs: 2400, indexElapsedMs: 840, elapsedMs: 3500, byteCount: 2048 }))

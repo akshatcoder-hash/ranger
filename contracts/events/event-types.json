@@ -2,6 +2,36 @@
   "schemaVersion": 1,
   "eventTypes": [
     {
+      "name": "retrieval.search.completed",
+      "description": "Actual server-side retrieval duration, including queueing, runtime startup and citation verification; no query or source content",
+      "dataSchema": {
+        "type": "object",
+        "required": [
+          "provider",
+          "durationMs",
+          "resultCount"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "trace",
+              "file-search-fallback"
+            ]
+          },
+          "durationMs": {
+            "type": "number",
+            "minimum": 0
+          },
+          "resultCount": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "project.updated",
       "description": "Project or engineer display name changed",
       "dataSchema": {

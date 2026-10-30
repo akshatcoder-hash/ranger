@@ -16,6 +16,7 @@ import { claimNextJob } from '../../src/worker/loop.js';
 import { PREPARE_JOB_TYPE, projectWorkspacePrepHandler, requestProjectWorkspacePrep, type PrepareRetrieval } from '../../src/workspace/prepare.js';
 import { createPlanVersionRow, approvePlanVersionRow } from '../../src/plans/store.js';
 import { engineeringRunHandler } from '../../src/runs/executor.js';
+import { reconcileInterruptedRuns } from '../../src/runs/reconcile.js';
 import type { RetrievalService } from '../../src/retrieval/service.js';
 import { getWorkspace } from '../../src/workspace/store.js';
 import { setWorkspaceProviderForTests } from '../../src/workspace/runtime.js';
@@ -64,7 +65,7 @@ function scripted(outputs: Array<Array<Record<string, unknown>>>): { create(call
   };
 }
 
-async function preparedProject() {
+async function preparedProject(maxLifetimeSeconds: number | null = 600) {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'ranger-reuse-ws-'));
   tempDirs.push(dataDir);
   const ledger = path.join(dataDir, 'ledger.json');
@@ -73,7 +74,7 @@ async function preparedProject() {
     JSON.stringify({
       version: 1,
       xai: { limitUsd: 5, softAdmissionUsd: 4, observedUsd: 0, reservedUsd: 0, operations: [] },
-      instabox: { maxAdditionalCreations: 9, maxConcurrent: 1, maxLifetimeSeconds: 600, additionalCreations: 0, machines: [], pendingReservations: [] },
+      instabox: { maxAdditionalCreations: 9, maxConcurrent: 1, maxLifetimeSeconds, additionalCreations: 0, machines: [], pendingReservations: [] },
     }),
   );
   const config = await loadConfig({
@@ -130,7 +131,7 @@ async function preparedProject() {
       claimEpoch: 1,
     });
 
-  return { db, provider, projectId, prepared, approvedRun, execute };
+  return { db, provider, projectId, prepared, approvedRun, execute, ledger };
 }
 
 const editThenTest = () =>
@@ -156,9 +157,12 @@ function spyRetrieval(readiness: { ready: boolean; provenance: Record<string, st
 }
 
 describe('approved run on the prepared workspace', () => {
-  it('reuses the running prepared VM: no destroy, no create, no reseed, same deadline, index and provenance kept', async () => {
-    const f = await preparedProject();
+  it.each([600, null])('reuses the prepared VM with lifetime %s: same machine, deadline, index and provenance', async maxLifetimeSeconds => {
+    const f = await preparedProject(maxLifetimeSeconds);
     try {
+      await reconcileInterruptedRuns({ db: f.db, provider: f.provider, ledgerFile: f.ledger });
+      expect(f.provider.kills).toHaveLength(0);
+      if (maxLifetimeSeconds === null) expect(f.prepared.deadlineAt).toBeNull();
       const preparedFile = f.provider.machineFile(f.prepared.machineId!, 'src/calculator.ts');
       expect(preparedFile).toContain('addNumbers');
       // A saved-source change after preparation must NOT be re-written over the live VM.

@@ -104,7 +104,7 @@ export function insertWorkspace(
 
 export function markWorkspaceRunning(
   db: DatabaseSync,
-  input: { projectId: string; machineId: string; reservationId: string; killTimeoutMs: number; deadlineAt: number },
+  input: { projectId: string; machineId: string; reservationId: string; killTimeoutMs: number | null; deadlineAt: number | null },
 ): void {
   db.prepare(
     `UPDATE workspaces

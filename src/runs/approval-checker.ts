@@ -2,8 +2,9 @@ import type { DatabaseSync } from 'node:sqlite';
 import { withTransaction } from '../db/db.js';
 import { appendProjectEvent } from '../events/store.js';
 import { getApprovalRow, getPlanRow, latestPlanRow } from '../plans/store.js';
-import { isProhibitedCommand, requiredScopeForTool, scopeAllows, scopeCoversEdit } from '../plans/scope.js';
+import { isProhibitedCommand, requiredScopeForTool, scopeAllows, scopeCoversEdit, scopeCoversNewSibling } from '../plans/scope.js';
 import { getRunRow } from './store.js';
+import { readSourceFile } from '../workspace/store.js';
 import { codingCommandArgv, type ToolApprovalChecker } from '../agent/tools.js';
 
 /**
@@ -54,7 +55,10 @@ export function approvalChecker(db: DatabaseSync, runId: string): ToolApprovalCh
     const required = requiredScopeForTool(input.tool);
     if (required === 'edit') {
       const path = typeof input.args['path'] === 'string' ? input.args['path'] : '';
-      if (path.length === 0 || !scopeCoversEdit(scope, path)) {
+      // A new file (absent from the saved source) may sit beside an approved
+      // file, so a plan naming the implementation file can still add its test.
+      const isNewSibling = path.length > 0 && scopeCoversNewSibling(scope, path) && readSourceFile(db, run.projectId, path) === null;
+      if (path.length === 0 || (!scopeCoversEdit(scope, path) && !isNewSibling)) {
         deny(db, runId, input.tool, `scope_exceeded: edit path "${path.slice(0, 120)}" is outside the approved sandbox scope`);
       }
     } else if (required !== null && !scopeAllows(scope, required)) {

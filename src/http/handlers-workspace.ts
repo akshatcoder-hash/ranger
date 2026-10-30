@@ -6,6 +6,7 @@ import { runScopedMutation } from './idempotency.js';
 import { WorkspaceService } from '../workspace/service.js';
 import type { HandlerContext, OperationHandler } from './handlers.js';
 import type { CommandRow, WorkspaceRow } from '../workspace/store.js';
+import type { DesktopInput } from '../workspace/provider.js';
 
 function workspaceBody(row: WorkspaceRow): Record<string, unknown> {
   return {
@@ -168,7 +169,13 @@ export function registerWorkspaceHandlers(ctx: HandlerContext, handlers: Map<str
 
   handlers.set('captureWorkspaceScreenshot', async (req) => {
     const projectId = authorize(req);
-    return service.screenshot(projectId);
+    const body = req.body as { saveArtifact?: boolean };
+    return service.screenshot(projectId, body.saveArtifact ?? true);
+  });
+  handlers.set('sendWorkspaceDesktopInput', async (req) => {
+    const projectId = authorize(req);
+    await service.desktopInput(projectId, req.body as DesktopInput);
+    return {};
   });
 
   handlers.set('pauseRun', async () => {

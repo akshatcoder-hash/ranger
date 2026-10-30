@@ -9,9 +9,9 @@
 export interface ProviderCreateRequest {
   template: 'agent-browser';
   vault: false;
-  timeoutMs: number;
+  timeoutMs: number | null;
   onTimeout: 'kill';
-  /** 0 disables the provider idle pause. Ranger still destroys at its own deadline. */
+  /** 0 disables the provider idle pause. */
   autoSuspendMs: 0;
   metadata: Record<string, string>;
   apiKey: string;
@@ -69,6 +69,14 @@ export interface ProviderDesktopStream {
   expiresAtMs: number;
 }
 
+export type DesktopInput =
+  | { action: 'click'; x: number; y: number; button?: 'left' | 'right' | 'middle'; double?: boolean }
+  | { action: 'move'; x: number; y: number }
+  | { action: 'drag'; x: number; y: number; toX: number; toY: number }
+  | { action: 'scroll'; x: number; y: number; direction: 'up' | 'down'; amount: number }
+  | { action: 'type'; text: string }
+  | { action: 'press'; keys: string[] };
+
 export interface ProviderSshCredentials {
   host: string;
   port: number;
@@ -89,6 +97,7 @@ export interface InstaboxProvider {
   /** Live descendant pids of a recorded command, including the leader. */
   livePids(machineId: string, leaderPid: number): Promise<number[]>;
   screenshot(machineId: string): Promise<Uint8Array>;
+  desktopInput(machineId: string, input: DesktopInput): Promise<void>;
   streamUrl(machineId: string, ttlSeconds: number): Promise<ProviderDesktopStream>;
   revokeStreams(machineId: string): Promise<void>;
   sshCredentials(machineId: string, publicKey: string, ttlSeconds: number): Promise<ProviderSshCredentials>;

@@ -1,9 +1,11 @@
 import { Sandbox, type SandboxInfo } from '@insforge/instabox-sdk';
 import { INSTABOX_MAX_ACCOUNT_CONCURRENT } from '../budget/ledger.js';
+import { Errors } from '../errors.js';
 import { translateCommandExitError } from './diagnostics.js';
 import { elevatedKillCommand, processListCommand } from './signals.js';
 import type {
   InstaboxProvider,
+  DesktopInput,
   ProviderCommandRequest,
   ProviderCommandResult,
   ProviderCreateRequest,
@@ -52,20 +54,25 @@ export class SdkInstaboxProvider implements InstaboxProvider {
     // already full. Use the same explicit account key for list and create.
     const account = await Sandbox.list(connection(request.apiKey));
     if (account.length >= INSTABOX_MAX_ACCOUNT_CONCURRENT) {
-      throw new Error('Instabox create refused: account simultaneous-machine limit reached');
+      throw Errors.conflict('Instabox account simultaneous-machine limit reached; stop an existing VM first', { reason: 'vm_capacity' });
     }
-    const sandbox = await Sandbox.create(request.template, {
-      apiKey: request.apiKey,
-      vault: false,
-      timeoutMs: request.timeoutMs,
-      onTimeout: 'kill',
-      autoSuspendMs: 0,
-      metadata: request.metadata,
-    });
-    const info = await sandbox.getInfo();
-    const endAt = info.endAt?.getTime();
-    const timeoutMs = endAt === undefined ? request.timeoutMs : Math.max(0, endAt - Date.now());
-    return fromInfo(info, timeoutMs);
+    try {
+      const sandbox = await Sandbox.create(request.template, {
+        apiKey: request.apiKey,
+        vault: false,
+        ...(request.timeoutMs === null ? {} : { timeoutMs: request.timeoutMs }),
+        onTimeout: 'kill',
+        autoSuspendMs: 0,
+        metadata: request.metadata,
+      });
+      const info = await sandbox.getInfo();
+      const endAt = info.endAt?.getTime();
+      const timeoutMs = endAt === undefined ? request.timeoutMs : Math.max(0, endAt - Date.now());
+      return fromInfo(info, timeoutMs);
+    } catch {
+      // A lost create response may still have created a VM. Reconcile by operation key.
+      throw Errors.conflict('Instabox create outcome is uncertain', { reason: 'uncertain_create' });
+    }
   }
 
   async get(machineId: string): Promise<ProviderMachine | null> {
@@ -145,7 +152,22 @@ export class SdkInstaboxProvider implements InstaboxProvider {
 
   async screenshot(machineId: string): Promise<Uint8Array> {
     const sandbox = await Sandbox.connect(machineId, { ...connection(this.apiKey), resume: false });
+    await sandbox.desktop.start();
     return sandbox.desktop.screenshot();
+  }
+  async desktopInput(machineId: string, input: DesktopInput): Promise<void> {
+    const { desktop } = await Sandbox.connect(machineId, { ...connection(this.apiKey), resume: false });
+    switch (input.action) {
+      case 'click': await desktop.click(input.x, input.y, { button: input.button, double: input.double }); break;
+      case 'move': await desktop.move(input.x, input.y); break;
+      case 'drag': await desktop.drag([input.x, input.y], [input.toX, input.toY]); break;
+      case 'scroll':
+        await desktop.move(input.x, input.y);
+        await desktop.scroll({ direction: input.direction, amount: input.amount });
+        break;
+      case 'type': await desktop.type(input.text, { delayMs: 0 }); break;
+      case 'press': await desktop.press(input.keys); break;
+    }
   }
 
   async streamUrl(machineId: string, ttlSeconds: number): Promise<ProviderDesktopStream> {

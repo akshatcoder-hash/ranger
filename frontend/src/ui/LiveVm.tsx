@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { rangerApi, type WorkspaceStatus } from '../api'
 import { describeEvent, isNoisyEvent, type ActivityEvent } from './activity'
-import { averageIndexRate, formatBytes, formatDuration, indexingRate, preparationIsActive, type PreparationClock, type PreparationStatus } from './liveHelpers'
+import { formatBytes, formatDuration, formatSearchDuration, latestSearch, preparationIsActive, type PreparationClock, type PreparationStatus } from './liveHelpers'
 import { Button, StatusPill } from './primitives'
+import { watchVmScreen } from './vmScreen'
+import { VmDesktop } from './VmDesktop'
 
 const PHASE_LABEL: Record<PreparationStatus['phase'], string> = {
   queued: 'Queued',
@@ -31,41 +33,40 @@ function useNow(active: boolean): number {
   return now
 }
 
-function formatRate(rate: number): string {
-  return rate >= 100 ? Math.round(rate).toLocaleString() : rate.toFixed(1)
-}
-
-/** Preparation progress and speeds. Every number is a backend event field or the browser's own stopwatch; nothing is estimated. */
-export function PreparationCard({ repositoryUrl, preparation, events, clock }: { repositoryUrl: string | null; preparation: PreparationStatus | null; events: readonly ActivityEvent[]; clock: PreparationClock | null }) {
+/** Preparation state and measured search latency; no synthetic speed figures. */
+export function PreparationCard({ repositoryUrl, preparation, events, clock, workspaceState }: { repositoryUrl: string | null; preparation: PreparationStatus | null; events: readonly ActivityEvent[]; clock: PreparationClock | null; workspaceState?: string }) {
   const active = preparationIsActive(preparation)
   const now = useNow(active)
-  const rate = useMemo(() => active ? indexingRate(events) : preparation ? averageIndexRate(preparation) : null, [active, events, preparation])
+  const search = useMemo(() => latestSearch(events), [events])
   const tone = preparation?.phase === 'ready' ? 'green' : preparation?.phase === 'failed' ? 'amber' : preparation ? 'violet' : 'gray'
   const tiles: { label: string; value: string }[] = []
+  if (search) {
+    tiles.push({ label: search.provider === 'trace' ? 'Trace search' : 'File search fallback', value: formatSearchDuration(search.durationMs) })
+    tiles.push({ label: 'Retrieved results', value: search.resultCount.toLocaleString() })
+  }
   if (preparation) {
     if (active && clock?.jobId === preparation.jobId) {
       tiles.push({ label: 'Elapsed', value: formatDuration(Math.max(0, now - clock.jobStartedAt)) })
       tiles.push({ label: 'This phase', value: formatDuration(Math.max(0, now - clock.phaseStartedAt)) })
     }
-    if (preparation.fileCount !== undefined) tiles.push({ label: 'Files', value: preparation.fileCount.toLocaleString() })
-    if (preparation.byteCount !== undefined) tiles.push({ label: 'Size', value: formatBytes(preparation.byteCount) })
-    if (rate !== null) tiles.push({ label: active ? 'Index speed' : 'Avg index speed', value: `${formatRate(rate)} files/s` })
-    if (preparation.cloneElapsedMs !== undefined) tiles.push({ label: 'Clone', value: formatDuration(preparation.cloneElapsedMs) })
+    if (preparation.fileCount !== undefined) tiles.push({ label: preparation.phase === 'ready' ? 'Indexed files' : 'Files', value: preparation.fileCount.toLocaleString() })
     if (preparation.indexElapsedMs !== undefined) tiles.push({ label: 'Index time', value: formatDuration(preparation.indexElapsedMs) })
-    if (preparation.elapsedMs !== undefined) tiles.push({ label: preparation.phase === 'ready' ? 'Total' : 'Backend elapsed', value: formatDuration(preparation.elapsedMs) })
+    if (preparation.byteCount !== undefined) tiles.push({ label: 'Size', value: formatBytes(preparation.byteCount) })
     if (preparation.repositoryCommit) tiles.push({ label: 'Commit', value: preparation.repositoryCommit.slice(0, 10) })
   }
   const stepIndex = preparation ? STEPS.findIndex(step => step.phase === preparation.phase) : -1
   return <article className="detail-card" aria-label="Project preparation">
     <div className="card-heading">
       <h3>Project</h3>
-      <StatusPill tone={tone}>{preparation ? PHASE_LABEL[preparation.phase] : 'Not started'}</StatusPill>
+      <StatusPill tone={tone}>{preparation ? PHASE_LABEL[preparation.phase] : workspaceState ? `Workspace ${workspaceState}` : 'Not started'}</StatusPill>
     </div>
     <p role="status">{repositoryUrl ? `Connected repository: ${repositoryUrl}` : 'No repository connected yet.'}</p>
-    {preparation && preparation.phase !== 'failed' && <ol className="prep-steps" aria-label="Preparation progress">{STEPS.map((step, index) => <li key={step.phase} data-state={index < stepIndex || preparation.phase === 'ready' ? 'done' : index === stepIndex ? 'current' : 'pending'}>{step.label}</li>)}</ol>}
-    {tiles.length > 0 && <dl className="speed-grid" aria-label="Preparation speeds">{tiles.map(tile => <div className="speed-tile" key={tile.label}><dt>{tile.label}</dt><dd>{tile.value}</dd></div>)}</dl>}
+    {active && <ol className="prep-steps" aria-label="Preparation progress">{STEPS.map((step, index) => <li key={step.phase} data-state={index < stepIndex ? 'done' : index === stepIndex ? 'current' : 'pending'}>{step.label}</li>)}</ol>}
+    {tiles.length > 0 && <dl className="speed-grid" aria-label="Project metrics">{tiles.map(tile => <div className="speed-tile" key={tile.label}><dt>{tile.label}</dt><dd>{tile.value}</dd></div>)}</dl>}
+    {search && <p className="small-muted">Latest server-side search, including retrieval and citation checks. Excludes the model’s response time.</p>}
+    {!search && preparation?.phase === 'ready' && <p className="small-muted">Ask about the code to measure a search.</p>}
     {preparation?.phase === 'failed' && <p role="alert" className="small-muted">{preparation.message ?? preparation.errorCode ?? 'Preparation failed. No files were marked ready.'}</p>}
-    {!preparation && <p className="small-muted">{repositoryUrl ? 'Start a call to prepare this repository automatically. Its VM and indexing progress will appear here.' : 'Connect a repository, then start a call to prepare its VM and code index.'}</p>}
+    {!preparation && !workspaceState && <p className="small-muted">{repositoryUrl ? 'Preparation starts when the repository is connected. Its VM and indexing progress will appear here; no call is required.' : 'Connect a repository to prepare its VM and code index automatically. No call is required.'}</p>}
   </article>
 }
 
@@ -87,15 +88,58 @@ function vmStatusLine(workspace: { status: WorkspaceStatus | null; error?: strin
 }
 
 /** VM status, a plain command console and a desktop screenshot. Commands run in the project's own VM through the supervised exec API. */
-export function VmPanel({ projectId, workspace }: { projectId: string; workspace: { status: WorkspaceStatus | null; error?: string } }) {
+export function VmPanel({ projectId, workspace, onStopped }: { projectId: string; workspace: { status: WorkspaceStatus | null; error?: string }; onStopped?: () => void }) {
   const [input, setInput] = useState('')
   const [result, setResult] = useState<CommandResult>({ kind: 'idle' })
   const [shot, setShot] = useState<Shot>({ kind: 'idle' })
+  const [watching, setWatching] = useState(false)
+  const [stopping, setStopping] = useState<'idle' | 'pending' | 'done'>('idle')
+  const [stopError, setStopError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const shotAbortRef = useRef<AbortController | null>(null)
+  const stopAbortRef = useRef<AbortController | null>(null)
+  const observed = workspace.status?.observedState
+  const available = observed === 'running' && stopping === 'idle'
   const running = result.kind === 'running'
   const now = useNow(running)
-  useEffect(() => () => { abortRef.current?.abort(); shotAbortRef.current?.abort() }, [])
+  useEffect(() => () => { abortRef.current?.abort(); shotAbortRef.current?.abort(); stopAbortRef.current?.abort() }, [])
+  useEffect(() => {
+    if (observed === 'destroyed') setStopping('idle')
+    if (observed !== 'running') {
+      setWatching(false)
+      setShot({ kind: 'idle' })
+      shotAbortRef.current?.abort()
+    }
+  }, [observed])
+  useEffect(() => {
+    if (!watching || !available) return
+    const controller = new AbortController()
+    shotAbortRef.current?.abort()
+    shotAbortRef.current = controller
+    watchVmScreen(projectId, controller.signal, frame => {
+      setShot(frame.ok ? { kind: 'ready', base64: frame.data.contentBase64 } : { kind: 'error', message: frame.message })
+      if (!frame.ok) setWatching(false)
+    })
+    return () => controller.abort()
+  }, [watching, available, projectId])
+
+  const stopVm = async () => {
+    if (!available || !window.confirm('Stop this VM? Running commands will end and files only in the VM will be lost. Saved project history stays.')) return
+    setWatching(false)
+    abortRef.current?.abort()
+    shotAbortRef.current?.abort()
+    const controller = new AbortController()
+    stopAbortRef.current = controller
+    setStopping('pending')
+    setStopError(null)
+    const stopped = await rangerApi.stopWorkspace(projectId, controller.signal)
+    if (controller.signal.aborted) return
+    setStopping(stopped.ok ? 'done' : 'idle')
+    if (!stopped.ok) { setStopError(stopped.message); return }
+    setResult({ kind: 'idle' })
+    setShot({ kind: 'idle' })
+    onStopped?.()
+  }
 
   const readLogs = async (command: string, commandId: string, state: string, exitCode: number | null, signal: AbortSignal) => {
     const logs = await rangerApi.getWorkspaceCommandLogs(projectId, commandId, signal)
@@ -106,7 +150,7 @@ export function VmPanel({ projectId, workspace }: { projectId: string; workspace
   const run = async (event: FormEvent) => {
     event.preventDefault()
     const command = input.trim()
-    if (!command || running) return
+    if (!command || running || !available) return
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
@@ -128,18 +172,25 @@ export function VmPanel({ projectId, workspace }: { projectId: string; workspace
     setShot(captured.ok ? { kind: 'ready', base64: captured.data.contentBase64 } : { kind: 'error', message: captured.message })
   }
 
-  const observed = workspace.status?.observedState
   return <article className="detail-card" aria-label="Virtual machine">
     <div className="card-heading">
       <h3>VM</h3>
-      <StatusPill tone={observed === 'running' ? 'green' : observed ? 'amber' : 'gray'}>{observed ?? 'Unknown'}</StatusPill>
+      <StatusPill tone={available ? 'green' : observed ? 'amber' : 'gray'}>{stopping === 'done' ? 'destroyed' : observed ?? 'Unknown'}</StatusPill>
     </div>
     <p className="small-muted" role="status">{vmStatusLine(workspace)}</p>
+    <div className="media-controls">
+      <Button type="button" disabled={!available} onClick={() => { setShot({ kind: watching ? 'idle' : 'loading' }); setWatching(!watching) }}>{watching ? 'Hide VM screen' : 'Show VM screen'}</Button>
+      <Button type="button" disabled={!available} onClick={() => { void stopVm() }}>{stopping === 'pending' ? 'Stopping VM…' : 'Stop VM'}</Button>
+    </div>
+    {stopError && <p role="alert" className="small-muted">Could not stop VM: {stopError}</p>}
+    {stopping === 'done' && <p role="status" className="small-muted">VM stopped.</p>}
+    {watching && available && <p className="small-muted" role="status">VM screen refreshes every 3 seconds after each capture and pauses in background tabs. Choose Control VM to use its mouse and keyboard. Background commands appear in Live activity.</p>}
+    {watching && shot.kind === 'loading' && <p role="status" className="small-muted">Opening the VM desktop. Its first start may take a moment…</p>}
     <form className="vm-form" onSubmit={run}>
       <label className="sr-only" htmlFor="vm-command">Command to run in the VM</label>
       <input id="vm-command" autoComplete="off" spellCheck={false} placeholder="ls -la   (runs in the VM)" value={input} onChange={event => setInput(event.target.value)} />
-      <Button kind="primary" type="submit" disabled={running || !input.trim()}>{running ? 'Running…' : 'Run'}</Button>
-      <Button type="button" disabled={shot.kind === 'loading'} onClick={() => { void takeScreenshot() }}>{shot.kind === 'loading' ? 'Capturing…' : 'Screenshot'}</Button>
+      <Button kind="primary" type="submit" disabled={!available || running || !input.trim()}>{running ? 'Running…' : 'Run'}</Button>
+      <Button type="button" disabled={!available || watching || shot.kind === 'loading'} onClick={() => { void takeScreenshot() }}>{shot.kind === 'loading' ? 'Capturing…' : 'Screenshot'}</Button>
     </form>
     {result.kind !== 'idle' && <div aria-label="Command output">
       <p className="small-muted"><code>$ {result.command}</code>
@@ -155,7 +206,7 @@ export function VmPanel({ projectId, workspace }: { projectId: string; workspace
       </>}
     </div>}
     {shot.kind === 'error' && <p role="alert" className="small-muted">Screenshot unavailable: {shot.message}</p>}
-    {shot.kind === 'ready' && <img className="vm-shot" alt="Screenshot of the VM desktop" src={`data:image/png;base64,${shot.base64}`} />}
+    {shot.kind === 'ready' && <VmDesktop projectId={projectId} base64={shot.base64} interactive={watching && available} />}
   </article>
 }
 

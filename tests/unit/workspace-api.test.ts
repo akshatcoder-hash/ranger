@@ -5,7 +5,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { loadConfig } from '../../src/config.js';
-import { openDatabase } from '../../src/db/db.js';
+import { openDatabase, withTransaction } from '../../src/db/db.js';
+import { requestProjectWorkspacePrep } from '../../src/workspace/prepare.js';
 import { runMigrations } from '../../src/db/migrate.js';
 import { buildApiServer } from '../../src/http/app.js';
 import { ensureInitialPrincipal } from '../../src/identity/bootstrap.js';
@@ -99,6 +100,84 @@ async function harness(): Promise<Harness> {
 }
 
 describe('workspace public API (deterministic fake provider)', () => {
+  it('connects and queues preparation without a voice session, deduplicating reconnects and calls', async () => {
+    const h = await harness();
+    const url = `/v1/projects/${h.projectId}/repository`;
+    const payload = { url: 'https://github.com/jonschlinkert/is-number', ref: 'HEAD' };
+    expect((await h.app.inject({ method: 'PUT', url, headers: h.otherAuth, payload })).statusCode).toBe(403);
+    const db = new DatabaseSync(path.join(h.dataDir, 'ranger.db'));
+    expect(db.prepare('SELECT count(*) AS n FROM jobs').get()?.['n']).toBe(0);
+    expect((await h.app.inject({ method: 'PUT', url, headers: h.ownerAuth, payload })).statusCode).toBe(200);
+    expect((await h.app.inject({ method: 'PUT', url, headers: h.ownerAuth, payload })).statusCode).toBe(200);
+    expect(db.prepare('SELECT count(*) AS n FROM voice_sessions').get()?.['n']).toBe(0);
+    const jobs = db.prepare('SELECT id,payload FROM jobs').all() as Array<{ id: string; payload: string }>;
+    expect(jobs).toHaveLength(1);
+    expect(JSON.parse(jobs[0]!.payload)).toMatchObject({ projectId: h.projectId, sessionId: null });
+    expect(withTransaction(db, () => requestProjectWorkspacePrep(db, {
+      projectId: h.projectId, conversationId: '', sessionId: 'vcs_later', requestId: 'later', readiness: () => null,
+    })).jobId).toBe(jobs[0]!.id);
+    expect(db.prepare('SELECT count(*) AS n FROM jobs').get()?.['n']).toBe(1);
+    db.close();
+    await h.app.close();
+  });
+
+  it('authorizes and validates human desktop input, and refuses input after Stop VM', async () => {
+    const h = await harness();
+    await h.app.inject({ method: 'POST', url: `/v1/projects/${h.projectId}/workspace`, headers: h.ownerAuth, payload: {} });
+    const url = `/v1/projects/${h.projectId}/workspace/desktop/input`;
+    const click = { action: 'click', x: 10, y: 20 };
+    expect((await h.app.inject({ method: 'POST', url, headers: h.otherAuth, payload: click })).statusCode).toBe(403);
+    expect(h.provider.desktopInputs).toHaveLength(0);
+    for (const payload of [click, { action: 'type', text: 'hello' }, { action: 'press', keys: ['ctrl', 'a'] },
+      { action: 'drag', x: 1, y: 1, toX: 20, toY: 30 }, { action: 'scroll', x: 5, y: 5, direction: 'down', amount: 3 }]) {
+      expect((await h.app.inject({ method: 'POST', url, headers: h.ownerAuth, payload })).statusCode).toBe(200);
+    }
+    expect(h.provider.desktopInputs).toHaveLength(5);
+    for (const payload of [{ ...click, x: -1 }, { ...click, machineId: 'foreign' }, { ...click, x: 20000 },
+      { action: 'exec', command: 'bad' }, { action: 'type', text: 'x'.repeat(2001) }, { action: 'press', keys: ['bad key'] }]) {
+      expect((await h.app.inject({ method: 'POST', url, headers: h.ownerAuth, payload })).statusCode).toBe(400);
+    }
+    await h.app.inject({ method: 'DELETE', url: `/v1/projects/${h.projectId}/workspace`, headers: h.ownerAuth });
+    expect((await h.app.inject({ method: 'POST', url, headers: h.ownerAuth, payload: click })).statusCode).toBe(409);
+    expect(h.provider.desktopInputs).toHaveLength(5);
+    await h.app.close();
+  });
+  it('does not leave a creating row after capacity rejection and allows a later retry', async () => {
+    const h = await harness();
+    const file = path.join(h.dataDir, 'ledger.json');
+    const ledger = JSON.parse(readFileSync(file, 'utf8'));
+    ledger.instabox.maxConcurrent = 0;
+    writeFileSync(file, JSON.stringify(ledger));
+    const create = () => h.app.inject({ method: 'POST', url: `/v1/projects/${h.projectId}/workspace`, headers: h.ownerAuth, payload: {} });
+    expect((await create()).json()).toMatchObject({ error: { code: 'conflict', details: { reason: 'vm_capacity' } } });
+    expect(h.provider.creates).toHaveLength(0);
+    const db = new DatabaseSync(path.join(h.dataDir, 'ranger.db'));
+    expect(db.prepare('SELECT COUNT(*) AS n FROM workspaces WHERE project_id = ?').get(h.projectId)?.['n']).toBe(0);
+    ledger.instabox.maxConcurrent = 5;
+    ledger.instabox.maxLifetimeSeconds = null;
+    writeFileSync(file, JSON.stringify(ledger));
+    expect((await create()).statusCode).toBe(200);
+    expect(h.provider.creates[0]?.timeoutMs).toBeNull();
+    expect(db.prepare('SELECT deadline_at FROM workspaces WHERE project_id = ?').get(h.projectId)?.['deadline_at']).toBeNull();
+    const stop = await h.app.inject({ method: 'DELETE', url: `/v1/projects/${h.projectId}/workspace`, headers: h.ownerAuth });
+    expect(stop.statusCode).toBe(200);
+    expect(h.provider.kills).toHaveLength(1);
+    db.close();
+    await h.app.close();
+  });
+
+  it('recovers a definite create failure but refuses duplicate uncertain creates', async () => {
+    const h = await harness();
+    const create = () => h.app.inject({ method: 'POST', url: `/v1/projects/${h.projectId}/workspace`, headers: h.ownerAuth, payload: {} });
+    h.provider.failNextCreateDefinite();
+    expect((await create()).json()).toMatchObject({ error: { details: { reason: 'provider_unavailable' } } });
+    h.provider.failNextCreateAmbiguous('m_lost');
+    expect((await create()).json()).toMatchObject({ error: { details: { reason: 'uncertain_create' } } });
+    expect(h.provider.creates).toHaveLength(2);
+    expect((await create()).json()).toMatchObject({ error: { details: { reason: 'uncertain_create' } } });
+    expect(h.provider.creates).toHaveLength(2);
+    await h.app.close();
+  });
   it('creates, writes, runs, screenshots and destroys through authorized routes', async () => {
     const h = await harness();
     const created = await h.app.inject({
@@ -171,6 +250,17 @@ describe('workspace public API (deterministic fake provider)', () => {
     });
     expect(shot.statusCode).toBe(200);
     expect((shot.json() as { contentBase64: string }).contentBase64.length).toBeGreaterThan(8);
+
+    const artifactsBefore = await h.app.inject({ method: 'GET', url: `/v1/projects/${h.projectId}/workspace/artifacts`, headers: h.ownerAuth });
+    const frame = await h.app.inject({ method: 'POST', url: `/v1/projects/${h.projectId}/workspace/screenshots`,
+      headers: h.ownerAuth, payload: { saveArtifact: false } });
+    expect(frame.statusCode).toBe(200);
+    expect(frame.json()).toMatchObject({ artifactId: null, contentBase64: expect.any(String) });
+    const artifactsAfter = await h.app.inject({ method: 'GET', url: `/v1/projects/${h.projectId}/workspace/artifacts`, headers: h.ownerAuth });
+    expect(artifactsAfter.json().artifacts).toEqual(artifactsBefore.json().artifacts);
+    const invalidFrame = await h.app.inject({ method: 'POST', url: `/v1/projects/${h.projectId}/workspace/screenshots`,
+      headers: h.ownerAuth, payload: { saveArtifact: 'false' } });
+    expect(invalidFrame.statusCode).toBe(400);
 
     const destroyed = await h.app.inject({
       method: 'DELETE',

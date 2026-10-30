@@ -22,13 +22,13 @@ import { getWorkspace, listAllSourceFiles } from './store.js';
 import { diagnostic } from '../observability.js';
 
 /**
- * Read-only project preparation for a voice call: one isolated VM seeded
+ * Read-only project preparation on repository connection or a voice request: one VM seeded
  * with the connected project's committed source, and a real Trace index of
  * exactly that seeded source, built by the durable worker (never inline in
  * an API request or voice session).
  *
  * Contract:
- * - the voice tool enqueues ONE durable job (no arguments; the server binds
+ * - repository connection and voice tools enqueue ONE durable job (the server binds
  *   project, conversation and session) and returns its id promptly;
  * - the worker validates the connected repository/commit and retrieval
  *   availability BEFORE the VM create, then performs exactly one
@@ -55,7 +55,7 @@ export const PREPARATION_EVENT_TYPE = 'workspace.preparation.updated';
 export interface PreparePayload {
   projectId: string;
   conversationId: string;
-  sessionId: string;
+  sessionId: string | null;
 }
 
 export interface PrepareReference {
@@ -138,17 +138,18 @@ export function requestProjectWorkspacePrep(
   input: {
     projectId: string;
     conversationId: string;
-    sessionId: string;
+    sessionId: string | null;
     requestId: string;
     readiness: (projectId: string) => IndexReadiness | null;
   },
 ): PrepareReference {
+  const startedAt = Date.now();
   const active = activePrepJob(db, input.projectId);
   if (active !== null) {
     return { jobId: active.id, status: active.status === 'claimed' ? 'running' : 'queued' };
   }
   const running = activeRunRow(db);
-  if (running !== null) {
+  if (running !== null && running.projectId === input.projectId) {
     throw Errors.conflict('An engineering run is active; the workspace cannot be prepared until it finishes', {
       reason: 'run_active',
     });
@@ -171,14 +172,32 @@ export function requestProjectWorkspacePrep(
     const provenance = readiness?.ready === true ? readiness.state.provenance : null;
     const matches =
       provenance !== null &&
+      readiness?.ready === true &&
       repository !== null &&
+      workspace.machineId !== null &&
+      workspace.machineId !== '' &&
       repository.commit !== '' &&
       provenance['repositoryCommit'] === repository.commit &&
       provenance['machineId'] === workspace.machineId &&
       workspace.sourceRevision === repository.commit &&
-      workspace.deadlineAt !== null &&
-      workspace.deadlineAt > Date.now();
+      (workspace.deadlineAt === null || workspace.deadlineAt > Date.now());
     if (matches && provenance['jobId'] !== undefined) {
+      // Readiness was just proven against the current saved source, so the
+      // event states this validation, not the original build.
+      appendPreparation(db, {
+        projectId: input.projectId,
+        sessionId: input.sessionId,
+        requestId: input.requestId,
+        data: {
+          jobId: provenance['jobId'],
+          phase: 'ready',
+          fileCount: readiness.state.fileCount,
+          byteCount: readiness.state.byteCount,
+          indexElapsedMs: readiness.state.indexElapsedMs,
+          elapsedMs: Date.now() - startedAt,
+          repositoryCommit: repository.commit,
+        },
+      });
       return { jobId: provenance['jobId'], status: 'ready' };
     }
     // A running VM that is not this project's ready, current preparation is
@@ -211,7 +230,10 @@ export function requestProjectWorkspacePrep(
 
 export interface PrepareRetrieval {
   assertAvailable(): Promise<void>;
-  reindexDetailed(projectId: string, options?: { provenance?: Record<string, string> }): Promise<PersistedIndexState>;
+  reindexDetailed(
+    projectId: string,
+    options?: { provenance?: Record<string, string>; reuseReady?: boolean },
+  ): Promise<PersistedIndexState & { reused?: boolean }>;
 }
 
 export interface PrepareDeps {
@@ -239,7 +261,9 @@ function failureMessage(cause: unknown): string {
 export function projectWorkspacePrepHandler(deps: PrepareDeps): JobHandler {
   return async (job) => {
     const payload = job.payload as Partial<PreparePayload>;
-    if (typeof payload.projectId !== 'string' || typeof payload.sessionId !== 'string') return;
+    if (typeof payload.projectId !== 'string' || (payload.sessionId !== null && typeof payload.sessionId !== 'string')) {
+      throw Errors.validation('Invalid workspace preparation payload');
+    }
     await executePrepare(deps, job, payload as PreparePayload);
   };
 }
@@ -464,11 +488,15 @@ async function executePrepare(
       return;
     }
     const machineId = getWorkspace(db, projectId)?.machineId ?? '';
-    let indexed: PersistedIndexState;
+    let indexed: PersistedIndexState & { reused?: boolean };
     try {
+      // This project's own ready index may be reused for the new VM; the
+      // retrieval service proves it current and rebinds provenance, or rebuilds.
       indexed = await retrieval.reindexDetailed(projectId, {
         provenance: { repositoryCommit: repository.commit, jobId: job.id, machineId },
+        reuseReady: true,
       });
+      diagnostic('workspace.index.finished', { projectId, jobId: job.id, reused: indexed.reused === true });
     } catch (cause) {
       await finishFailed(failureCode(cause, 'index_failed'), cause);
       return;

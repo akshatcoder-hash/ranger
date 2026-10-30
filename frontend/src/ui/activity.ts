@@ -1,4 +1,4 @@
-import { formatBytes, formatDuration, PREPARATION_EVENT } from './liveHelpers'
+import { formatBytes, formatDuration, formatSearchDuration, latestSearch, PREPARATION_EVENT, SEARCH_EVENT } from './liveHelpers'
 
 export type ActivityEvent = { eventId: string; sequence: number; type: string; data?: Record<string, unknown> }
 export type ActivityTone = 'neutral' | 'good' | 'warn' | 'bad'
@@ -35,6 +35,15 @@ function preparationLine(data: Record<string, unknown>): ActivityLine {
 export function describeEvent(event: ActivityEvent): ActivityLine {
   const data = event.data ?? {}
   switch (event.type) {
+    case SEARCH_EVENT: {
+      const search = latestSearch([event])
+      if (!search) return { title: 'Search completed', tone: 'neutral' }
+      return {
+        title: `${search.provider === 'trace' ? 'Trace search' : 'File search fallback'} · ${formatSearchDuration(search.durationMs)}`,
+        detail: `${search.resultCount} retrieved results · retrieval and citation checks`,
+        tone: 'good',
+      }
+    }
     case PREPARATION_EVENT: return preparationLine(data)
     case 'run.state.changed': {
       const to = text(data.to) ?? 'updated'

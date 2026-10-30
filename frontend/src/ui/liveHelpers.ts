@@ -74,6 +74,24 @@ export type PreparationStatus = {
 
 type PreparationEvent = { sequence: number; type: string; data?: Record<string, unknown> }
 
+export const SEARCH_EVENT = 'retrieval.search.completed'
+export type SearchMeasurement = { provider: 'trace' | 'file-search-fallback'; durationMs: number; resultCount: number }
+
+export function latestSearch(events: readonly PreparationEvent[]): SearchMeasurement | null {
+  for (const event of [...events].sort((a, b) => b.sequence - a.sequence)) {
+    if (event.type !== SEARCH_EVENT) continue
+    const { provider, durationMs, resultCount } = event.data ?? {}
+    if ((provider === 'trace' || provider === 'file-search-fallback') &&
+      typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs >= 0 &&
+      typeof resultCount === 'number' && Number.isInteger(resultCount) && resultCount >= 0) {
+      return { provider, durationMs, resultCount }
+    }
+  }
+  return null
+}
+
+export const formatSearchDuration = (ms: number): string => `${ms.toLocaleString('en-US', { maximumFractionDigits: 1 })} ms`
+
 const COUNT_FIELDS = ['fileCount', 'byteCount', 'cloneElapsedMs', 'indexElapsedMs', 'elapsedMs'] as const
 const TEXT_FIELDS = ['errorCode', 'message', 'repositoryCommit'] as const
 

@@ -248,6 +248,29 @@
                     },
                     "displayName": {
                       "type": "string"
+                    },
+                    "demoProject": {
+                      "type": "object",
+                      "required": [
+                        "projectId",
+                        "repositoryUrl",
+                        "ref"
+                      ],
+                      "properties": {
+                        "projectId": {
+                          "type": "string",
+                          "pattern": "^prj_[0-9a-fA-F-]+$",
+                          "description": "Prefixed prj identifier"
+                        },
+                        "repositoryUrl": {
+                          "type": "string"
+                        },
+                        "ref": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false,
+                      "description": "Present only when the operator enabled shared demo access and the caller is a member"
                     }
                   }
                 }
@@ -13024,11 +13047,11 @@
     "/v1/projects/{projectId}/workspace/screenshots": {
       "post": {
         "operationId": "captureWorkspaceScreenshot",
-        "summary": "Capture a real guest desktop screenshot and persist it as an artifact",
+        "summary": "Capture a guest desktop screenshot; live preview frames may skip artifact storage",
         "tags": [
           "workspace"
         ],
-        "description": "Capture a real guest desktop screenshot and persist it as an artifact",
+        "description": "Capture a guest desktop screenshot; live preview frames may skip artifact storage",
         "parameters": [
           {
             "name": "projectId",
@@ -13057,7 +13080,12 @@
               "schema": {
                 "type": "object",
                 "required": [],
-                "properties": {},
+                "properties": {
+                  "saveArtifact": {
+                    "type": "boolean",
+                    "default": true
+                  }
+                },
                 "additionalProperties": false
               }
             }
@@ -13091,9 +13119,355 @@
                       "type": "string"
                     },
                     "artifactId": {
-                      "type": "string",
-                      "pattern": "^art_[0-9a-fA-F-]+$",
-                      "description": "Prefixed art identifier"
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^art_[0-9a-fA-F-]+$",
+                          "description": "Prefixed art identifier"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed or invalid cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Budget admission stop",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict (including idempotency conflict)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not configured / not yet implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{projectId}/workspace/desktop/input": {
+      "post": {
+        "operationId": "sendWorkspaceDesktopInput",
+        "summary": "Send authenticated human mouse or keyboard input to this project VM",
+        "tags": [
+          "workspace"
+        ],
+        "description": "Send authenticated human mouse or keyboard input to this project VM",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^prj_[0-9a-fA-F-]+$",
+              "description": "Prefixed prj identifier"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Scoped idempotency key: identical retries return the stored result; reuse with different input conflicts."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "action",
+                      "x",
+                      "y"
+                    ],
+                    "properties": {
+                      "action": {
+                        "type": "string",
+                        "const": "click"
+                      },
+                      "x": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 16384
+                      },
+                      "y": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 16384
+                      },
+                      "button": {
+                        "type": "string",
+                        "enum": [
+                          "left",
+                          "right",
+                          "middle"
+                        ]
+                      },
+                      "double": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "action",
+                      "x",
+                      "y"
+                    ],
+                    "properties": {
+                      "action": {
+                        "type": "string",
+                        "const": "move"
+                      },
+                      "x": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 16384
+                      },
+                      "y": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 16384
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "action",
+                      "x",
+                      "y",
+                      "toX",
+                      "toY"
+                    ],
+                    "properties": {
+                      "action": {
+                        "type": "string",
+                        "const": "drag"
+                      },
+                      "x": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 16384
+                      },
+                      "y": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 16384
+                      },
+                      "toX": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 16384
+                      },
+                      "toY": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 16384
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "action",
+                      "x",
+                      "y",
+                      "direction",
+                      "amount"
+                    ],
+                    "properties": {
+                      "action": {
+                        "type": "string",
+                        "const": "scroll"
+                      },
+                      "x": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 16384
+                      },
+                      "y": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 16384
+                      },
+                      "direction": {
+                        "type": "string",
+                        "enum": [
+                          "up",
+                          "down"
+                        ]
+                      },
+                      "amount": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "action",
+                      "text"
+                    ],
+                    "properties": {
+                      "action": {
+                        "type": "string",
+                        "const": "type"
+                      },
+                      "text": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2000
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "action",
+                      "keys"
+                    ],
+                    "properties": {
+                      "action": {
+                        "type": "string",
+                        "const": "press"
+                      },
+                      "keys": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[a-zA-Z0-9_+-]{1,32}$"
+                        },
+                        "minItems": 1,
+                        "maxItems": 5
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerApiToken": []
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success (envelope carries requestId)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "requestId"
+                  ],
+                  "properties": {
+                    "requestId": {
+                      "type": "string"
                     }
                   }
                 }

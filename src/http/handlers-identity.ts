@@ -15,6 +15,12 @@ import {
 } from '../auth/sessions.js';
 import { createTicket } from '../auth/tickets.js';
 import { requireMembership, requirePrincipalId } from '../auth/authorization.js';
+import {
+  ANONYMOUS_DISPLAY_NAME,
+  demoTargetFor,
+  grantDemoAccess,
+  reconcileDemoAccess,
+} from '../auth/demo-access.js';
 import { iso } from './serialize.js';
 import type { HandlerContext, OperationHandler } from './handlers.js';
 
@@ -31,8 +37,6 @@ interface BrowserSessionBody {
   apiToken?: string;
 }
 
-const ANONYMOUS_DISPLAY_NAME = 'Guest';
-
 interface ConnectionTicketBody {
   projectId?: string;
   purpose?: 'events' | 'voice-relay' | 'desktop-stream' | 'app-preview';
@@ -40,13 +44,26 @@ interface ConnectionTicketBody {
 }
 
 export function registerIdentityHandlers(ctx: HandlerContext, handlers: Map<string, OperationHandler>): void {
-  const { db } = ctx;
+  const { db, config } = ctx;
+  const demoProjectId = config.demoProjectId;
+
+  reconcileDemoAccess(db, demoProjectId);
 
   handlers.set('getPrincipal', async (req: FastifyRequest) => {
     const principalId = requirePrincipalId(req);
     const principal = getPrincipal(db, principalId);
     if (principal === null) throw Errors.unauthorized('Principal no longer exists');
-    return { principalId: principal.id, displayName: principal.displayName };
+    // Anonymous sessions that predate the flag are granted on first
+    // authenticated read; API tokens never are.
+    if (req.authKind === 'browser-session' && principal.displayName === ANONYMOUS_DISPLAY_NAME) {
+      grantDemoAccess(db, demoProjectId, principal.id);
+    }
+    const demoProject = demoTargetFor(db, demoProjectId, principal.id);
+    return {
+      principalId: principal.id,
+      displayName: principal.displayName,
+      ...(demoProject === null ? {} : { demoProject }),
+    };
   });
 
   handlers.set('createApiToken', async (req: FastifyRequest) => {
@@ -94,6 +111,7 @@ export function registerIdentityHandlers(ctx: HandlerContext, handlers: Map<stri
 
   handlers.set('createAnonymousSession', async (_req: FastifyRequest, reply) => {
     const principal = createPrincipal(db, ANONYMOUS_DISPLAY_NAME);
+    grantDemoAccess(db, demoProjectId, principal.id);
     const created = createSession(db, principal.id);
     void reply.header('set-cookie', created.setCookie);
     return {

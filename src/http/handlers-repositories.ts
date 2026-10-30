@@ -1,6 +1,6 @@
 import type { FastifyRequest } from 'fastify';
 import { Errors } from '../errors.js';
-import { requireMembership, requirePrincipalId } from '../auth/authorization.js';
+import { requireMembership, requirePrincipalId, requireProjectOwner } from '../auth/authorization.js';
 import {
   disconnectRepository,
   getRepositoryRecord,
@@ -12,6 +12,8 @@ import { appendProjectEvent } from '../events/store.js';
 import { iso } from './serialize.js';
 import { runScopedMutation } from './idempotency.js';
 import type { HandlerContext, OperationHandler } from './handlers.js';
+import { retrievalServiceFor } from './handlers-retrieval.js';
+import { requestProjectWorkspacePrep } from '../workspace/prepare.js';
 
 /**
  * Handlers for the repositories family: connect, read and disconnect the
@@ -43,11 +45,16 @@ interface ConnectRepositoryBody {
 
 export function registerRepositoryHandlers(ctx: HandlerContext, handlers: Map<string, OperationHandler>): void {
   const { db, config } = ctx;
+  // The opted-in shared demo project keeps its repository: guests are members, so only an owner may replace or remove it.
+  const requireWriter = (projectId: string, principalId: string) => {
+    if (projectId === config.demoProjectId) requireProjectOwner(db, projectId, principalId);
+    else requireMembership(db, projectId, principalId);
+  };
 
   handlers.set('connectRepository', async (req: FastifyRequest) => {
     const principalId = requirePrincipalId(req);
     const params = req.params as { projectId: string };
-    requireMembership(db, params.projectId, principalId);
+    requireWriter(params.projectId, principalId);
     const body = (req.body ?? {}) as ConnectRepositoryBody;
     if (typeof body.url !== 'string' || typeof body.ref !== 'string') {
       throw Errors.validation('url and ref are required');
@@ -66,7 +73,13 @@ export function registerRepositoryHandlers(ctx: HandlerContext, handlers: Map<st
     );
     const projectId = params.projectId;
     const record = runScopedMutation(db, req, 'connectRepository', projectId, () => {
-      const written = writeRepositoryRecord(db, projectId, principalId, prepared);
+      const previous = getRepositoryRecord(db, projectId);
+      // Reconnecting the same remote reference must not erase its resolved commit.
+      const sameRemote = previous !== null && prepared.snapshot === null && prepared.validated.url.startsWith('https://')
+        && previous.url === prepared.validated.url && previous.ref === prepared.validated.ref
+        && previous.checkoutPolicy.shallow === prepared.validated.checkoutPolicy.shallow
+        && previous.checkoutPolicy.submodules === prepared.validated.checkoutPolicy.submodules;
+      const written = sameRemote ? previous : writeRepositoryRecord(db, projectId, principalId, prepared);
       // Same transaction as the connect: schema-valid event with the new values.
       appendProjectEvent(db, {
         projectId,
@@ -78,6 +91,10 @@ export function registerRepositoryHandlers(ctx: HandlerContext, handlers: Map<st
           checkoutPath: written.checkoutPath,
         },
         requestId: req.id,
+      });
+      requestProjectWorkspacePrep(db, {
+        projectId, conversationId: '', sessionId: null, requestId: req.id,
+        readiness: id => retrievalServiceFor(ctx)?.readiness(id) ?? null,
       });
       return written;
     });
@@ -96,7 +113,7 @@ export function registerRepositoryHandlers(ctx: HandlerContext, handlers: Map<st
   handlers.set('disconnectRepository', async (req: FastifyRequest) => {
     const principalId = requirePrincipalId(req);
     const params = req.params as { projectId: string };
-    requireMembership(db, params.projectId, principalId);
+    requireWriter(params.projectId, principalId);
     // Idempotent, and the removal + its event commit atomically: a retry
     // replays with no second event, and the record fields are captured
     // before the delete inside the same transaction.

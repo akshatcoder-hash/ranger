@@ -183,7 +183,7 @@ async function destroyOrphanedWorkspaces(deps: { db: DatabaseSync; provider: Ins
              AND (
                j.status = 'pending'
                OR (j.status = 'claimed' AND j.lease_expires_at IS NOT NULL AND j.lease_expires_at >= ?)
-               OR (j.status = 'succeeded' AND w.deadline_at IS NOT NULL AND w.deadline_at > ?)
+               OR (j.status = 'succeeded' AND (w.deadline_at IS NULL OR w.deadline_at > ?))
              )
          )`,
     )

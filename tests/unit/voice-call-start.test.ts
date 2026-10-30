@@ -52,12 +52,13 @@ describe('call opening', () => {
     expect(countJobs()).toBe(0);
   });
 
-  it('does not automatically retry a failed preparation on a new call', async () => {
+  it('retries a prior failed preparation once on a new call', async () => {
     await connect();
     withTransaction(ctx.db, () => appendProjectEvent(ctx.db, { projectId: input.projectId, sessionId: input.sessionId, requestId: input.requestId,
       type: 'workspace.preparation.updated', data: { jobId: 'job_previous', phase: 'failed', errorCode: 'clone_failed' } }));
-    expect(prepareCallContext(ctx, input)).toContain('previous_preparation_failed:clone_failed');
-    expect(countJobs()).toBe(0);
+    expect(prepareCallContext(ctx, input)).toContain('"preparation":"queued"');
+    expect(prepareCallContext(ctx, input)).toContain('"preparation":"queued"');
+    expect(countJobs()).toBe(1);
   });
 
   it('never queues preparation if context budget admission fails', async () => {

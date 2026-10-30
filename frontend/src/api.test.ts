@@ -131,7 +131,7 @@ describe('browser backend adapter', () => {
       }
       if (path.includes('/messages')) {
         return json({
-          messages: [{ content: 'first' }, { content: 'second' }],
+          messages: [{ role: 'user', content: 'first' }, { role: 'agent', content: 'second' }],
           nextCursor: null,
           requestId: 'req-messages',
         })
@@ -167,12 +167,27 @@ describe('browser backend adapter', () => {
         name: 'Inbox',
         engineerName: 'Ada',
         conversationId: CONVERSATION,
-        messages: ['first', 'second'],
+        messages: [{ role: 'user', content: 'first' }, { role: 'agent', content: 'second' }],
         plan: { planId: PLAN, version: 2, items: ['new'], acceptanceCriteria: ['checked'], permittedScope: ['edit:.', 'command'] },
         approved: false,
         repositoryUrl: null,
       },
     })
+  })
+
+  it('connects the attached repository before submitting the initial text request', async () => {
+    const paths: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input)
+      paths.push(path)
+      if (path === '/v1/projects') return json({ project: { projectId: PROJECT } })
+      if (path.endsWith('/conversations')) return json({ conversation: { conversationId: CONVERSATION } })
+      if (path.endsWith('/repository')) expect(JSON.parse(String(init?.body))).toMatchObject({ url: 'https://github.com/o/r', ref: 'main' })
+      return json({})
+    }))
+    const created = await rangerApi.createProject({ prompt: 'Inspect the import dialog', engineerName: 'Ranger', repository: 'https://github.com/o/r', repositoryRef: 'main' }, new AbortController().signal)
+    expect(created.ok).toBe(true)
+    expect(paths.map(path => path.split('/').at(-1))).toEqual(['projects', 'conversations', 'repository', 'messages'])
   })
 
   it('writes an operator-authored plan with the sandbox scope and does not call a model', async () => {
@@ -569,6 +584,25 @@ describe('session renewal and VM commands', () => {
   it('captures a screenshot as base64 with its artifact id', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => json({ artifactId: 'art_1', contentBase64: 'iVBORw0KGgo=' })))
     expect(await rangerApi.captureWorkspaceScreenshot(PROJECT, new AbortController().signal)).toEqual({ ok: true, data: { artifactId: 'art_1', contentBase64: 'iVBORw0KGgo=' } })
+  })
+  it('requests transient screen frames and validates their response', async () => {
+    const fetchMock = vi.fn(async () => json({ artifactId: null, contentBase64: 'png' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const signal = new AbortController().signal
+    expect(await rangerApi.captureWorkspaceScreenshot(PROJECT, signal, false)).toMatchObject({ ok: true })
+    expect(fetchMock.mock.calls[0]).toMatchObject([`/v1/projects/${PROJECT}/workspace/screenshots`, { method: 'POST', body: '{"saveArtifact":false}' }])
+    expect(await rangerApi.captureWorkspaceScreenshot(PROJECT, signal)).toMatchObject({ ok: false })
+  })
+  it('stops only a valid project workspace and reports deletion failures', async () => {
+    const fetchMock = vi.fn(async () => json({ ok: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    const signal = new AbortController().signal
+    expect(await rangerApi.stopWorkspace('foreign/path', signal)).toMatchObject({ ok: false })
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(await rangerApi.stopWorkspace(PROJECT, signal)).toMatchObject({ ok: true })
+    expect(fetchMock.mock.calls[0]).toMatchObject([`/v1/projects/${PROJECT}/workspace`, { method: 'DELETE' }])
+    fetchMock.mockResolvedValue(json({ error: { code: 'conflict', message: 'Stop failed' } }, 409))
+    expect(await rangerApi.stopWorkspace(PROJECT, signal)).toMatchObject({ ok: false })
   })
 })
 

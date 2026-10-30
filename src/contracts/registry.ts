@@ -8,6 +8,7 @@ import {
   num,
   obj,
   okResponse,
+  oneOf,
   str,
   timestamp,
 } from './schema.js';
@@ -15,6 +16,8 @@ import type { JSONSchema } from './schema.js';
 import { EVENT_TYPE_NAMES } from './events.js';
 import { GUEST_TRANSPORT_CAP_BYTES } from '../workspace/limits.js';
 import { MAX_STDIN_BYTES } from '@insforge/instabox-sdk';
+
+const desktopPoint = { x: int({ minimum: 0, maximum: 16384 }), y: int({ minimum: 0, maximum: 16384 }) };
 
 /**
  * The single source of truth for the Ranger v1 frontend contract.
@@ -150,6 +153,11 @@ function credentialsFamily(): OperationDef[] {
       response: okResponse({
         principalId: idField('prin'),
         displayName: str(),
+        demoProject: obj(['projectId', 'repositoryUrl', 'ref'], {
+          projectId: idField('prj'),
+          repositoryUrl: str(),
+          ref: str(),
+        }, { description: 'Present only when the operator enabled shared demo access and the caller is a member' }),
       }),
     },
     {
@@ -1272,12 +1280,31 @@ function workspaceFamily(): OperationDef[] {
       method: 'post',
       path: '/v1/projects/{projectId}/workspace/screenshots',
       family: 'workspace',
-      summary: 'Capture a real guest desktop screenshot and persist it as an artifact',
+      summary: 'Capture a guest desktop screenshot; live preview frames may skip artifact storage',
       auth: 'principal',
       mutating: true,
       params: projectParams(),
-      body: obj([], {}),
-      response: okResponse({ contentBase64: str(), artifactId: idField('art') }, ['contentBase64', 'artifactId']),
+      body: obj([], { saveArtifact: bool({ default: true }) }),
+      response: okResponse({ contentBase64: str(), artifactId: nullable(idField('art')) }, ['contentBase64', 'artifactId']),
+    },
+    {
+      id: 'sendWorkspaceDesktopInput',
+      method: 'post',
+      path: '/v1/projects/{projectId}/workspace/desktop/input',
+      family: 'workspace',
+      summary: 'Send authenticated human mouse or keyboard input to this project VM',
+      auth: 'principal',
+      mutating: true,
+      params: projectParams(),
+      body: oneOf(
+        obj(['action', 'x', 'y'], { action: str({ const: 'click' }), ...desktopPoint, button: str({ enum: ['left', 'right', 'middle'] }), double: bool() }),
+        obj(['action', 'x', 'y'], { action: str({ const: 'move' }), ...desktopPoint }),
+        obj(['action', 'x', 'y', 'toX', 'toY'], { action: str({ const: 'drag' }), ...desktopPoint, toX: desktopPoint.x, toY: desktopPoint.y }),
+        obj(['action', 'x', 'y', 'direction', 'amount'], { action: str({ const: 'scroll' }), ...desktopPoint, direction: str({ enum: ['up', 'down'] }), amount: int({ minimum: 1, maximum: 10 }) }),
+        obj(['action', 'text'], { action: str({ const: 'type' }), text: str({ minLength: 1, maxLength: 2000 }) }),
+        obj(['action', 'keys'], { action: str({ const: 'press' }), keys: arr(str({ pattern: '^[a-zA-Z0-9_+-]{1,32}$' }), { minItems: 1, maxItems: 5 }) }),
+      ),
+      response: okResponse(),
     },
     {
       id: 'getWorkspaceStatus',

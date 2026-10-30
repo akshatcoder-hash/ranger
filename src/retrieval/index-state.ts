@@ -29,7 +29,13 @@ export interface PersistedIndexState {
   sourceFingerprint: string;
   fileCount: number;
   byteCount: number;
+  /** Wall time of the build that produced this index, never of a later reuse. */
   indexElapsedMs: number;
+  /**
+   * Pinned Trace revision that built the index. Absent on records written
+   * before it was tracked; reuse treats those as unproven and rebuilds.
+   */
+  indexerVersion?: string;
   /** Caller-supplied labels bound at index time (e.g. repositoryCommit, jobId, machineId). */
   provenance: Record<string, string>;
 }
@@ -88,6 +94,7 @@ export function readIndexState(dataDir: string, projectId: string): PersistedInd
     fileCount: Number(parsed.fileCount ?? 0),
     byteCount: Number(parsed.byteCount ?? 0),
     indexElapsedMs: Number(parsed.indexElapsedMs ?? 0),
+    ...(typeof parsed.indexerVersion === 'string' && parsed.indexerVersion !== '' ? { indexerVersion: parsed.indexerVersion } : {}),
     provenance: sanitizeProvenance(parsed.provenance),
   };
 }

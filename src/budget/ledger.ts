@@ -7,11 +7,10 @@ import { AppError, Errors } from '../errors.js';
  *
  * The mission-wide file (provider-budget.json) is the single source of truth
  * for live provider spending across ALL workers and validators. Rules:
- * - xAI: $5 total; a paid operation is admitted only while recorded spend
- *   plus a conservative estimate stays at or below the $4 soft admission stop.
- *   The remaining $1 is reserve for in-flight/accounting uncertainty.
- * - Instabox: one local machine at a time, each with a server-side kill
- *   timeout of at most 600 s and early cleanup. A numeric ledger creation
+ * - xAI: explicit null limits disable spending caps, never accounting.
+ *   Numeric limits still gate observed + reserved + estimated spend.
+ * - Instabox: account concurrency stays bounded by the provider's five VMs.
+ *   An explicit null lifetime disables automatic expiry. A numeric creation
  *   cap is honored; explicit null permits unlimited sequential replacements.
  *   Outstanding (pending) reservations count against concurrency and any
  *   configured cumulative cap until they are confirmed or released,
@@ -24,7 +23,7 @@ import { AppError, Errors } from '../errors.js';
  *   per reservation id, under the ledger lock. A repeated or unknown
  *   settlement never frees another reservation's headroom or double counts
  *   usage, so admission can never be inflated past the caps.
- * - xAI, concurrency and lifetime limits may only lower the approved ceilings.
+ * - Concurrency never exceeds the provider ceiling.
  *   Missing or malformed limits fail closed; unlimited cumulative Instabox
  *   admission requires an explicit null, never an omitted field.
  * - When accounting is uncertain, refuse: stop paid work and report.
@@ -33,12 +32,8 @@ import { AppError, Errors } from '../errors.js';
  * concurrent processes cannot double-spend.
  */
 
-export const XAI_TOTAL_LIMIT_USD = 5;
-export const XAI_SOFT_ADMISSION_USD = 4;
 /** Account-wide simultaneous-machine ceiling, checked before provider create. */
 export const INSTABOX_MAX_ACCOUNT_CONCURRENT = 5;
-export const INSTABOX_MAX_CONCURRENT = 1;
-export const INSTABOX_MAX_LIFETIME_SECONDS = 600;
 
 export interface LedgerOperation {
   id: string;
@@ -50,7 +45,7 @@ export interface LedgerOperation {
   observedUsd?: number;
   model?: string;
   machineId?: string;
-  killTimeoutMs?: number;
+  killTimeoutMs?: number | null;
   note?: string;
 }
 
@@ -58,7 +53,7 @@ export interface LedgerMachine {
   machineId: string;
   createdAt: number;
   releasedAt?: number | null;
-  killTimeoutMs?: number;
+  killTimeoutMs?: number | null;
   purpose?: string;
 }
 
@@ -68,14 +63,14 @@ export interface InstaboxPendingReservation {
   feature: string;
   purpose?: string;
   /** Validated at reserve time; the sandbox must be created with this value. */
-  killTimeoutMs: number;
+  killTimeoutMs: number | null;
 }
 
 export interface BudgetLedgerData {
   version: number;
   xai: {
-    limitUsd: number;
-    softAdmissionUsd: number;
+    limitUsd: number | null;
+    softAdmissionUsd: number | null;
     observedUsd: number;
     reservedUsd: number;
     operations: LedgerOperation[];
@@ -84,7 +79,7 @@ export interface BudgetLedgerData {
     /** Explicit null removes only the cumulative cap; history is never reset. */
     maxAdditionalCreations: number | null;
     maxConcurrent: number;
-    maxLifetimeSeconds: number;
+    maxLifetimeSeconds: number | null;
     additionalCreations: number;
     machines: LedgerMachine[];
     /** Optional for backward compatibility with ledgers written before it existed. */
@@ -204,9 +199,8 @@ function isNonNegativeInteger(value: unknown): value is number {
 }
 
 /**
- * Ledger-configured limits may be LOWERED by the file's operator but never
- * raised above the approved mission ceilings. Missing, negative, non-finite
- * or inflated values fail closed: admission refuses rather than guessing.
+ * Only explicit null disables a configurable cap. Missing, negative and
+ * non-finite values fail closed rather than silently enabling unlimited use.
  */
 function requireXai(data: BudgetLedgerData): BudgetLedgerData['xai'] {
   if (data.xai === undefined) {
@@ -214,11 +208,9 @@ function requireXai(data: BudgetLedgerData): BudgetLedgerData['xai'] {
   }
   const xai = data.xai;
   const malformed =
-    !isFinitePositive(xai.limitUsd) ||
-    xai.limitUsd > XAI_TOTAL_LIMIT_USD ||
-    !isFinitePositive(xai.softAdmissionUsd) ||
-    xai.softAdmissionUsd > XAI_SOFT_ADMISSION_USD ||
-    xai.softAdmissionUsd > xai.limitUsd ||
+    (xai.limitUsd !== null && !isFinitePositive(xai.limitUsd)) ||
+    (xai.softAdmissionUsd !== null && !isFinitePositive(xai.softAdmissionUsd)) ||
+    (xai.softAdmissionUsd !== null && xai.limitUsd !== null && xai.softAdmissionUsd > xai.limitUsd) ||
     typeof xai.observedUsd !== 'number' ||
     !Number.isFinite(xai.observedUsd) ||
     xai.observedUsd < 0 ||
@@ -243,9 +235,8 @@ function requireInstabox(data: BudgetLedgerData): BudgetLedgerData['instabox'] {
   const malformed =
     (instabox.maxAdditionalCreations !== null && !isNonNegativeInteger(instabox.maxAdditionalCreations)) ||
     !isNonNegativeInteger(instabox.maxConcurrent) ||
-    instabox.maxConcurrent > INSTABOX_MAX_CONCURRENT ||
-    !isFinitePositive(instabox.maxLifetimeSeconds) ||
-    instabox.maxLifetimeSeconds > INSTABOX_MAX_LIFETIME_SECONDS ||
+    instabox.maxConcurrent > INSTABOX_MAX_ACCOUNT_CONCURRENT ||
+    (instabox.maxLifetimeSeconds !== null && (!isFinitePositive(instabox.maxLifetimeSeconds) || !Number.isSafeInteger(instabox.maxLifetimeSeconds))) ||
     !isNonNegativeInteger(instabox.additionalCreations) ||
     !Array.isArray(instabox.machines) ||
     (instabox.pendingReservations !== undefined && !Array.isArray(instabox.pendingReservations));
@@ -287,7 +278,8 @@ export function reserveXaiSpend(
     const data = readLedger(ledgerFile);
     const xai = requireXai(data);
     const projected = xai.observedUsd + xai.reservedUsd + estimateUsd;
-    if (projected > xai.softAdmissionUsd + 1e-9) {
+    const admissionLimit = xai.softAdmissionUsd ?? xai.limitUsd;
+    if (admissionLimit !== null && projected > admissionLimit + 1e-9) {
       throw new BudgetLedgerError(
         'xAI budget admission stop reached; paid request refused with zero provider dials',
         {
@@ -396,30 +388,32 @@ export function releaseXaiReservation(ledgerFile: string, reservationId: string)
 export interface InstaboxCreationReservation {
   reservationId: string;
   /** Validated requested kill timeout; create the sandbox with exactly this value. */
-  killTimeoutMs: number;
+  killTimeoutMs: number | null;
 }
 
 /**
  * Reserve an Instabox VM creation slot against the mission allowance
- * (max additional creations, one concurrent machine). The requested kill
+ * (additional creations and concurrent machines). The requested kill
  * timeout is validated HERE, before any provider create can be attempted
  * against this reservation, and outstanding reservations count against both
  * caps until they are confirmed or released.
  */
 export function reserveInstaboxCreation(
   ledgerFile: string,
-  input: { feature: string; purpose?: string; killTimeoutMs: number },
+  input: { feature: string; purpose?: string; killTimeoutMs?: number | null },
 ): InstaboxCreationReservation {
   return withLedgerLock(ledgerFile, () => {
     const data = readLedger(ledgerFile);
     const instabox = requireInstabox(data);
-    const { killTimeoutMs } = input;
-    if (typeof killTimeoutMs !== 'number' || !Number.isInteger(killTimeoutMs) || killTimeoutMs <= 0) {
+    const killTimeoutMs = input.killTimeoutMs === undefined
+      ? (instabox.maxLifetimeSeconds === null ? null : instabox.maxLifetimeSeconds * 1000)
+      : input.killTimeoutMs;
+    if (killTimeoutMs !== null && (typeof killTimeoutMs !== 'number' || !Number.isSafeInteger(killTimeoutMs) || killTimeoutMs <= 0)) {
       throw new BudgetLedgerError('Requested kill timeout must be a positive whole number of milliseconds', {
         killTimeoutMs: null,
       });
     }
-    if (killTimeoutMs > instabox.maxLifetimeSeconds * 1000) {
+    if (instabox.maxLifetimeSeconds !== null && (killTimeoutMs === null || killTimeoutMs > instabox.maxLifetimeSeconds * 1000)) {
       throw new BudgetLedgerError('Requested kill timeout exceeds the approved maximum', {
         killTimeoutMs: null,
         maxLifetimeSeconds: instabox.maxLifetimeSeconds,
@@ -430,7 +424,8 @@ export function reserveInstaboxCreation(
       (m) => m.releasedAt === undefined || m.releasedAt === null,
     );
     if (activeMachines.length + pending.length >= instabox.maxConcurrent) {
-      throw new BudgetLedgerError('An Instabox machine is already active or reserved; one at a time', {
+      throw Errors.conflict('VM capacity reached; stop another project’s VM before starting this one', {
+        reason: 'vm_capacity',
         maxConcurrent: instabox.maxConcurrent,
         activeMachines: activeMachines.length,
         pendingReservations: pending.length,

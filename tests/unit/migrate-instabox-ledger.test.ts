@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import * as ledgerModule from '../../src/budget/ledger.js';
 import { migrateInstaboxLedger } from '../../scripts/migrate-instabox-ledger.mjs';
+import { removePrototypeLimits } from '../../scripts/remove-prototype-limits.mjs';
 
 const dirs: string[] = [];
 
@@ -20,6 +21,26 @@ function tempLedger(contents?: unknown): string {
 }
 
 describe('migrate-instabox-ledger', () => {
+  it('removes only prototype limits without resetting usage or pending resources', () => {
+    const original = {
+      version: 1, unknown: { keep: true },
+      xai: { limitUsd: 5, softAdmissionUsd: 4, observedUsd: 2.9705, reservedUsd: 0.8, operations: [{ id: 'existing' }] },
+      instabox: { maxConcurrent: 1, maxLifetimeSeconds: 600, maxAdditionalCreations: 9, additionalCreations: 14,
+        machines: [{ machineId: 'owned' }], pendingReservations: [{ reservationId: 'pending' }] },
+    };
+    const file = tempLedger(original);
+    const result = removePrototypeLimits(file, ledgerModule);
+    expect(result.after).toEqual({ limitUsd: null, softAdmissionUsd: null, maxConcurrent: 5, maxLifetimeSeconds: null, maxAdditionalCreations: null });
+    const expected = { ...original,
+      xai: { ...original.xai, limitUsd: null, softAdmissionUsd: null },
+      instabox: { ...original.instabox, maxConcurrent: 5, maxLifetimeSeconds: null, maxAdditionalCreations: null } };
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(expected);
+    expect(removePrototypeLimits(file, ledgerModule)).toEqual({ before: result.after, after: result.after });
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(expected);
+    const missing = tempLedger();
+    expect(() => removePrototypeLimits(missing, ledgerModule)).toThrow(/missing/);
+    expect(existsSync(missing)).toBe(false);
+  });
   it('nulls only the cumulative creation cap and preserves everything else', () => {
     const original = {
       version: 1,

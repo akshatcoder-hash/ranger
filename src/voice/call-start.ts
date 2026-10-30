@@ -3,7 +3,7 @@ import { isAppError, redact } from '../errors.js';
 import type { HandlerContext } from '../http/handlers.js';
 import { retrievalServiceFor } from '../http/handlers-retrieval.js';
 import { getRepositoryRecord } from '../repositories/store.js';
-import { latestPreparation, requestProjectWorkspacePrep } from '../workspace/prepare.js';
+import { requestProjectWorkspacePrep } from '../workspace/prepare.js';
 import { diagnostic, diagnosticCode } from '../observability.js';
 
 /** Runs once after an authenticated relay's provider opens, never on a failed dial. */
@@ -26,20 +26,15 @@ export function prepareCallContext(
   let preparation = 'repository_not_connected';
   let jobId: string | undefined;
   if (repository !== null) {
-    const latest = latestPreparation(db, input.projectId);
-    if (latest?.phase === 'failed') {
-      preparation = `previous_preparation_failed:${diagnosticCode(latest.errorCode)}`;
-    } else {
-      try {
-        const result = withTransaction(db, () => requestProjectWorkspacePrep(db, {
-          ...input,
-          readiness: projectId => retrievalServiceFor(ctx)?.readiness(projectId) ?? null,
-        }));
-        preparation = result.status;
-        jobId = result.jobId;
-      } catch (cause) {
-        preparation = isAppError(cause) ? diagnosticCode(cause.details?.['reason'], cause.code) : 'internal_error';
-      }
+    try {
+      const result = withTransaction(db, () => requestProjectWorkspacePrep(db, {
+        ...input,
+        readiness: projectId => retrievalServiceFor(ctx)?.readiness(projectId) ?? null,
+      }));
+      preparation = result.status;
+      jobId = result.jobId;
+    } catch (cause) {
+      preparation = isAppError(cause) ? diagnosticCode(cause.details?.['reason'], cause.code) : 'internal_error';
     }
   }
   diagnostic('voice.call.context', {

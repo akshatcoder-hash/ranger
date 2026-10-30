@@ -16,7 +16,10 @@ export type ApiFailure = {
 }
 export type ApiResult<T> = { ok: true; data: T } | ApiFailure
 
-export type ProjectRequest = { prompt: string; engineerName: string; repository?: string }
+export type DemoProject = { projectId: string; repositoryUrl: string; ref: string }
+export type Session = { principalId: string; demoProject?: DemoProject }
+/** `demoProjectId` skips project creation: the conversation and first message go to that already-authorized project. */
+export type ProjectRequest = { prompt: string; engineerName: string; repository?: string; repositoryRef?: string; demoProjectId?: string }
 export type PlanDecision = { approved: boolean; planId: string }
 export type VoiceSession = { sessionId: string; model: string; expiresAt: string }
 export type CaptureSession = { sessionId: string; generation: number }
@@ -41,7 +44,7 @@ export type LiveProject = {
   name: string
   engineerName: string
   conversationId: string | null
-  messages: string[]
+  messages: { role: 'user' | 'agent' | 'system'; content: string }[]
   plan: LivePlan | null
   approved: boolean
   repositoryUrl: string | null
@@ -57,7 +60,14 @@ export type WorkspaceStatus = {
 }
 export type WorkspaceCommand = { commandId: string; state: 'running' | 'succeeded' | 'failed' | 'terminated'; exitCode: number | null; startedAt: string }
 export type WorkspaceCommandLogs = { logs: string; totalBytes: number; truncated: boolean }
-export type WorkspaceScreenshot = { artifactId: string; contentBase64: string }
+export type WorkspaceScreenshot = { artifactId: string | null; contentBase64: string }
+export type DesktopInput =
+  | { action: 'click'; x: number; y: number; button?: 'left' | 'right' | 'middle'; double?: boolean }
+  | { action: 'move'; x: number; y: number }
+  | { action: 'drag'; x: number; y: number; toX: number; toY: number }
+  | { action: 'scroll'; x: number; y: number; direction: 'up' | 'down'; amount: number }
+  | { action: 'type'; text: string }
+  | { action: 'press'; keys: string[] }
 export type PlanState = { plan: LivePlan | null; approved: boolean }
 export type RunRecord = {
   runId: string
@@ -77,8 +87,8 @@ export type RunTool = { callId: string; name: string; status: string; result?: R
 export type ProjectEvent = { eventId: string; sequence: number; type: string; data?: Record<string, unknown> }
 
 export interface RangerApi {
-  openAnonymousSession(signal: AbortSignal): Promise<ApiResult<{ principalId: string }>>
-  getSession(signal: AbortSignal): Promise<ApiResult<{ principalId: string }>>
+  openAnonymousSession(signal: AbortSignal): Promise<ApiResult<Session>>
+  getSession(signal: AbortSignal): Promise<ApiResult<Session>>
   getCapabilities(signal: AbortSignal): Promise<ApiResult<{ xai: boolean; instabox: boolean; trace: boolean }>>
   createProject(request: ProjectRequest, signal: AbortSignal): Promise<ApiResult<{ projectId: string; conversationId: string }>>
   getPlanState(projectId: string, signal: AbortSignal): Promise<ApiResult<PlanState>>
@@ -87,7 +97,8 @@ export interface RangerApi {
   getWorkspaceDiff(projectId: string, signal: AbortSignal): Promise<ApiResult<WorkspaceDiff>>
   listTestResults(projectId: string, signal: AbortSignal): Promise<ApiResult<TestResult[]>>
   listRunTools(projectId: string, runId: string, signal: AbortSignal): Promise<ApiResult<RunTool[]>>
-  loadProject(projectId: string, signal: AbortSignal): Promise<ApiResult<LiveProject>>
+  /** `conversationId` pins the view to that conversation instead of the project's newest; an unknown id yields no conversation. */
+  loadProject(projectId: string, signal: AbortSignal, conversationId?: string): Promise<ApiResult<LiveProject>>
   renameEngineer(projectId: string, name: string, signal: AbortSignal): Promise<ApiResult<void>>
   sendMessage(projectId: string, conversationId: string, content: string, signal: AbortSignal): Promise<ApiResult<void>>
   createManualPlan(
@@ -102,7 +113,9 @@ export interface RangerApi {
   getWorkspaceStatus(projectId: string, signal: AbortSignal): Promise<ApiResult<WorkspaceStatus>>
   runWorkspaceCommand(projectId: string, request: { command: string; args?: string[]; timeoutMs?: number }, signal: AbortSignal): Promise<ApiResult<WorkspaceCommand>>
   getWorkspaceCommandLogs(projectId: string, commandId: string, signal: AbortSignal, sinceByte?: number): Promise<ApiResult<WorkspaceCommandLogs>>
-  captureWorkspaceScreenshot(projectId: string, signal: AbortSignal): Promise<ApiResult<WorkspaceScreenshot>>
+  captureWorkspaceScreenshot(projectId: string, signal: AbortSignal, saveArtifact?: boolean): Promise<ApiResult<WorkspaceScreenshot>>
+  stopWorkspace(projectId: string, signal: AbortSignal): Promise<ApiResult<void>>
+  sendWorkspaceDesktopInput(projectId: string, input: DesktopInput, signal: AbortSignal): Promise<ApiResult<void>>
   getEvents(
     projectId: string,
     signal: AbortSignal,
@@ -140,7 +153,7 @@ class HttpRangerApi implements RangerApi {
   private renewalSpent = false
 
   /** Concurrent callers share one session creation so a boot race or a burst of 401s never mints several principals. */
-  async openAnonymousSession(signal: AbortSignal): Promise<ApiResult<{ principalId: string }>> {
+  async openAnonymousSession(signal: AbortSignal): Promise<ApiResult<Session>> {
     const created = await this.renewSession()
     if (!created.ok) return created
     return this.getSession(signal)
@@ -157,13 +170,17 @@ class HttpRangerApi implements RangerApi {
     return this.renewal
   }
 
-  async getSession(signal: AbortSignal): Promise<ApiResult<{ principalId: string }>> {
-    const me = await this.request<{ principalId?: string }>('GET', '/v1/auth/me', signal)
+  async getSession(signal: AbortSignal): Promise<ApiResult<Session>> {
+    const me = await this.request<{ principalId?: string; demoProject?: Partial<DemoProject> }>('GET', '/v1/auth/me', signal)
     if (!me.ok) return me
     if (typeof me.data.principalId !== 'string' || me.data.principalId === '') {
       return fail('backend', 'The session response did not include a principal.')
     }
-    return ok({ principalId: me.data.principalId })
+    const demo = me.data.demoProject
+    const demoProject = demo && validId(demo.projectId, 'prj') && typeof demo.repositoryUrl === 'string' && typeof demo.ref === 'string'
+      ? { projectId: demo.projectId, repositoryUrl: demo.repositoryUrl, ref: demo.ref }
+      : undefined
+    return ok({ principalId: me.data.principalId, ...(demoProject ? { demoProject } : {}) })
   }
 
   async getCapabilities(signal: AbortSignal): Promise<ApiResult<{ xai: boolean; instabox: boolean; trace: boolean }>> {
@@ -186,13 +203,18 @@ class HttpRangerApi implements RangerApi {
     const engineerName = request.engineerName.trim()
     if (!prompt || !engineerName) return fail('backend', 'A prompt and engineer name are required.')
     const title = prompt.slice(0, TITLE_LIMIT)
-    const project = await this.request<{ project?: { projectId?: string } }>('POST', '/v1/projects', signal, {
-      body: { name: title, engineerDisplayName: engineerName },
-      idempotent: true,
-    })
-    if (!project.ok) return uncertain(project, 'project')
-    const projectId = project.data.project?.projectId
-    if (!validId(projectId, 'prj')) return fail('partial', 'The project request returned success, but its id was missing. Reload before retrying.')
+    let projectId: string | undefined = request.demoProjectId
+    if (projectId !== undefined) {
+      if (!validId(projectId, 'prj')) return fail('backend', 'That project id is not a Ranger project id.')
+    } else {
+      const project = await this.request<{ project?: { projectId?: string } }>('POST', '/v1/projects', signal, {
+        body: { name: title, engineerDisplayName: engineerName },
+        idempotent: true,
+      })
+      if (!project.ok) return uncertain(project, 'project')
+      projectId = project.data.project?.projectId
+      if (!validId(projectId, 'prj')) return fail('partial', 'The project request returned success, but its id was missing. Reload before retrying.')
+    }
 
     const conversation = await this.request<{ conversation?: { conversationId?: string } }>(
       'POST',
@@ -206,6 +228,10 @@ class HttpRangerApi implements RangerApi {
       return fail('partial', `Project ${projectId} exists. The conversation response did not include an id, so it may already be saved. Reload before retrying.`)
     }
 
+    if (request.repository && !request.demoProjectId) {
+      const connected = await this.connectRepository(projectId, request.repository, request.repositoryRef ?? 'HEAD', signal)
+      if (!connected.ok) return uncertain(connected, 'repository connection', projectId, conversationId)
+    }
     const message = await this.request('POST', `/v1/projects/${projectId}/conversations/${conversationId}/messages`, signal, {
       body: { role: 'user', content: prompt },
       idempotent: true,
@@ -214,7 +240,7 @@ class HttpRangerApi implements RangerApi {
     return ok({ projectId, conversationId })
   }
 
-  async loadProject(projectId: string, signal: AbortSignal): Promise<ApiResult<LiveProject>> {
+  async loadProject(projectId: string, signal: AbortSignal, preferredConversationId?: string): Promise<ApiResult<LiveProject>> {
     if (!validId(projectId, 'prj')) return fail('backend', 'That project id is not a Ranger project id.')
     const project = await this.request<{ project?: { projectId?: string; name?: string; engineerDisplayName?: string } }>(
       'GET',
@@ -234,10 +260,12 @@ class HttpRangerApi implements RangerApi {
       signal,
     )
     if (!conversations.ok) return conversations
-    const conversationId = latestId(conversations.data.conversations, 'conversationId', 'cnv')
+    const conversationId = preferredConversationId === undefined
+      ? latestId(conversations.data.conversations, 'conversationId', 'cnv')
+      : conversations.data.conversations?.some(row => row.conversationId === preferredConversationId) ? preferredConversationId : null
 
     const [messages, planState, repository] = await Promise.all([
-      conversationId === null ? Promise.resolve(ok<string[]>([])) : this.readMessages(projectId, conversationId, signal),
+      conversationId === null ? Promise.resolve(ok<LiveProject['messages']>([])) : this.readMessages(projectId, conversationId, signal),
       this.getPlanState(projectId, signal),
       this.readRepository(projectId, signal),
     ])
@@ -372,11 +400,22 @@ class HttpRangerApi implements RangerApi {
     return ok({ logs: result.data.logs, totalBytes: result.data.totalBytes, truncated: result.data.truncated === true })
   }
 
-  async captureWorkspaceScreenshot(projectId: string, signal: AbortSignal): Promise<ApiResult<WorkspaceScreenshot>> {
+  async stopWorkspace(projectId: string, signal: AbortSignal): Promise<ApiResult<void>> {
     if (!validId(projectId, 'prj')) return fail('backend', 'That project id is not a Ranger project id.')
-    const result = await this.request<{ artifactId?: string; contentBase64?: string }>('POST', `/v1/projects/${projectId}/workspace/screenshots`, signal, { body: {} })
+    const result = await this.request('DELETE', `/v1/projects/${projectId}/workspace`, signal, { idempotent: true })
+    return result.ok ? ok(undefined) : result
+  }
+  async sendWorkspaceDesktopInput(projectId: string, input: DesktopInput, signal: AbortSignal): Promise<ApiResult<void>> {
+    if (!validId(projectId, 'prj')) return fail('backend', 'That project id is not a Ranger project id.')
+    const result = await this.request('POST', `/v1/projects/${projectId}/workspace/desktop/input`, signal, { body: input })
+    return result.ok ? ok(undefined) : result
+  }
+
+  async captureWorkspaceScreenshot(projectId: string, signal: AbortSignal, saveArtifact = true): Promise<ApiResult<WorkspaceScreenshot>> {
+    if (!validId(projectId, 'prj')) return fail('backend', 'That project id is not a Ranger project id.')
+    const result = await this.request<{ artifactId?: string | null; contentBase64?: string }>('POST', `/v1/projects/${projectId}/workspace/screenshots`, signal, { body: { saveArtifact } })
     if (!result.ok) return result
-    if (typeof result.data.artifactId !== 'string' || typeof result.data.contentBase64 !== 'string' || result.data.contentBase64 === '') return fail('backend', 'The screenshot response was incomplete.')
+    if ((typeof result.data.artifactId !== 'string' && !(saveArtifact === false && result.data.artifactId === null)) || typeof result.data.contentBase64 !== 'string' || result.data.contentBase64 === '') return fail('backend', 'The screenshot response was incomplete.')
     return ok({ artifactId: result.data.artifactId, contentBase64: result.data.contentBase64 })
   }
 
@@ -557,20 +596,20 @@ class HttpRangerApi implements RangerApi {
     return result.ok ? ok(undefined) : result
   }
 
-  private async readMessages(projectId: string, conversationId: string, signal: AbortSignal): Promise<ApiResult<string[]>> {
-    const messages: string[] = []
+  private async readMessages(projectId: string, conversationId: string, signal: AbortSignal): Promise<ApiResult<LiveProject['messages']>> {
+    const messages: LiveProject['messages'] = []
     let cursor: string | undefined
     for (let page = 0; page < 50; page += 1) {
       const params = new URLSearchParams({ limit: MESSAGE_PAGE })
       if (cursor) params.set('cursor', cursor)
-      const result = await this.request<{ messages?: { content?: string }[]; nextCursor?: string | null }>(
+      const result = await this.request<{ messages?: { role?: string; content?: string }[]; nextCursor?: string | null }>(
         'GET',
         `/v1/projects/${projectId}/conversations/${conversationId}/messages?${params}`,
         signal,
       )
       if (!result.ok) return result
       for (const message of result.data.messages ?? []) {
-        if (typeof message.content === 'string') messages.push(message.content)
+        if (typeof message.content === 'string') messages.push({ role: message.role === 'agent' || message.role === 'system' ? message.role : 'user', content: message.content })
       }
       if (typeof result.data.nextCursor !== 'string' || result.data.nextCursor === '' || result.data.nextCursor === cursor) break
       cursor = result.data.nextCursor

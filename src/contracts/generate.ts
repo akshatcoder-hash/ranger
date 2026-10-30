@@ -76,6 +76,7 @@ export const RESPONSE_TYPE_BY_OPERATION: Record<string, string> = {
   createWorkspace: 'WorkspaceStatusResponse',
   destroyWorkspace: 'WorkspaceStatusResponse',
   captureWorkspaceScreenshot: 'WorkspaceScreenshotResponse',
+  sendWorkspaceDesktopInput: 'OkResponse',
   getWorkspaceStatus: 'WorkspaceStatusResponse',
   listWorkspaceFiles: 'WorkspaceFileListResponse',
   readWorkspaceFile: 'WorkspaceFileContentResponse',
@@ -103,6 +104,10 @@ export const RESPONSE_TYPE_BY_OPERATION: Record<string, string> = {
 };
 
 function tsTypeFromSchema(schema: JSONSchema, indent = ''): string {
+  if (typeof schema.const === 'string') return JSON.stringify(schema.const);
+  if (Array.isArray(schema.oneOf)) {
+    return schema.oneOf.map((s) => tsTypeFromSchema(s as JSONSchema, indent)).join(' | ');
+  }
   if (Array.isArray(schema.anyOf)) {
     return schema.anyOf.map((s) => tsTypeFromSchema(s as JSONSchema, indent)).join(' | ');
   }

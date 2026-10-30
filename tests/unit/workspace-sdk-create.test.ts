@@ -16,6 +16,17 @@ const info = {
 afterEach(() => vi.restoreAllMocks());
 
 describe('SDK account-wide create admission (offline mocks only)', () => {
+  it('omits the provider timeout when automatic expiry is explicitly disabled', async () => {
+    vi.spyOn(Sandbox, 'list').mockResolvedValue([]);
+    const create = vi.spyOn(Sandbox, 'create').mockResolvedValue({ getInfo: async () => info } as Sandbox);
+    expect(await new SdkInstaboxProvider().create({ ...request, timeoutMs: null })).toMatchObject({ timeoutMs: null });
+    expect(create.mock.calls[0]?.[1]).not.toHaveProperty('timeoutMs');
+  });
+  it('treats a failed create response as uncertain rather than freeing the slot', async () => {
+    vi.spyOn(Sandbox, 'list').mockResolvedValue([]);
+    vi.spyOn(Sandbox, 'create').mockRejectedValue(new Error('lost response'));
+    await expect(new SdkInstaboxProvider().create(request)).rejects.toMatchObject({ details: { reason: 'uncertain_create' } });
+  });
   it('checks account headroom using the same key before creating the fifth machine', async () => {
     const list = vi.spyOn(Sandbox, 'list').mockResolvedValue(Array(4).fill(info));
     const create = vi.spyOn(Sandbox, 'create').mockResolvedValue({ getInfo: async () => info } as Sandbox);

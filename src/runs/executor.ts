@@ -178,7 +178,7 @@ async function executeRun(deps: RunExecutorDeps, run: RunRow, claim: { workerId:
       return;
     }
     const live = existing === 'running' ? getWorkspace(db, run.projectId) : null;
-    const reusable = live !== null && live.deadlineAt !== null && live.deadlineAt > Date.now();
+    const reusable = live !== null && (live.deadlineAt === null || live.deadlineAt > Date.now());
     if (live !== null && reusable) {
       // The reused VM must hold the revision the user connected and the plan
       // was approved against; a mismatch fails the run (cleanup reclaims the

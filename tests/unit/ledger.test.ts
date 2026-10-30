@@ -142,10 +142,10 @@ describe('xAI budget admission', () => {
         delete (fixture.xai as Record<string, unknown>).softAdmissionUsd;
       },
       (fixture) => {
-        (fixture.xai as Record<string, unknown>).softAdmissionUsd = 4.01;
+        (fixture.xai as Record<string, unknown>).softAdmissionUsd = 5.01;
       },
       (fixture) => {
-        (fixture.xai as Record<string, unknown>).limitUsd = 6;
+        (fixture.xai as Record<string, unknown>).limitUsd = 'unlimited';
       },
       (fixture) => {
         (fixture.xai as Record<string, unknown>).limitUsd = -1;
@@ -328,9 +328,9 @@ describe('Instabox creation allowance', () => {
     const originalXai = readLedger(file).xai;
     for (let i = 10; i <= 12; i += 1) {
       const reservation = reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 });
-      expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(/one at a time/i);
+      expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(/VM capacity/i);
       confirmInstaboxCreation(file, { reservationId: reservation.reservationId, machineId: `m_replacement_${i}` });
-      expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(/one at a time/i);
+      expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(/VM capacity/i);
       recordInstaboxRelease(file, `m_replacement_${i}`);
     }
     const saved = readLedger(file);
@@ -373,7 +373,7 @@ describe('Instabox creation allowance', () => {
       reservationId: first.reservationId,
       machineId: 'm_active',
     });
-    expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(/one at a time/i);
+    expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(/VM capacity/i);
     recordInstaboxRelease(file, 'm_active');
     const second = reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 });
     expect(second.reservationId).toBeTruthy();
@@ -397,7 +397,7 @@ describe('Instabox creation allowance', () => {
     const first = reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 });
     expect(readLedger(file).instabox.pendingReservations).toHaveLength(1);
     // A second outstanding reservation must not bypass one-at-a-time.
-    expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(/one at a time/i);
+    expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(/VM capacity/i);
     expect(readLedger(file).instabox.pendingReservations).toHaveLength(1);
     // Releasing the unused reservation frees the concurrency slot.
     releaseInstaboxReservation(file, first.reservationId);
@@ -421,7 +421,7 @@ describe('Instabox creation allowance', () => {
     // would project a 10th creation).
     const ninth = reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 });
     expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(
-      /one at a time|allowance/i,
+      /VM capacity|allowance/i,
     );
     confirmInstaboxCreation(file, { reservationId: ninth.reservationId, machineId: 'm_8' });
     recordInstaboxRelease(file, 'm_8');
@@ -493,13 +493,13 @@ describe('Instabox creation allowance', () => {
         delete (fixture.instabox as Record<string, unknown>).maxConcurrent;
       },
       (fixture) => {
-        (fixture.instabox as Record<string, unknown>).maxConcurrent = 2;
+        (fixture.instabox as Record<string, unknown>).maxConcurrent = 6;
       },
       (fixture) => {
         delete (fixture.instabox as Record<string, unknown>).maxLifetimeSeconds;
       },
       (fixture) => {
-        (fixture.instabox as Record<string, unknown>).maxLifetimeSeconds = 601;
+        (fixture.instabox as Record<string, unknown>).maxLifetimeSeconds = 0;
       },
       (fixture) => {
         (fixture.instabox as Record<string, unknown>).additionalCreations = -1;
@@ -520,6 +520,44 @@ describe('Instabox creation allowance', () => {
     const { file, raw } = tempLedgerPatched('"maxAdditionalCreations":9', '"maxAdditionalCreations":1e999');
     expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: 600000 })).toThrow(/malformed/i);
     expect(readFileSync(file, 'utf8')).toBe(raw);
+  });
+});
+
+describe('explicit prototype limits', () => {
+  it('keeps accounting without a spending ceiling and still rejects invalid estimates', () => {
+    const { file } = tempLedger(fixture => {
+      Object.assign(fixture.xai as object, { limitUsd: null, softAdmissionUsd: null, observedUsd: 2.9705 });
+    });
+    const admitted = reserveXaiSpend(file, { feature: 'test', estimateUsd: 100 });
+    expect(readLedger(file).xai.reservedUsd).toBe(100);
+    observeXaiSpend(file, { reservationId: admitted.reservationId, observedUsd: 80 });
+    expect(readLedger(file).xai).toMatchObject({ observedUsd: 82.9705, reservedUsd: 0 });
+    expect(readLedger(file).xai.operations).toHaveLength(2);
+    const before = readFileSync(file, 'utf8');
+    for (const estimateUsd of [0, -1, NaN, Infinity]) {
+      expect(() => reserveXaiSpend(file, { feature: 'test', estimateUsd })).toThrow();
+    }
+    expect(readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it('honors a numeric hard cap even without a soft stop', () => {
+    const { file } = tempLedger(fixture => { (fixture.xai as Record<string, unknown>).softAdmissionUsd = null; });
+    expect(() => reserveXaiSpend(file, { feature: 'test', estimateUsd: 6 })).toThrow(/admission stop/);
+  });
+
+  it('allows five pending VMs without automatic expiry but never a sixth', () => {
+    const { file } = tempLedger(fixture => {
+      Object.assign(fixture.instabox as object, { maxConcurrent: 5, maxLifetimeSeconds: null, maxAdditionalCreations: null });
+    });
+    for (let i = 0; i < 5; i++) expect(reserveInstaboxCreation(file, { feature: 'test' }).killTimeoutMs).toBeNull();
+    expect(() => reserveInstaboxCreation(file, { feature: 'test' })).toThrow(/VM capacity/);
+    expect(readLedger(file).instabox.pendingReservations).toHaveLength(5);
+  });
+
+  it('does not permit disabling expiry in a finite-lifetime ledger', () => {
+    const { file } = tempLedger();
+    expect(() => reserveInstaboxCreation(file, { feature: 'test', killTimeoutMs: null })).toThrow(/maximum/);
+    expect(reserveInstaboxCreation(file, { feature: 'test' }).killTimeoutMs).toBe(600000);
   });
 });
 

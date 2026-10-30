@@ -88,6 +88,12 @@ export interface RangerConfig {
    * inspection is denied; remote references never need host inspection.
    */
   approvedSnapshotRoots: string[];
+  /**
+   * Opt-in shared demo: when set, every anonymous browser session becomes a
+   * member of this one project. Null (unset) disables the feature and, after an
+   * API restart, revokes grants made while it was enabled.
+   */
+  demoProjectId: string | null;
   logLevel: 'fatal' | 'error' | 'warn' | 'info' | 'debug';
   limits: LimitsConfig;
   providers: ProviderConfig;
@@ -265,6 +271,11 @@ export async function loadConfig(
     throw new ConfigError(`RANGER_LOG_LEVEL must be one of ${allowedLogLevels.join(', ')}`);
   }
 
+  const demoProjectId = readString(env, 'RANGER_DEMO_PROJECT_ID') ?? null;
+  if (demoProjectId !== null && !/^prj_[0-9a-fA-F-]+$/.test(demoProjectId)) {
+    throw new ConfigError('RANGER_DEMO_PROJECT_ID must be a project id like prj_<uuid>');
+  }
+
   return {
     host: readString(env, 'RANGER_HOST') ?? DEFAULT_HOST,
     port: readInt(env, 'RANGER_PORT') ?? DEFAULT_PORT,
@@ -275,6 +286,7 @@ export async function loadConfig(
     liveBudgetFile: readString(env, 'RANGER_LIVE_BUDGET_FILE') ?? null,
     configFile: configFile ?? null,
     approvedSnapshotRoots: resolveApprovedSnapshotRoots(env, fileConfig),
+    demoProjectId,
     logLevel: logLevelRaw as RangerConfig['logLevel'],
     limits: clampLimits(fileConfig.limits),
     providers: resolveProviders(fileConfig.providers),

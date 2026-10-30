@@ -7,6 +7,7 @@ import { reconcileInterruptedRuns } from '../runs/reconcile.js';
 import { RUN_JOB_TYPE } from '../runs/service.js';
 import { RetrievalService } from '../retrieval/service.js';
 import { PREPARE_JOB_TYPE, projectWorkspacePrepHandler } from '../workspace/prepare.js';
+import { TEXT_TURN_JOB_TYPE, failInterruptedTextTurns, textAssistantHandler } from '../conversations/text-assistant.js';
 import { SecretResolver } from '../secrets.js';
 import { FakeInstabox } from '../workspace/instabox.js';
 import { setWorkspaceProviderForTests, workspaceProviderForTests } from '../workspace/runtime.js';
@@ -49,6 +50,12 @@ export async function main(): Promise<void> {
   const handlers = new Map<string, JobHandler>();
   handlers.set(RUN_JOB_TYPE, engineeringRunHandler({ db, config, retrieval, transportFactory: scriptTransport ?? undefined }));
   handlers.set(PREPARE_JOB_TYPE, projectWorkspacePrepHandler({ db, config, retrieval }));
+  // Typed-message turns get their own loop: the main loop is serial, so a long
+  // run or preparation would otherwise leave status questions unanswered. The
+  // run-script test seam is deliberately not shared: it would consume run steps.
+  const textHandlers = new Map<string, JobHandler>([
+    [TEXT_TURN_JOB_TYPE, textAssistantHandler({ db, config, retrieval })],
+  ]);
 
   // Interrupted-run reconciliation at startup and on a fixed sweep. The
   // provider resolves lazily so a worker without provider credentials still
@@ -65,8 +72,19 @@ export async function main(): Promise<void> {
       // Accounting uncertainty is reported by the next sweep; never a retry loop.
     });
   };
+  const sweepTextTurns = (): void => {
+    try {
+      failInterruptedTextTurns(db);
+    } catch {
+      // The next sweep retries the bookkeeping; no model work is ever resumed.
+    }
+  };
   reconcile();
-  const reconcileTimer = setInterval(reconcile, 30_000);
+  sweepTextTurns();
+  const reconcileTimer = setInterval(() => {
+    reconcile();
+    sweepTextTurns();
+  }, 30_000);
 
   const logLine = (sink: NodeJS.WriteStream, msg: string, obj: Record<string, unknown>): void => {
     const fields = Object.entries(obj)
@@ -75,24 +93,28 @@ export async function main(): Promise<void> {
     sink.write(`{"msg":"${msg}"${fields !== '' ? ',' + fields : ''}}\n`);
   };
 
-  const loop = new WorkerLoop(db, handlers, {
+  const loopOptions = {
     pollMs: config.limits.workerPollMs,
     leaseMs: config.limits.jobLeaseMs,
     logger: {
-      info: (obj, msg) => logLine(process.stdout, msg, obj as Record<string, unknown>),
-      error: (obj, msg) => logLine(process.stderr, msg, obj as Record<string, unknown>),
+      info: (obj: unknown, msg: string) => logLine(process.stdout, msg, obj as Record<string, unknown>),
+      error: (obj: unknown, msg: string) => logLine(process.stderr, msg, obj as Record<string, unknown>),
     },
-  });
+  };
+  const loop = new WorkerLoop(db, handlers, loopOptions);
+  const textLoop = new WorkerLoop(db, textHandlers, loopOptions);
   // SIGTERM handling must be installed before readiness is visible. A parent
   // that signals as soon as it reads the started line otherwise hits Node's
   // default disposition and the process dies by signal instead of cleanup.
   installGracefulShutdown('ranger worker', async () => {
     clearInterval(reconcileTimer);
     await loop.stop();
+    await textLoop.stop();
     if (retrieval !== null) await retrieval.closeAll();
     db.close();
   });
   loop.start();
+  textLoop.start();
   process.stdout.write(
     `{"msg":"ranger worker started","migrationsApplied":${migrations.length}}\n`,
   );

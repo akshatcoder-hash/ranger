@@ -206,6 +206,10 @@ describe('real Trace index, MCP tools and citations (real Trace)', () => {
     const response = await f.service.search(f.projectId, 'addNumbers', 5);
     expect(response.provider).toBe('trace');
     expect(response.results.length).toBeGreaterThan(0);
+    const measurement = f.db.prepare("SELECT data FROM project_events WHERE project_id = ? AND type = 'retrieval.search.completed' ORDER BY sequence DESC LIMIT 1").get(f.projectId);
+    const data = JSON.parse(String(measurement!.data)) as Record<string, unknown>;
+    expect(data).toEqual({ provider: 'trace', durationMs: expect.any(Number), resultCount: response.results.length });
+    expect(Number(data['durationMs'])).toBeGreaterThanOrEqual(0);
     const hit = response.results[0]!;
     expect(hit.filePath).toBe(FILE_A);
     expect(hit.startLine).toBeGreaterThanOrEqual(1);

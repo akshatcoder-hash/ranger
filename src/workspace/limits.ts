@@ -34,7 +34,6 @@ export const WORKLOAD_CPU_PERIOD_US = 100_000;
 export const WORKLOAD_MEMORY_BYTES = 256 * 1024 * 1024;
 export const WORKLOAD_PIDS_MAX = 32;
 export const COMMAND_OUTPUT_CAP_BYTES = 256 * 1024;
-export const VM_KILL_TIMEOUT_MS = 600_000;
 
 /**
  * Largest raw file payload Ranger transports to the guest. File writes ride

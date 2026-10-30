@@ -315,7 +315,7 @@ describe('approved run workflow (deterministic providers, public API)', () => {
       expect(response.statusCode, response.body).toBe(404);
       const body = response.json() as { requestId: string; error: { code: string } };
       expect(body.error.code).toBe('not_found');
-      const jobs = h.db.prepare('SELECT COUNT(*) AS n FROM jobs').get() as { n: number };
+      const jobs = h.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE type = 'engineering_run'").get() as { n: number };
       expect(jobs.n).toBe(0);
     } finally {
       h.close();

@@ -5,6 +5,44 @@ served in `/v1/capabilities` (`contractVersion`) must always appear here.
 
 ## v1 — 2026-10-18
 
+### v1 amendment — durable typed-message assistant (2026-10-21)
+
+No route or schema changes. `POST .../messages` with `role: "user"` now also
+enqueues one durable worker job in the same transaction (idempotent replays
+enqueue nothing; `agent` and `system` posts never do). The worker answers with
+the configured xAI model and the voice tool set (project status, code search
+and read, workspace preparation, plan drafting, approved-run start) and appends
+an `agent` message plus a `conversation.message.created` event; clients poll
+`listMessages` or follow events. Failures, missing model credentials and
+interrupted turns appear as fixed, secret-free `agent` messages. The model
+cannot approve a plan; drafting saves a proposal only, and a run starts only
+from an existing active approval of the current plan when the server can match
+the model's quote to the latest user message. A turn is dropped silently if a
+newer user message arrives, and requests queued over 15 minutes are declined.
+The reply may arrive after `postMessage` returns; there is no streaming.
+
+### v1 amendment — opt-in shared demo entry (2026-10-21)
+
+`GET /v1/auth/me` may include `demoProject: { projectId, repositoryUrl, ref }`.
+With `RANGER_DEMO_PROJECT_ID` set, anonymous browser sessions receive member
+access to that project only. The feature defaults off. Origin/CSRF checks
+and membership checks remain active; repository replacement/disconnection
+on the demo project require its owner. Removing the flag and restarting
+revokes tracked demo-created memberships, preserving existing invitations
+and owner roles. Migration `0008_demo_access_grants.sql` tracks those grants.
+This is public shared demo access, not isolated anonymous workspaces.
+
+### v1 amendment — measured search latency (2026-10-21)
+
+Successful real retrieval calls now append `retrieval.search.completed` with
+`provider`, nonnegative `durationMs`, and `resultCount`. The monotonic duration
+covers server queueing, runtime startup, retrieval and citation validation,
+not model response generation or browser/network time. Zero-result searches
+are recorded; failures do not emit a successful measurement. Queries and
+source content are absent. Fallback searches retain `file-search-fallback`.
+HTTP, voice and coding tools use the same service measurement. Existing
+search response schemas are unchanged.
+
 ### v1 amendment — initial source materialization before run create (2026-10-18)
 
 The contract version stays v1. No route, schema or event changes. Public

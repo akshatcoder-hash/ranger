@@ -669,11 +669,48 @@ export class RangerClient {
     return this.request<WorkspaceStatusResponse>('DELETE', '/v1/projects/{projectId}/workspace', args as OpArgs);
   }
 
-  /** Capture a real guest desktop screenshot and persist it as an artifact */
+  /** Capture a guest desktop screenshot; live preview frames may skip artifact storage */
   async captureWorkspaceScreenshot(args: { path: {
   "projectId": string;
-}; body: Record<string, unknown> }): Promise<WorkspaceScreenshotResponse> {
+}; body: {
+  "saveArtifact"?: boolean;
+} }): Promise<WorkspaceScreenshotResponse> {
     return this.request<WorkspaceScreenshotResponse>('POST', '/v1/projects/{projectId}/workspace/screenshots', args as OpArgs);
+  }
+
+  /** Send authenticated human mouse or keyboard input to this project VM */
+  async sendWorkspaceDesktopInput(args: { path: {
+  "projectId": string;
+}; body: {
+  "action": "click";
+  "x": number;
+  "y": number;
+  "button"?: 'left' | 'right' | 'middle';
+  "double"?: boolean;
+} | {
+  "action": "move";
+  "x": number;
+  "y": number;
+} | {
+  "action": "drag";
+  "x": number;
+  "y": number;
+  "toX": number;
+  "toY": number;
+} | {
+  "action": "scroll";
+  "x": number;
+  "y": number;
+  "direction": 'up' | 'down';
+  "amount": number;
+} | {
+  "action": "type";
+  "text": string;
+} | {
+  "action": "press";
+  "keys": Array<string>;
+} }): Promise<OkResponse> {
+    return this.request<OkResponse>('POST', '/v1/projects/{projectId}/workspace/desktop/input', args as OpArgs);
   }
 
   /** Workspace health, provider mapping and desired/observed state */

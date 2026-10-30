@@ -760,7 +760,7 @@ describeLive('window2: one approved run, one VM, real initial customer integrati
     expect(recorded?.killTimeoutMs).toBe(600_000);
     expect(recorded?.releasedAt ?? null).not.toBeNull();
     expect(ledger.xai.observedUsd).toBeGreaterThan(0);
-    expect(ledger.xai.observedUsd).toBeLessThanOrEqual(ledger.xai.softAdmissionUsd);
+    if (ledger.xai.softAdmissionUsd !== null) expect(ledger.xai.observedUsd).toBeLessThanOrEqual(ledger.xai.softAdmissionUsd);
 
     evidence['accounting'] = {
       instaboxCreations: ledger.instabox.additionalCreations,
