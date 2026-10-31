@@ -35,7 +35,8 @@ camera.
 
      ```sh
      curl -s https://api.instabox.sh/v1/machines -H "X-API-Key: $INSTABOX_API_KEY"   # ids
-     curl -s -X DELETE https://api.instabox.sh/v1/machines/<id> -H "X-API-Key: $INSTABOX_API_KEY"
+     curl -s -X DELETE https://api.instabox.sh/v1/machines/<id> \
+       -H "X-API-Key: $INSTABOX_API_KEY" -H "Idempotency-Key: $(uuidgen)"
      ```
 
    Ledger records that outlive their provider machine (killed that way) keep

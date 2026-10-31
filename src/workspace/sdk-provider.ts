@@ -52,10 +52,14 @@ function idleOverrideRefused(cause: unknown): boolean {
 /**
  * The provider refused the create because the account's sandbox limit is
  * reached (a free plan allows one). Deterministic, before any machine exists.
+ *
+ * Only the provider's own `quota_exceeded` code counts: a plain 429 can be a
+ * rate limit on a later call (create already happened), which must stay an
+ * uncertain create so the recorded machine is still reconciled.
  */
 function quotaReached(cause: unknown): boolean {
-  const error = cause as { code?: unknown; status?: unknown } | null;
-  return error?.code === 'quota_exceeded' || error?.status === 429;
+  const error = cause as { code?: unknown } | null;
+  return error?.code === 'quota_exceeded';
 }
 
 export class SdkInstaboxProvider implements InstaboxProvider {

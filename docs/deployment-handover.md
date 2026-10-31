@@ -494,8 +494,10 @@ built from `548642c` plus the retired-field fix below:
 - Gates at this state: typecheck, lint, build, 511 unit, 115 integration
   (with the sibling Trace checkout), 17 e2e (+7 skipped), 184 frontend tests.
 - Left clean: zero live sandboxes, reconciled ledger, no temporary operator
-  credentials on disk. xAI spend is close to the $5 cap — check the ledger
-  before a recording session.
+  credentials on disk. The ledger records cumulative xAI spend (about
+  **$4.48** across all features to date). Its admission limits are disabled
+  (`limitUsd`/`softAdmissionUsd` null), so Ranger itself will not refuse a
+  call at $5 — that figure is a budget target, not an enforcement point.
 
 ## Redeploy and rollback
 

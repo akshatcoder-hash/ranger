@@ -46,6 +46,15 @@ describe('SDK account-wide create admission (offline mocks only)', () => {
     );
     await expect(new SdkInstaboxProvider().create(request)).rejects.toMatchObject({ details: { reason: 'vm_capacity' } });
   });
+  it('keeps a post-create rate limit uncertain instead of reporting capacity', async () => {
+    vi.spyOn(Sandbox, 'list').mockResolvedValue([]);
+    vi.spyOn(Sandbox, 'create').mockResolvedValue({
+      getInfo: async () => {
+        throw Object.assign(new Error('too many requests'), { code: 'rate_limited', status: 429 });
+      },
+    } as unknown as Sandbox);
+    await expect(new SdkInstaboxProvider().create(request)).rejects.toMatchObject({ details: { reason: 'uncertain_create' } });
+  });
   it('checks account headroom using the same key before creating the fifth machine', async () => {
     const list = vi.spyOn(Sandbox, 'list').mockResolvedValue(Array(4).fill(info));
     const create = vi.spyOn(Sandbox, 'create').mockResolvedValue({ getInfo: async () => info } as Sandbox);
