@@ -63,9 +63,9 @@ camera.
 
 | Step | Where | What happens |
 | --- | --- | --- |
-| 1 | Start page → paste the demo repo URL → **Use repository** | Project + conversation created, repository connected, preparation queued |
-| 2 | Type the problem (or **Start call** and say it) | Workspace card goes Preparing → Ready (VM create, clone, Trace index, ~15–30 s) |
-| 3 | **Start call**, say the problem | Ranger grounds the answer in Trace citations from the seeded checkout |
+| 1 | Start page → paste the demo repo URL → **Use repository** | Only selects the repository for the pending project; nothing is created and no preparation starts |
+| 2 | Type the problem and press **Send** (or click **Start call** and say it) | Now the project + conversation are created, the repository is connected and preparation is queued |
+| 3 | Watch the Project card | Preparing → Ready (VM create, clone, Trace index, ~15–30 s) |
 | 4 | Say "draft a plan" and confirm | Ranger calls `draft_project_plan`; a reviewable plan version is saved (none of it approved) |
 | 5 | **Review plan** → **Approve plan** | Approval binds that exact plan version and its file scope; approval starts nothing |
 | 6 | Say (or type) "Start the approved work." | Run queued; the worker edits `src/triage.mjs` in the VM, runs `npm test`, exit 0 |
