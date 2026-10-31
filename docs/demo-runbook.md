@@ -34,8 +34,8 @@ camera.
    - as the operator, kill a leftover sandbox directly:
 
      ```sh
-     curl -s https://api.instabox.sh/v1/machines -H "Authorization: Bearer $INSTABOX_API_KEY"   # ids
-     curl -s -X DELETE https://api.instabox.sh/v1/machines/<id> -H "Authorization: Bearer $INSTABOX_API_KEY"
+     curl -s https://api.instabox.sh/v1/machines -H "X-API-Key: $INSTABOX_API_KEY"   # ids
+     curl -s -X DELETE https://api.instabox.sh/v1/machines/<id> -H "X-API-Key: $INSTABOX_API_KEY"
      ```
 
    Ledger records that outlive their provider machine (killed that way) keep
@@ -46,11 +46,13 @@ camera.
      -C "node /app/ranger/scripts/reconcile-instabox-ledger.mjs"
    ```
 
-   It releases only ledger records whose machine no longer exists; history and
-   counters are preserved.
+   It releases recorded machines the provider no longer reports and drops
+   pending reservations older than 15 minutes; history, counters and unknown
+   fields are preserved.
 
 2. **Providers.** `GET /v1/capabilities` must report `xai`, `instabox` and
-   `trace` as configured. The three dots under the composer show the same.
+   `trace` as configured. The provider dots in the **Call** card above the
+   composer show the same.
 
 3. **Fresh project per take.** Guest access is per visitor: each take creates
    its own project from the repository at HEAD, so the bug is always present
@@ -66,12 +68,16 @@ camera.
 | 4 | Say "draft a plan" and confirm | Ranger calls `draft_project_plan`; a reviewable plan version is saved (none of it approved) |
 | 5 | **Review plan** → **Approve plan** | Approval binds that exact plan version and its file scope; approval starts nothing |
 | 6 | Say (or type) "Start the approved work." | Run queued; the worker edits `src/triage.mjs` in the VM, runs `npm test`, exit 0 |
-| 7 | **Changes** / **Checks** / **Latest run** | Real diff inventory, real test exit codes, per-tool evidence |
+| 7 | **Changes** and **Checks** tabs; the **Latest run** card | Real diff inventory, real test exit codes, per-tool evidence |
 
 The call is optional at every step: the same plan → approve → start path works
-over typed messages. Plan drafting needs the explicit `Plan:` / `Draft a plan`
-trigger; starting work needs the explicit start command. Both are checked
-server-side, so a demo cannot accidentally widen authority.
+over typed messages. Typed plan drafting needs the explicit `Plan:` /
+`Draft a plan` trigger and typed starts need the explicit start command; both
+are regex-checked server-side against that message. The voice tools are gated
+differently: drafting requires `confirmed: true` plus a live session, and a run
+requires an existing active approval of the current plan version — but there is
+no verbatim transcript check on speech, so keep the spoken confirmation
+explicit on camera.
 
 ## Known demo constraints
 
