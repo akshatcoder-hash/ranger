@@ -75,11 +75,13 @@ export class SdkInstaboxProvider implements InstaboxProvider {
     if (account.length >= INSTABOX_MAX_ACCOUNT_CONCURRENT) {
       throw Errors.conflict('Instabox account simultaneous-machine limit reached; stop an existing VM first', { reason: 'vm_capacity' });
     }
+    // Instabox retired lifetime timeouts on 2026-10-20: `timeoutSeconds` and
+    // `onTimeout` are now `400 unknown_field`, so neither is sent. A sandbox
+    // lives until Ranger destroys it, the account's idle pause suspends it, or
+    // an operator deletes it.
     const base = {
       apiKey: request.apiKey,
       vault: false,
-      ...(request.timeoutMs === null ? {} : { timeoutMs: request.timeoutMs }),
-      onTimeout: 'kill' as const,
       metadata: request.metadata,
     };
     try {

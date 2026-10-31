@@ -16,11 +16,12 @@ const info = {
 afterEach(() => vi.restoreAllMocks());
 
 describe('SDK account-wide create admission (offline mocks only)', () => {
-  it('omits the provider timeout when automatic expiry is explicitly disabled', async () => {
+  it('never sends the lifetime fields the provider retired', async () => {
     vi.spyOn(Sandbox, 'list').mockResolvedValue([]);
     const create = vi.spyOn(Sandbox, 'create').mockResolvedValue({ getInfo: async () => info } as Sandbox);
     expect(await new SdkInstaboxProvider().create({ ...request, timeoutMs: null })).toMatchObject({ timeoutMs: null });
     expect(create.mock.calls[0]?.[1]).not.toHaveProperty('timeoutMs');
+    expect(create.mock.calls[0]?.[1]).not.toHaveProperty('onTimeout');
   });
   it('treats a failed create response as uncertain rather than freeing the slot', async () => {
     vi.spyOn(Sandbox, 'list').mockResolvedValue([]);
@@ -52,8 +53,7 @@ describe('SDK account-wide create admission (offline mocks only)', () => {
     await expect(provider.create(request)).resolves.toMatchObject({ machineId: 'm_fixture' });
     expect(list).toHaveBeenCalledExactlyOnceWith({ apiKey: request.apiKey });
     expect(create).toHaveBeenCalledExactlyOnceWith('agent-browser', {
-      apiKey: request.apiKey, vault: false, timeoutMs: 600_000,
-      onTimeout: 'kill', autoSuspendMs: 0, metadata: request.metadata,
+      apiKey: request.apiKey, vault: false, autoSuspendMs: 0, metadata: request.metadata,
     });
     expect(list.mock.invocationCallOrder[0]).toBeLessThan(create.mock.invocationCallOrder[0]!);
   });

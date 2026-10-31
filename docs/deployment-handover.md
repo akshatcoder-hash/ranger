@@ -262,6 +262,13 @@ without the idle override and uses the account default instead; every other
 create failure is still `uncertain_create` with no retry. On a free plan a
 long-idle sandbox may therefore pause; Ranger does not resume it implicitly.
 
+Instabox also retired lifetime timeouts on 2026-10-20: `timeoutSeconds`,
+`onTimeout` and `timeout` are now `400 unknown_field`. The adapter no longer
+sends them, so a sandbox has no provider-side expiry — it runs until **Stop
+VM** (which also releases the ledger record) or the account's idle pause. A
+provider account limit (`429 quota_exceeded`, one sandbox on a free plan) is
+reported as `vm_capacity`, never as an uncertain create.
+
 Ledger machine records that outlive their provider machine keep occupying
 concurrent-VM admission slots (`vm_capacity`). Reconcile them against the
 provider (history, counters and unknown fields are preserved; a released
@@ -461,6 +468,34 @@ lint, build, 409 unit tests and 110 integration tests.
 Earlier checks caught and fixed a proxy ticket-origin mismatch and an old
 Git runtime missing `--attr-source`. A private-repository attempt failed
 before VM creation as expected. The runtime now checks Git support at build.
+
+## Demo-path verification (2026-10-31)
+
+Verified on the deployed stack (`ranger.akshats.xyz` → Fly), on the image
+built from `548642c` plus the retired-field fix below:
+
+- **Guest, no login:** anonymous session → project → pasted repository →
+  `workspace.preparation.updated` reaches `ready` (4 files, 13.2 s index).
+- **Browser voice call:** Chrome for Testing with a fake audio device
+  (`--use-fake-device-for-media-stream`) started a call from the workspace
+  card: relay upgraded with a connection ticket, the provider dialed, the UI
+  reported `Live` with End call / Interrupt voice, and ending the call
+  returned to `Not connected` with no console errors. Audio was synthetic;
+  a physical microphone is still unverified.
+- **Text plan → approval → run:** a typed `Draft a plan:` message produced
+  plan v1 (scope `edit:src/triage.mjs`, command, launch, evidence); approving
+  it in the UI dialog bound that version; `Start the approved work.` queued a
+  run that edited `src/triage.mjs`, ran `npm test` (exit 1, then exit 0) and
+  finished `succeeded`, with the test file byte-identical to upstream.
+- **Provider contract:** Instabox retired lifetime timeouts on 2026-10-20
+  (`timeoutSeconds`/`onTimeout` = `400 unknown_field`), which broke every
+  create with `uncertain_create`. The adapter no longer sends them. A free
+  account's `429 quota_exceeded` (one sandbox) now reports `vm_capacity`.
+- Gates at this state: typecheck, lint, build, 511 unit, 115 integration
+  (with the sibling Trace checkout), 17 e2e (+7 skipped), 184 frontend tests.
+- Left clean: zero live sandboxes, reconciled ledger, no temporary operator
+  credentials on disk. xAI spend is close to the $5 cap — check the ledger
+  before a recording session.
 
 ## Redeploy and rollback
 

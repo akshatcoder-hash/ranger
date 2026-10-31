@@ -9,9 +9,14 @@
 export interface ProviderCreateRequest {
   template: 'agent-browser';
   vault: false;
+  /**
+   * Desired lifetime. Since Instabox retired lifetime timeouts (2026-10-20)
+   * the provider has no `timeoutSeconds`/`onTimeout` field, so the SDK adapter
+   * does not send it; the value is kept for the reservation record and tests.
+   */
   timeoutMs: number | null;
   onTimeout: 'kill';
-  /** 0 disables the provider idle pause. */
+  /** 0 disables the provider idle pause (paid plans only; free plans refuse it). */
   autoSuspendMs: 0;
   metadata: Record<string, string>;
   apiKey: string;
