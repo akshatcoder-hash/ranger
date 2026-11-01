@@ -47,6 +47,8 @@ export type LiveProject = {
   messages: { role: 'user' | 'agent' | 'system'; content: string }[]
   plan: LivePlan | null
   approved: boolean
+  /** Active approval for the current plan version, so work can start after a reload. */
+  approvalId: string | null
   repositoryUrl: string | null
 }
 /** GET /v1/projects/:id/workspace/status envelope. Fields match the workspace contract; nothing else is invented. */
@@ -68,7 +70,7 @@ export type DesktopInput =
   | { action: 'scroll'; x: number; y: number; direction: 'up' | 'down'; amount: number }
   | { action: 'type'; text: string }
   | { action: 'press'; keys: string[] }
-export type PlanState = { plan: LivePlan | null; approved: boolean }
+export type PlanState = { plan: LivePlan | null; approved: boolean; approvalId: string | null }
 export type RunRecord = {
   runId: string
   projectId: string
@@ -283,6 +285,7 @@ class HttpRangerApi implements RangerApi {
       messages: messages.data,
       plan: planState.data.plan,
       approved: planState.data.approved,
+      approvalId: planState.data.approvalId,
       repositoryUrl: repository.data,
     })
   }
@@ -651,17 +654,17 @@ class HttpRangerApi implements RangerApi {
     const plans = listed.data.plans
     const latest = plans.reduce<RawPlan | null>((current, plan) => (current === null || (plan.version ?? 0) > (current.version ?? 0) ? plan : current), null)
     const plan = toPlan(latest)
-    if (!plan) return ok({ plan: null, approved: false })
-    const approvals = await this.request<{ approvals?: { planId?: string; version?: number; status?: string }[] }>(
+    if (!plan) return ok({ plan: null, approved: false, approvalId: null })
+    const approvals = await this.request<{ approvals?: { approvalId?: string; planId?: string; version?: number; status?: string }[] }>(
       'GET',
       `/v1/projects/${projectId}/approvals`,
       signal,
     )
     if (!approvals.ok) return approvals
     if (!Array.isArray(approvals.data.approvals)) return fail('backend', 'The approval list response was incomplete.')
-    const approved = (approvals.data.approvals ?? []).some(approval =>
-      approval.planId === plan.planId && approval.version === plan.version && approval.status === 'active')
-    return ok({ plan, approved })
+    const approval = approvals.data.approvals.find(candidate =>
+      candidate.planId === plan.planId && candidate.version === plan.version && candidate.status === 'active')
+    return ok({ plan, approved: approval !== undefined, approvalId: approval !== undefined && validId(approval.approvalId, 'apr') ? approval.approvalId : null })
   }
 
   private async readRepository(projectId: string, signal: AbortSignal): Promise<ApiResult<string | null>> {

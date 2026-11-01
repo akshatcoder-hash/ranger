@@ -570,7 +570,7 @@ export function App() {
     const started = approvalId === null ? null : await rangerApi.startRun(projectId, conversationId, approvalId, request.controller.signal)
     if (!finishRequest(request.operation)) return
     approvalRef.current = approvalId === null ? null : { projectId, approvalId }
-    patchProject(projectId, { approved: true })
+    patchProject(projectId, { approved: true, approvalId })
     setModal(null)
     if (started !== null && started.ok) setNotice({ kind: 'success', text: `Plan version ${reviewed.version} approved. The run is starting in the VM.` })
     else setNotice({ kind: 'error', text: `Plan version ${reviewed.version} approved, but the run did not start${started !== null && !started.ok ? `: ${started.message}` : '.'} Use Start work in the chat to try again.` })
@@ -578,14 +578,15 @@ export function App() {
   }
 
   const startWork = async () => {
-    const approval = approvalRef.current
-    if (!activeProject?.conversationId || approval === null || approval.projectId !== activeProject.projectId) {
-      setNotice({ kind: 'error', text: 'No active approval is loaded here. Approve the plan again from Review plan.' })
+    const inSession = approvalRef.current
+    const approvalId = activeProject?.approvalId ?? (inSession !== null && inSession.projectId === activeProject?.projectId ? inSession.approvalId : null)
+    if (!activeProject?.conversationId || approvalId === null) {
+      setNotice({ kind: 'error', text: 'No active approval is loaded here. Review the plan and approve it again.' })
       return
     }
     const request = beginRequest()
     if (!request) return
-    const started = await rangerApi.startRun(activeProject.projectId, activeProject.conversationId, approval.approvalId, request.controller.signal)
+    const started = await rangerApi.startRun(activeProject.projectId, activeProject.conversationId, approvalId, request.controller.signal)
     if (!finishRequest(request.operation)) return
     if (!started.ok) { reportFailure(started); return }
     setNotice({ kind: 'success', text: 'Work started in the VM.' })
@@ -677,19 +678,19 @@ export function App() {
   return <div className="app-shell">
     {location.screen === 'home' && <Landing onStart={() => navigate('start')} onWorkspace={openLiveWorkspace} />}
     {location.screen === 'start' && <Composer engineer={engineer} repoLabel={pendingRepo?.url ?? null} repoConnected={pendingRepo !== null} contextFiles={contextFiles} prompt={prompt} busy={busy} auth={auth} capabilities={capabilities} voice={voiceStatus} setPrompt={setPrompt} onContextFiles={selectContextFiles} onConnectRepo={openRepo} onRetrySession={retrySession} onRename={openRename} onSubmit={createProject} onStartCall={event => { void createProject(event, true) }} onCancel={cancelRequest} onHome={() => navigate('home')} />}
-    {location.screen === 'workspace' && <Workspace demoProjectId={demoProject?.projectId} engineer={viewEngineer} projectName={projectName} project={activeProject} status={liveStatus} auth={auth} capabilities={capabilities} eventFeed={eventFeed} workspaceView={workspaceView} evidence={evidence} tab={workspaceTab} setTab={setWorkspaceTab} messages={activeProject?.messages ?? []} message={message} busy={busy} setMessage={setMessage} onSend={sendMessage} onReviewPlan={() => openModal('plan')} onConnectRepo={openRepo} onRetrySession={retrySession} onRetry={refreshLive} onRefreshEvents={refreshLive} onStartProject={() => navigate('start')} onReview={() => navigate('review')} onHome={() => navigate('home')} onRename={openRename} live={activeProject ? liveMedia : null} stopping={stopping} canStartWork={approvalRef.current !== null && approvalRef.current.projectId === activeProject?.projectId} onStopRun={runId => { void stopRun(runId) }} onStartWork={() => { void startWork() }} />}
+    {location.screen === 'workspace' && <Workspace demoProjectId={demoProject?.projectId} engineer={viewEngineer} projectName={projectName} project={activeProject} status={liveStatus} auth={auth} capabilities={capabilities} eventFeed={eventFeed} workspaceView={workspaceView} evidence={evidence} tab={workspaceTab} setTab={setWorkspaceTab} messages={activeProject?.messages ?? []} message={message} busy={busy} setMessage={setMessage} onSend={sendMessage} onReviewPlan={() => openModal('plan')} onConnectRepo={openRepo} onRetrySession={retrySession} onRetry={refreshLive} onRefreshEvents={refreshLive} onStartProject={() => navigate('start')} onReview={() => navigate('review')} onHome={() => navigate('home')} onRename={openRename} live={activeProject ? liveMedia : null} stopping={stopping} canStartWork={activeProject?.approvalId != null || (approvalRef.current !== null && approvalRef.current.projectId === activeProject?.projectId)} onStopRun={runId => { void stopRun(runId) }} onStartWork={() => { void startWork() }} />}
     {location.screen === 'review' && <Review engineer={viewEngineer} projectName={projectName} status={liveStatus} auth={auth} notice={notice} projectId={activeProject?.projectId ?? null} evidence={evidence} onRefresh={refreshLive} onRetrySession={retrySession} onRetry={refreshLive} onStartProject={() => navigate('start')} onWorkspace={() => navigate('workspace')} onChecks={() => { navigate('workspace'); setWorkspaceTab('checks') }} onHome={() => navigate('home')} onRename={openRename} onReviewPlan={() => openModal('plan')} />}
     {notice && <div className={`toast toast-${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}><span>{notice.text}</span><button aria-label="Dismiss message" onClick={() => setNotice(null)}>×</button></div>}
     {modal && <div className="modal-scrim" onMouseDown={event => { if (event.target === event.currentTarget) closeModal() }}><div ref={dialogRef} className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       {modal === 'name' ? <form onSubmit={saveRename}><p className="eyebrow">YOUR ENGINEER</p><h2 id="modal-title">Give your engineer a name</h2><label className="field-label" htmlFor="engineer-name">Name</label><input ref={nameInputRef} id="engineer-name" autoComplete="off" maxLength={32} value={nameDraft} onChange={event => setNameDraft(event.target.value)} />{modalError && <p role="alert">{modalError}</p>}<div className="modal-actions"><Button type="button" onClick={() => setModal(null)}>Cancel</Button><Button kind="primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save name'}</Button></div></form>
         : modal === 'repo' ? <form onSubmit={submitRepo}><p className="eyebrow">REPOSITORY</p><h2 id="modal-title">Connect a repository</h2><p>Connect a public GitHub repository, then start a call and ask Ranger to prepare it. The code loads into one VM and Trace indexes it.</p><label className="field-label" htmlFor="repo-url">Public GitHub URL or local checkout path</label><input id="repo-url" type="text" autoComplete="off" spellCheck={false} placeholder="https://github.com/owner/repo" value={repoDraft.url} onChange={event => setRepoDraft(draft => ({ ...draft, url: event.target.value }))} /><p className="small-muted">Use a public github.com URL without credentials. Local paths must be operator-approved checkouts on the Ranger server.</p><label className="field-label" htmlFor="repo-ref">Branch or tag</label><input id="repo-ref" autoComplete="off" value={repoDraft.ref} onChange={event => setRepoDraft(draft => ({ ...draft, ref: event.target.value }))} />{modalError && <p role="alert">{modalError}</p>}<div className="modal-actions"><Button type="button" onClick={() => setModal(null)}>Cancel</Button><Button kind="primary" type="submit" disabled={busy}>{busy ? 'Connecting…' : activeProject ? 'Connect repository' : 'Use repository'}</Button></div></form>
         : modal === 'manual' ? <form onSubmit={submitManualPlan}><p className="eyebrow">MANUAL PLAN</p><h2 id="modal-title">Write a plan by hand</h2><p>Your plan is saved as a new version and still needs approval.</p><label className="field-label" htmlFor="manual-items">Steps, one per line</label><textarea id="manual-items" rows={5} style={fieldStyle} value={planDraft.items} onChange={event => setPlanDraft(draft => ({ ...draft, items: event.target.value }))} /><label className="field-label" htmlFor="manual-criteria">Acceptance criteria, one per line</label><textarea id="manual-criteria" rows={4} style={fieldStyle} value={planDraft.criteria} onChange={event => setPlanDraft(draft => ({ ...draft, criteria: event.target.value }))} />{modalError && <p role="alert">{modalError}</p>}<div className="modal-actions"><Button type="button" onClick={() => setModal(null)}>Cancel</Button><Button kind="primary" type="submit" disabled={busy || !activeProject?.conversationId}>{busy ? 'Saving…' : 'Save manual plan'}</Button></div></form>
-        : <LivePlanDialog review={planReview} busy={busy} modalError={modalError} blockers={executionBlockers(capabilityValue)} onClose={closeModal} onApprove={() => decidePlan(true)} onWriteNew={() => openModal('manual')} />}
+        : <LivePlanDialog review={planReview} busy={busy} modalError={modalError} blockers={executionBlockers(capabilityValue)} onClose={closeModal} onApprove={() => decidePlan(true)} onStartWork={() => { setModal(null); void startWork() }} onWriteNew={() => openModal('manual')} />}
     </div></div>}
   </div>
 }
 
-function LivePlanDialog({ review, busy, modalError, blockers, onClose, onApprove, onWriteNew }: { review: ReadState<ApiResult<PlanState>>; busy: boolean; modalError: string | null; blockers: string[]; onClose: () => void; onApprove: () => void; onWriteNew: () => void }) {
+function LivePlanDialog({ review, busy, modalError, blockers, onClose, onApprove, onStartWork, onWriteNew }: { review: ReadState<ApiResult<PlanState>>; busy: boolean; modalError: string | null; blockers: string[]; onClose: () => void; onApprove: () => void; onStartWork: () => void; onWriteNew: () => void }) {
   if (review.state !== 'ready') return <><h2 id="modal-title">Loading the latest plan…</h2><p role="status">Checking for a new plan version before review.</p><Button onClick={onClose}>Close</Button></>
   if (!review.value.ok) return <><h2 id="modal-title">Plan unavailable</h2><p role="alert">{review.value.message}</p><p>Close and reopen Review plan to try again.</p><Button onClick={onClose}>Close</Button></>
   const { plan, approved } = review.value.data
@@ -702,7 +703,7 @@ function LivePlanDialog({ review, busy, modalError, blockers, onClose, onApprove
     </div>
     {blockers.length > 0 && <p className="muted" role="status">Execution is blocked: {blockers.join(' ')}</p>}
     {modalError && <p role="alert">{modalError}</p>}
-    <div className="modal-actions"><Button onClick={onClose}>Close</Button><Button disabled={busy} onClick={onWriteNew}>Write a new version</Button>{!approved && <Button kind="primary" disabled={busy} onClick={onApprove}>{busy ? 'Starting…' : 'Approve and start work'}</Button>}</div></>
+    <div className="modal-actions"><Button onClick={onClose}>Close</Button><Button disabled={busy} onClick={onWriteNew}>Write a new version</Button>{approved ? <Button kind="primary" disabled={busy} onClick={onStartWork}>{busy ? 'Starting…' : 'Start work'}</Button> : <Button kind="primary" disabled={busy} onClick={onApprove}>{busy ? 'Starting…' : 'Approve and start work'}</Button>}</div></>
 }
 
 function SessionStatus({ auth, onRetry }: { auth: Auth; onRetry: () => void }) {

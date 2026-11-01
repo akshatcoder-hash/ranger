@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { rangerApi } from './api'
+const APPROVAL = 'apr_66666666-6666-6666-6666-666666666666'
 const PROJECT = 'prj_11111111-1111-1111-1111-111111111111', PLAN = 'pln_22222222-2222-2222-2222-222222222222', RUN = 'run_33333333-3333-3333-3333-333333333333'
 const plan = { planId: PLAN, version: 1, items: ['fix'], acceptanceCriteria: ['test'], permittedScope: ['edit:src/', 'command'] }
 const run = { runId: RUN, projectId: PROJECT, planId: PLAN, planVersion: 1, state: 'running', createdAt: '2026-10-19T01:00:00Z', updatedAt: '2026-10-19T01:00:00Z' }
@@ -9,10 +10,10 @@ afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 describe('read-only review adapters with fake HTTP responses', () => {
   it('rereads latest plan and exact-version approval without carrying older approval', async () => {
     let version = 1
-    vi.stubGlobal('fetch', vi.fn(async (path: string) => path.endsWith('/plans') ? json({ plans: [plan, { ...plan, planId: version === 1 ? PLAN : 'pln_abcdef', version }] }) : json({ approvals: [{ planId: PLAN, version: 1, status: 'active' }] })))
-    expect(await rangerApi.getPlanState(PROJECT, signal())).toMatchObject({ ok: true, data: { approved: true, plan: { version: 1 } } })
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => path.endsWith('/plans') ? json({ plans: [plan, { ...plan, planId: version === 1 ? PLAN : 'pln_abcdef', version }] }) : json({ approvals: [{ approvalId: APPROVAL, planId: PLAN, version: 1, status: 'active' }] })))
+    expect(await rangerApi.getPlanState(PROJECT, signal())).toMatchObject({ ok: true, data: { approved: true, approvalId: APPROVAL, plan: { version: 1 } } })
     version = 2
-    expect(await rangerApi.getPlanState(PROJECT, signal())).toMatchObject({ ok: true, data: { approved: false, plan: { version: 2, permittedScope: ['edit:src/', 'command'] } } })
+    expect(await rangerApi.getPlanState(PROJECT, signal())).toMatchObject({ ok: true, data: { approved: false, approvalId: null, plan: { version: 2, permittedScope: ['edit:src/', 'command'] } } })
   })
   it('rejects malformed plan, run, diff, test or tool responses rather than inventing empty evidence', async () => {
     for (const data of [{}, { plans: [{ version: 3 }] }]) {

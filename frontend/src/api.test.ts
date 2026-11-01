@@ -172,6 +172,7 @@ describe('browser backend adapter', () => {
         messages: [{ role: 'user', content: 'first' }, { role: 'agent', content: 'second' }],
         plan: { planId: PLAN, version: 2, items: ['new'], acceptanceCriteria: ['checked'], permittedScope: ['edit:.', 'command'] },
         approved: false,
+        approvalId: null,
         repositoryUrl: null,
       },
     })
