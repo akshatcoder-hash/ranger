@@ -67,18 +67,17 @@ camera.
 | 2 | Type the problem and press **Send** (or click **Start call** and say it) | Now the project + conversation are created, the repository is connected and preparation is queued |
 | 3 | Watch the Project card | Preparing → Ready (VM create, clone, Trace index, ~15–30 s) |
 | 4 | Say "draft a plan" and confirm | Ranger calls `draft_project_plan`; a reviewable plan version is saved (none of it approved) |
-| 5 | **Review plan** → **Approve plan** | Approval binds that exact plan version and its file scope; approval starts nothing |
-| 6 | Say (or type) "Start the approved work." | Run queued; the worker edits `src/triage.mjs` in the VM, runs `npm test`, exit 0 |
+| 5 | **Review plan** → **Approve and start work** | Approval binds that exact plan version and its scope, then starts the run. **Stop work** in the chat ends a run and destroys its VM |
+| 6 | Watch the chat | The run edits `src/triage.mjs` in the VM and runs `npm test`, exit 0; the chat lists each step as it is recorded |
 | 7 | **Changes** and **Checks** tabs; the **Latest run** card | Real diff inventory, real test exit codes, per-tool evidence |
 
-The call is optional at every step: the same plan → approve → start path works
-over typed messages. Typed plan drafting needs the explicit `Plan:` /
-`Draft a plan` trigger and typed starts need the explicit start command; both
-are regex-checked server-side against that message. The voice tools are gated
-differently: drafting requires `confirmed: true` plus a live session, and a run
-requires an existing active approval of the current plan version — but there is
-no verbatim transcript check on speech, so keep the spoken confirmation
-explicit on camera.
+The call is optional at every step: the same plan → approve path works over
+typed messages. Typed plan drafting needs the explicit `Plan:` / `Draft a plan`
+trigger, regex-checked server-side against that message. Approving the plan is
+what starts the run; typing "Start the approved work." (or telling Ranger)
+starts an approved plan again after a cancelled or failed run. The voice draft
+tool requires `confirmed: true` plus a live session, so keep the spoken
+confirmation explicit on camera.
 
 ## Known demo constraints
 

@@ -6,6 +6,8 @@ const CONVERSATION = 'cnv_22222222-2222-2222-2222-222222222222'
 const PLAN = 'pln_33333333-3333-3333-3333-333333333333'
 const VOICE = 'vcs_44444444-4444-4444-4444-444444444444'
 const CAPTURE = 'cap_55555555-5555-5555-5555-555555555555'
+const APPROVAL = 'apr_66666666-6666-6666-6666-666666666666'
+const RUN = 'run_77777777-7777-7777-7777-777777777777'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -266,7 +268,7 @@ describe('browser backend adapter', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input)
       calls.push({ path, body: init?.body ? JSON.parse(String(init.body)) : null })
-      if (path.endsWith('/approvals')) return json({ approval: { planId: PLAN, status: 'active' }, requestId: 'req-approval' })
+      if (path.endsWith('/approvals')) return json({ approval: { approvalId: APPROVAL, planId: PLAN, status: 'active' }, requestId: 'req-approval' })
       return json({ requestId: 'req-change' })
     }))
     const signal = new AbortController().signal
@@ -286,11 +288,24 @@ describe('browser backend adapter', () => {
       permittedScope: ['edit:.'],
     }, signal)
 
-    expect(accepted).toEqual({ ok: true, data: { accepted: true } })
-    expect(rejected).toEqual({ ok: true, data: { accepted: false } })
+    expect(accepted).toEqual({ ok: true, data: { accepted: true, approvalId: APPROVAL } })
+    expect(rejected).toEqual({ ok: true, data: { accepted: false, approvalId: null } })
     expect(calls[0]).toEqual({ path: `/v1/projects/${PROJECT}/plans/${PLAN}/approvals`, body: { permittedScope: ['edit:.', 'command'] } })
     expect(calls[1]?.path).toContain('/messages')
     expect(calls[1]?.body).toMatchObject({ role: 'user', content: expect.stringContaining(PLAN) })
+  })
+
+  it('starts the approved run with its approval id and refuses a malformed one', async () => {
+    const calls: { path: string; body: unknown }[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ path: String(input), body: init?.body ? JSON.parse(String(init.body)) : null })
+      return json({ run: { runId: RUN, projectId: PROJECT, planId: PLAN, planVersion: 1, state: 'queued', createdAt: '2026-10-31T00:00:00.000Z', updatedAt: '2026-10-31T00:00:00.000Z' }, requestId: 'req-run' })
+    }))
+    const signal = new AbortController().signal
+
+    expect(await rangerApi.startRun(PROJECT, CONVERSATION, APPROVAL, signal)).toMatchObject({ ok: true, data: { runId: RUN, state: 'queued' } })
+    expect(calls[0]).toEqual({ path: `/v1/projects/${PROJECT}/runs`, body: { conversationId: CONVERSATION, approvalId: APPROVAL } })
+    expect((await rangerApi.startRun(PROJECT, CONVERSATION, 'not-an-approval', signal)).ok).toBe(false)
   })
 
   it('maps the events nextCursor and preserves abort and invalid ids', async () => {

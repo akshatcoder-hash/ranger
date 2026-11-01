@@ -336,7 +336,7 @@ receive the same translation as WebSocket headers. API responses are
    answers should cite the connected files.
 5. Ask for one concrete change and its acceptance conditions. Confirm the
    requirements Ranger repeats back and ask it to draft the plan. **Review plan**,
-   approve that version, then ask Ranger to start the approved work.
+   approve that version, which starts the run (Stop work in the chat ends it).
 6. **Live activity** shows real commands starting and finishing. **VM** lets
    you run a command, view/control the desktop or stop the VM. Command output appears after
    completion, not as streamed stdout. **Changes** and **Checks** show results.

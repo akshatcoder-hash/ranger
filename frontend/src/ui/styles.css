@@ -285,14 +285,32 @@ a { color: inherit; text-decoration: none; }
 .vm-form .button { min-height: 33px; }
 .vm-output { max-height: 260px; margin: 8px 0 0; padding: 10px; overflow: auto; border-radius: 6px; background: #202020; color: #eee; font: 10px/1.6 'IBM Plex Mono', monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .vm-shot { display: block; width: 100%; height: auto; margin-top: 10px; border: 1px solid var(--line); border-radius: 6px; }
-.activity-feed { display: grid; max-height: 300px; margin-bottom: 10px; overflow-y: auto; }
-.activity-line { display: grid; gap: 2px; margin: 0; padding: 7px 0 7px 10px; border-bottom: 1px solid var(--line); border-left: 2px solid #d8d6d1; font-size: 10px; }
-.activity-line[data-tone="good"] { border-left-color: var(--green); }
-.activity-line[data-tone="warn"] { border-left-color: #bd8c39; }
-.activity-line[data-tone="bad"] { border-left-color: #b4523f; }
-.activity-line strong { font-weight: 500; }
-.activity-line span { color: #55534f; overflow-wrap: anywhere; }
-.activity-line small { color: #8a8884; font-size: 8px; }
+/* What Ranger is doing, inside the conversation. */
+.chat-activity { margin-top: 14px; padding: 12px; border: 1px solid #e5e4df; border-radius: 9px; background: #fbfbfa; }
+.chat-activity-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.chat-now { margin: 0; color: #3a3936; font-size: 10px; line-height: 1.5; }
+.chat-now[data-tone="good"] { color: #2f6b46; }
+.chat-now[data-tone="bad"] { color: #a2432f; }
+.chat-now[data-tone="warn"] { color: #8a6520; }
+.chat-activity-head .button, .chat-activity-actions .button { min-height: 29px; font-size: 9px; }
+.chat-activity-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.chat-confirm { margin-top: 10px; padding: 10px; border: 1px solid #e3d7c4; border-radius: 7px; background: #fdf9f1; }
+.chat-confirm p { margin: 0; color: #6b5a3b; font-size: 9px; line-height: 1.5; }
+.chat-steps { display: grid; margin: 10px 0 0; padding: 0; list-style: none; }
+.chat-step { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 2px; padding: 6px 0; border-top: 1px solid #ecebe7; font-size: 10px; }
+.chat-step div { display: grid; gap: 2px; }
+.chat-step strong { font-weight: 500; }
+.chat-step span:not(.chat-step-mark) { color: #55534f; overflow-wrap: anywhere; }
+.chat-step-mark { color: #8a8884; font-size: 9px; line-height: 1.7; }
+.chat-step[data-tone="good"] .chat-step-mark { color: #2f7a4f; }
+.chat-step[data-tone="bad"] .chat-step-mark { color: #b4523f; }
+.chat-step[data-tone="warn"] .chat-step-mark { color: #a2761f; }
+.workspace-providers { display: flex; flex-wrap: wrap; gap: 6px; }
+.workspace-providers .status-pill { font-size: 8px; }
+
+/* The input's container carries the focus ring; the field itself has no inner outline. */
+.composer-card:has(:focus-visible), .message-form:has(:focus-visible) { border-color: #947fe0; box-shadow: 0 0 0 2px #947fe0; }
+.conversation-history:focus-visible { outline: 2px solid #947fe0; outline-offset: -2px; }
 
 /* Dialog and reduced motion */
 .modal-scrim { position: fixed; z-index: 40; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(24,23,21,.28); backdrop-filter: blur(3px); }

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { rangerApi, type WorkspaceStatus } from '../api'
-import { describeEvent, isNoisyEvent, type ActivityEvent } from './activity'
+import type { ActivityEvent } from './activity'
 import { formatBytes, formatDuration, formatSearchDuration, latestSearch, preparationIsActive, type PreparationClock, type PreparationStatus } from './liveHelpers'
 import { Button, StatusPill } from './primitives'
 import { watchVmScreen } from './vmScreen'
@@ -20,7 +20,6 @@ const STEPS: { phase: PreparationStatus['phase']; label: string }[] = [
   { phase: 'ready', label: 'Ready' },
 ]
 const COMMAND_TIMEOUT_MS = 60_000
-const FEED_LIMIT = 80
 
 function useNow(active: boolean): number {
   const [now, setNow] = useState(() => Date.now())
@@ -207,22 +206,5 @@ export function VmPanel({ projectId, workspace, onStopped }: { projectId: string
     </div>}
     {shot.kind === 'error' && <p role="alert" className="small-muted">Screenshot unavailable: {shot.message}</p>}
     {shot.kind === 'ready' && <VmDesktop projectId={projectId} base64={shot.base64} interactive={watching && available} />}
-  </article>
-}
-
-/** Readable project activity: preparation phases, plan and run progress. Unknown event types show their name. */
-export function ActivityFeed({ events, status, error, onRefresh }: { events: readonly ActivityEvent[]; status: 'idle' | 'polling' | 'paused' | 'error'; error?: string; onRefresh: () => void }) {
-  const lines = useMemo(() => events.filter(event => !isNoisyEvent(event)).slice(-FEED_LIMIT).reverse().map(event => ({ event, line: describeEvent(event) })), [events])
-  return <article className="detail-card" aria-label="Live activity">
-    <div className="card-heading">
-      <h3>Live activity</h3>
-      <StatusPill tone={status === 'polling' ? 'green' : status === 'error' ? 'amber' : 'gray'}>{status === 'polling' ? 'Live' : status === 'paused' ? 'Paused' : status === 'error' ? 'Error' : 'Idle'}</StatusPill>
-    </div>
-    <div className="activity-feed">{lines.length
-      ? lines.map(({ event, line }) => <p className="activity-line" data-tone={line.tone} key={event.eventId}><strong>{line.title}</strong>{line.detail && <span>{line.detail}</span>}<small>Event {event.sequence}</small></p>)
-      : <p className="small-muted">{status === 'error' ? 'Activity could not be loaded.' : 'No activity has been recorded yet.'}</p>}</div>
-    {status === 'error' && error && <p role="alert" className="small-muted">{error}</p>}
-    {status === 'paused' && <p className="small-muted">Automatic refresh stopped while nothing was happening. Refresh to check again.</p>}
-    <Button onClick={onRefresh}>Refresh</Button>
   </article>
 }

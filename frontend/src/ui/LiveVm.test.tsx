@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { ActivityFeed, PreparationCard, VmPanel } from './LiveVm'
+import { PreparationCard, VmPanel } from './LiveVm'
 
 const prep = (sequence: number, data: Record<string, unknown>) => ({ eventId: `e${sequence}`, sequence, type: 'workspace.preparation.updated', data })
 
@@ -87,24 +87,5 @@ describe('VmPanel', () => {
   it('explains a missing VM and a status failure separately', () => {
     expect(renderToStaticMarkup(<VmPanel projectId={PROJECT} workspace={{ status: null, error: 'not_found: No workspace for this project' }} />)).toContain('No VM has been provisioned')
     expect(renderToStaticMarkup(<VmPanel projectId={PROJECT} workspace={{ status: null, error: 'The Ranger API is unreachable.' }} />)).toContain('Could not read VM status')
-  })
-})
-
-describe('ActivityFeed', () => {
-  it('renders readable lines newest first and hides per-frame noise', () => {
-    const events = [
-      { eventId: 'e1', sequence: 1, type: 'workspace.preparation.updated', data: { jobId: 'j', phase: 'preparing' } },
-      { eventId: 'e2', sequence: 2, type: 'capture.frame.ingested' },
-      { eventId: 'e3', sequence: 3, type: 'run.tool.progress', data: { runId: 'run_abcdef12', callId: 'c', tool: 'run_tests', status: 'ok' } },
-    ]
-    const html = renderToStaticMarkup(<ActivityFeed events={events} status="polling" onRefresh={() => {}} />)
-    expect(html.indexOf('Tool run_tests: ok')).toBeLessThan(html.indexOf('Provisioning the VM'))
-    expect(html).not.toContain('capture frame')
-    expect(html).toContain('Live')
-  })
-
-  it('says so when nothing has happened and when history failed', () => {
-    expect(renderToStaticMarkup(<ActivityFeed events={[]} status="polling" onRefresh={() => {}} />)).toContain('No activity has been recorded yet.')
-    expect(renderToStaticMarkup(<ActivityFeed events={[]} status="error" error="boom" onRefresh={() => {}} />)).toContain('Activity could not be loaded.')
   })
 })

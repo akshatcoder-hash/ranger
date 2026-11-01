@@ -93,6 +93,7 @@ export interface RangerApi {
   createProject(request: ProjectRequest, signal: AbortSignal): Promise<ApiResult<{ projectId: string; conversationId: string }>>
   getPlanState(projectId: string, signal: AbortSignal): Promise<ApiResult<PlanState>>
   listRuns(projectId: string, signal: AbortSignal): Promise<ApiResult<RunRecord[]>>
+  cancelRun(projectId: string, runId: string, signal: AbortSignal): Promise<ApiResult<RunRecord>>
   readWorkspaceFile(projectId: string, path: string, signal: AbortSignal): Promise<ApiResult<WorkspaceFile>>
   getWorkspaceDiff(projectId: string, signal: AbortSignal): Promise<ApiResult<WorkspaceDiff>>
   listTestResults(projectId: string, signal: AbortSignal): Promise<ApiResult<TestResult[]>>
@@ -108,7 +109,9 @@ export interface RangerApi {
   decidePlan(
     request: { projectId: string; conversationId: string; approved: boolean; planId: string; permittedScope: string[] },
     signal: AbortSignal,
-  ): Promise<ApiResult<{ accepted: boolean }>>
+  ): Promise<ApiResult<{ accepted: boolean; approvalId: string | null }>>
+  /** Start the approved plan's run. The approval must be active for the current plan version. */
+  startRun(projectId: string, conversationId: string, approvalId: string, signal: AbortSignal): Promise<ApiResult<RunRecord>>
   connectRepository(projectId: string, url: string, ref: string, signal: AbortSignal): Promise<ApiResult<void>>
   getWorkspaceStatus(projectId: string, signal: AbortSignal): Promise<ApiResult<WorkspaceStatus>>
   runWorkspaceCommand(projectId: string, request: { command: string; args?: string[]; timeoutMs?: number }, signal: AbortSignal): Promise<ApiResult<WorkspaceCommand>>
@@ -140,7 +143,7 @@ const TITLE_LIMIT = 200
 const MESSAGE_PAGE = '100'
 const EVENT_PAGE = '100'
 const MAX_EVENT_PAGES = 50
-const ID = /^(prj|cnv|pln|vcs|cap|run|cmd)_[0-9a-fA-F-]+$/
+const ID = /^(prj|cnv|pln|vcs|cap|run|cmd|apr)_[0-9a-fA-F-]+$/
 /** Session endpoints never trigger a silent session renewal: a 401 there is a real answer. */
 const NO_RENEWAL = new Set(['/v1/auth/me', '/v1/auth/anonymous-session'])
 
@@ -334,7 +337,7 @@ class HttpRangerApi implements RangerApi {
     return fail('partial', `Project ${request.projectId} accepted the plan request, but the response was incomplete.${knownId} Reload before retrying; a new plan version was not created.`)
   }
 
-  async decidePlan(request: { projectId: string; conversationId: string; approved: boolean; planId: string; permittedScope: string[] }, signal: AbortSignal): Promise<ApiResult<{ accepted: boolean }>> {
+  async decidePlan(request: { projectId: string; conversationId: string; approved: boolean; planId: string; permittedScope: string[] }, signal: AbortSignal): Promise<ApiResult<{ accepted: boolean; approvalId: string | null }>> {
     if (!validId(request.projectId, 'prj') || !validId(request.conversationId, 'cnv') || !validId(request.planId, 'pln')) {
       return fail('backend', 'Approval needs a project, conversation, and exact plan id.')
     }
@@ -343,18 +346,32 @@ class HttpRangerApi implements RangerApi {
         body: { role: 'user', content: `Change requested for plan ${request.planId}.` },
         idempotent: true,
       })
-      return note.ok ? ok({ accepted: false }) : note
+      return note.ok ? ok({ accepted: false, approvalId: null }) : note
     }
     const scope = cleanList(request.permittedScope)
     if (!scope.length) return fail('backend', 'Approval needs the exact permitted scope.')
-    const approved = await this.request<{ approval?: { status?: string; planId?: string } }>(
+    const approved = await this.request<{ approval?: { approvalId?: string; status?: string; planId?: string } }>(
       'POST',
       `/v1/projects/${request.projectId}/plans/${request.planId}/approvals`,
       signal,
       { body: { permittedScope: scope }, idempotent: true },
     )
     if (!approved.ok) return approved
-    return ok({ accepted: approved.data.approval?.status === 'active' && approved.data.approval.planId === request.planId })
+    const approval = approved.data.approval
+    const accepted = approval?.status === 'active' && approval.planId === request.planId
+    return ok({ accepted, approvalId: accepted && validId(approval.approvalId, 'apr') ? approval.approvalId : null })
+  }
+
+  async startRun(projectId: string, conversationId: string, approvalId: string, signal: AbortSignal): Promise<ApiResult<RunRecord>> {
+    if (!validId(projectId, 'prj') || !validId(conversationId, 'cnv') || !validId(approvalId, 'apr')) return fail('backend', 'Starting work needs a project, conversation and approval.')
+    const result = await this.request<{ run?: RunRecord }>('POST', `/v1/projects/${projectId}/runs`, signal, {
+      body: { conversationId, approvalId },
+      idempotent: true,
+    })
+    if (!result.ok) return result
+    const run = result.data.run
+    if (!run || !validId(run.runId, 'run') || typeof run.state !== 'string') return fail('backend', 'The run response was incomplete. Reload to check whether work started.')
+    return ok(run)
   }
 
   async connectRepository(projectId: string, url: string, ref: string, signal: AbortSignal): Promise<ApiResult<void>> {
@@ -426,6 +443,15 @@ class HttpRangerApi implements RangerApi {
     const runs = result.data.runs
     if (!Array.isArray(runs) || runs.some(run => !run || !validId(run.runId, 'run') || run.projectId !== projectId || !validId(run.planId, 'pln') || !Number.isInteger(run.planVersion) || !['queued', 'running', 'succeeded', 'failed', 'cancelled'].includes(run.state) || typeof run.createdAt !== 'string' || typeof run.updatedAt !== 'string')) return fail('backend', 'The run list response was incomplete.')
     return ok([...runs].sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.runId.localeCompare(left.runId)))
+  }
+
+  async cancelRun(projectId: string, runId: string, signal: AbortSignal): Promise<ApiResult<RunRecord>> {
+    if (!validId(projectId, 'prj') || !validId(runId, 'run')) return fail('backend', 'A project and run id are required.')
+    const result = await this.request<{ run?: RunRecord }>('POST', `/v1/projects/${projectId}/runs/${runId}/cancel`, signal, { idempotent: true })
+    if (!result.ok) return result
+    const run = result.data.run
+    if (!run || run.runId !== runId || typeof run.state !== 'string') return fail('backend', 'The cancel response was incomplete. Reload to check whether the run stopped.')
+    return ok(run)
   }
 
   async readWorkspaceFile(projectId: string, path: string, signal: AbortSignal): Promise<ApiResult<WorkspaceFile>> {
