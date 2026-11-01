@@ -153,11 +153,24 @@ export function saveSourceFile(
   if (content.byteLength > SOURCE_FILE_CAP_BYTES) {
     throw Errors.validation('Workspace file exceeds the size cap', { reason: 'file_too_large' });
   }
+  // Keep the first content Ranger overwrites, for the Changes view's diff.
+  db.prepare(
+    `INSERT OR IGNORE INTO workspace_source_base (project_id, relative_path, content, size_bytes, captured_at)
+     SELECT project_id, relative_path, content, size_bytes, ? FROM workspace_source_files
+     WHERE project_id = ? AND relative_path = ?`,
+  ).run(Date.now(), projectId, relativePath);
   db.prepare(
     `INSERT INTO workspace_source_files (project_id, relative_path, content, size_bytes, updated_at, origin)
      VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(project_id, relative_path) DO UPDATE SET content = excluded.content, size_bytes = excluded.size_bytes, updated_at = excluded.updated_at`,
   ).run(projectId, relativePath, content, content.byteLength, Date.now(), origin);
+}
+
+export function listSourceBases(db: DatabaseSync, projectId: string): Map<string, Buffer> {
+  const rows = mapRows<{ relative_path: string; content: Uint8Array }>(
+    db.prepare('SELECT relative_path, content FROM workspace_source_base WHERE project_id = ?').all(projectId),
+  );
+  return new Map(rows.map((row) => [row.relative_path, Buffer.from(row.content)]));
 }
 
 export function readSourceFile(db: DatabaseSync, projectId: string, relativePath: string): Buffer | null {

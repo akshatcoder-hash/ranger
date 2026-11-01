@@ -14,7 +14,6 @@ describe('observed results static rendering, no live execution', () => {
   it('shows failed run, edited file and actual exit without false empty or passed claims', () => {
     const html = render()
     expect(html).toContain('check_failed'); expect(html).toContain('Exit 1'); expect(html).toContain('Files edited in the latest run')
-    expect(html).toContain('saved-file inventory, not a line-by-line diff'); expect(html).toContain('may include earlier runs')
     expect(html).not.toContain('No run has started'); expect(html).not.toContain('All checks passed'); expect(html).not.toContain('No runs recorded')
   })
   it('withholds a previous project snapshot during navigation', () => {

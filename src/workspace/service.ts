@@ -20,6 +20,7 @@ import {
   isFixedPreviewPort,
 } from './limits.js';
 import { guestWriteCommand, guestWriteVerified } from './guest-write.js';
+import { workspaceDiff } from './diff.js';
 import { guestWriteDetail } from './diagnostics.js';
 import { bootstrapWorkload } from './bootstrap.js';
 import { armWorkspaceWatchdog, destroyFailedBootstrap, destroyRecordedWorkspace } from './cleanup.js';
@@ -39,7 +40,9 @@ import {
   insertDesktopSession,
   insertPreviewSession,
   insertWorkspace,
+  listAllSourceFiles,
   listArtifacts,
+  listSourceBases,
   listSourceFiles,
   listTestCommandRows,
   completeCommand,
@@ -461,11 +464,7 @@ export class WorkspaceService {
 
   diff(projectId: string): { diff: string; changedFiles: string[] } {
     this.requireKnown(projectId);
-    const files = listSourceFiles(this.options.db, projectId, '');
-    return {
-      diff: files.map((file) => `saved ${file.path}`).join('\n'),
-      changedFiles: files.map((file) => file.path),
-    };
+    return workspaceDiff(listAllSourceFiles(this.options.db, projectId), listSourceBases(this.options.db, projectId));
   }
 
   artifacts(projectId: string): Array<{ id: string; name: string; sizeBytes: number; createdAt: number }> {
