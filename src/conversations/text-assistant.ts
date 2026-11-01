@@ -113,7 +113,14 @@ const TEXT_RUN_TOOL = {
   },
 };
 
-const TEXT_TOOLS = [GET_PROJECT_STATUS_TOOL, SEARCH_PROJECT_CODE_TOOL, READ_PROJECT_SOURCE_TOOL, PREPARE_PROJECT_WORKSPACE_TOOL, DRAFT_PROJECT_PLAN_TOOL, TEXT_RUN_TOOL];
+const TEXT_PLAN_TOOL = {
+  ...DRAFT_PROJECT_PLAN_TOOL,
+  description:
+    'Draft a concrete engineering plan from the latest request. A message starting with "Plan:" or "Draft a plan" is already the developer\'s explicit confirmation: call this in that same turn and never ask for the same confirmation twice. ' +
+    'Saves a reviewable proposal only: it never approves a plan or starts work.',
+};
+
+const TEXT_TOOLS = [GET_PROJECT_STATUS_TOOL, SEARCH_PROJECT_CODE_TOOL, READ_PROJECT_SOURCE_TOOL, PREPARE_PROJECT_WORKSPACE_TOOL, TEXT_PLAN_TOOL, TEXT_RUN_TOOL];
 
 export interface TextAssistantDeps {
   db: DatabaseSync;
