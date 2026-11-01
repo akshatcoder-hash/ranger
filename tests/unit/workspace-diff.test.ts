@@ -39,6 +39,14 @@ describe('workspace diff', () => {
     expect(result.diff).not.toContain('untouched.ts');
   });
 
+  it('refuses to allocate a table for a very large pair of files', () => {
+    const before = Array.from({ length: 3000 }, (_, index) => `old-${index}`);
+    const after = Array.from({ length: 3000 }, (_, index) => `new-${index}`);
+    const diff = fileDiff('huge.ts', before, after);
+    expect(diff).toContain('file too large to diff (3000 → 3000 lines)');
+    expect(diff).not.toContain('@@');
+  });
+
   it('caps the emitted diff and says so', () => {
     const before = Array.from({ length: 1500 }, (_, index) => `old-${index}`);
     const after = Array.from({ length: 1500 }, (_, index) => `new-${index}`);

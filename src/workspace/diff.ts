@@ -7,6 +7,8 @@
 
 const CONTEXT = 3;
 const MAX_DIFF_LINES = 2000;
+/** Cells are 4 bytes; 4M keeps one file's table near 16 MB inside a 2 GB Machine. */
+const MAX_LCS_CELLS = 4_000_000;
 
 type Op = { kind: ' ' | '-' | '+'; line: string };
 
@@ -36,6 +38,10 @@ function lcsOps(before: readonly string[], after: readonly string[]): Op[] {
 
 /** Unified diff body for one file, or an empty string when the content matches. */
 export function fileDiff(path: string, before: readonly string[], after: readonly string[]): string {
+  if (before.length * after.length > MAX_LCS_CELLS) {
+    // Bounded work beats an exact hunk: report the change without the table.
+    return `--- a/${path}\n+++ b/${path}\n… file too large to diff (${before.length} → ${after.length} lines)`;
+  }
   const ops = lcsOps(before, after);
   if (!ops.some((op) => op.kind !== ' ')) return '';
   const changed = ops.map((op, index) => (op.kind === ' ' ? -1 : index)).filter((index) => index >= 0);
