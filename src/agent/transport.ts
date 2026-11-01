@@ -23,6 +23,8 @@ export interface ProviderUsage {
 
 export interface ResponsesCall {
   model: string;
+  /** Provider reasoning budget; low keeps tool turns short for small patches. */
+  reasoningEffort?: 'low' | 'medium' | 'high';
   /** Full conversation items: prior outputs (reasoning preserved) plus tool outputs. */
   input: unknown[];
   /** Flat function tools: { type: 'function', name, description, parameters }. */
@@ -63,6 +65,7 @@ export class OpenAiResponsesTransport implements ResponsesTransport {
         store: false,
         ...(call.instructions !== undefined ? { instructions: call.instructions } : {}),
         ...(call.maxOutputTokens !== undefined ? { max_output_tokens: call.maxOutputTokens } : {}),
+        ...(call.reasoningEffort !== undefined ? { reasoning: { effort: call.reasoningEffort } } : {}),
       },
       signal === undefined ? undefined : { signal },
     );

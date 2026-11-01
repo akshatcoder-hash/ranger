@@ -48,6 +48,8 @@ export interface CodingLoopOptions {
   checker: ToolApprovalChecker;
   budget: CodingLoopBudget | null;
   maxTurns?: number;
+  /** Passed to every provider turn; low keeps small patches quick. */
+  reasoningEffort?: 'low' | 'medium' | 'high';
   deadlineMs?: number;
   /** Checked before each provider call and each tool execution. */
   isCancelled?: () => boolean;
@@ -171,6 +173,7 @@ export async function runCodingLoop(options: CodingLoopOptions): Promise<CodingL
           input,
           tools: declarations,
           instructions: options.instructions,
+          ...(options.reasoningEffort !== undefined ? { reasoningEffort: options.reasoningEffort } : {}),
         },
         options.abortSignal?.() ?? undefined,
       );

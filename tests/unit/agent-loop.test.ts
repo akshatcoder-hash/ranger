@@ -234,6 +234,17 @@ describe('coding loop protocol and discipline (deterministic protocol mock)', ()
     expect(Buffer.from(read.contentBase64, 'base64').toString('utf8')).toContain('written-by-agent');
   });
 
+  it('refuses a whole-file write that drops an existing export', async () => {
+    const original = 'export function hoursOpen(ticket) {\n  return 1;\n}\n\nexport function escalationQueue(tickets) {\n  return tickets;\n}\n';
+    await h.workspace.writeFile(h.projectId, 'src/queue.ts', Buffer.from(original, 'utf8'));
+    const tool = codingTools({ projectId: h.projectId, workspace: h.workspace }).find((candidate) => candidate.name === 'edit_file');
+    const refused = await tool!.execute({ path: 'src/queue.ts', content: 'export function hoursOpen(ticket) {\n  return 2;\n}\n' });
+    expect(refused).toMatchObject({ saved: false, dropped: ['escalationQueue'] });
+    expect(Buffer.from(h.workspace.readFile(h.projectId, 'src/queue.ts').contentBase64, 'base64').toString('utf8')).toBe(original);
+    const kept = await tool!.execute({ path: 'src/queue.ts', content: original.replace('return 1;', 'return 2;') });
+    expect(kept).toMatchObject({ saved: true });
+  });
+
   it('denies tool calls when the injected checker refuses; nothing executes', async () => {
     const mock = scriptedTransport([
       () => ({ output: [functionCallItem('edit_file', { path: 'x.ts', content: 'c' }, 'call-denied')], usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } }),

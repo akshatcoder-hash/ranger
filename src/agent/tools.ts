@@ -86,6 +86,19 @@ export interface CodingToolsOptions {
 }
 
 /** The concrete tool set bound to one project's workspace. */
+/** Exported names the current file has and the new content loses. */
+function droppedExports(workspace: WorkspaceService, projectId: string, path: string, content: string): string[] {
+  let existing = '';
+  try {
+    existing = Buffer.from(workspace.readFile(projectId, path).contentBase64, 'base64').toString('utf8');
+  } catch {
+    return [];
+  }
+  const names = (text: string): string[] => [...text.matchAll(/export\s+(?:async\s+)?(?:function|const|let|var|class)\s+([A-Za-z_$][\w$]*)/g)].map((match) => String(match[1]));
+  const kept = new Set(names(content));
+  return names(existing).filter((name) => !kept.has(name));
+}
+
 export function codingTools(options: CodingToolsOptions): CodingToolDef[] {
   const { projectId, workspace, runId } = options;
   const attribution = runId === undefined ? undefined : { runId };
@@ -161,6 +174,12 @@ export function codingTools(options: CodingToolsOptions): CodingToolDef[] {
       execute: async (args) => {
         const path = requireString(args, 'path');
         const content = requireString(args, 'content');
+        // The write is the whole file. Dropping an export breaks every importer
+        // and costs several turns to notice, so refuse it outright.
+        const dropped = droppedExports(workspace, projectId, path, content);
+        if (dropped.length > 0) {
+          return { error: `edit_file replaces the whole file, and this version no longer defines ${dropped.join(', ')}. Write the complete file with every existing export kept.`, path, dropped, saved: false };
+        }
         const written = await workspace.writeFile(projectId, path, Buffer.from(content, 'utf8'));
         return { path: written.path, sizeBytes: written.sizeBytes, saved: true };
       },
