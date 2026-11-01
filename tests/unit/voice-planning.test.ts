@@ -140,6 +140,11 @@ describe('voice drafting and human approval boundary (offline)', () => {
   it('does not retry failed provider calls, even when the same call id arrives later', async () => {
     setPlanningTransportForTests(() => ({ create: async (call) => { calls.push(call); throw new Error('Bearer synthetic-private-key'); } }));
     await expect(runVoicePlanTool({ config }, input)).rejects.toMatchObject({ message: expect.not.stringContaining('synthetic-private-key'), details: { reason: 'plan_draft_failed' } });
+    // The chat only shows a conflict, so the cause has to survive in the project's events.
+    const failed = db.prepare("SELECT data FROM project_events WHERE project_id = ? AND type = 'plan.draft.failed'").all(input.projectId);
+    expect(failed).toHaveLength(1);
+    expect(JSON.parse(String(failed[0]!.data))).toMatchObject({ reason: 'plan_draft_failed' });
+    expect(String(failed[0]!.data)).not.toContain('synthetic-private-key');
     await expect(runVoicePlanTool({ config }, input)).rejects.toMatchObject({ details: { reason: 'plan_draft_already_attempted' } });
     expect(calls).toHaveLength(1);
     expect(latestPlanRow(db, input.projectId)).toBeNull();

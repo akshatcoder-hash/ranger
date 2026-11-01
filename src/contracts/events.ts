@@ -157,6 +157,13 @@ export const EVENT_TYPES: EventTypeDef[] = [
     }),
   },
   {
+    name: 'plan.draft.failed',
+    description: 'Plan draft attempt failed before a version was saved (carries only a diagnostic class)',
+    dataSchema: obj(['reason'], {
+      reason: str(),
+    }),
+  },
+  {
     name: 'plan.approval.granted',
     description: 'Exact plan version approved with the permitted sandbox scope',
     dataSchema: obj(['approvalId', 'planId', 'version'], {

@@ -91,15 +91,6 @@ export class PlanningService {
       throw Errors.validation('The conversation has no request to clarify', { reason: 'planning_input_missing' });
     }
     const requirements = listVersionedThreads(this.db, 'requirement', projectId);
-    // The customer may describe the problem without naming a file. The planner
-    // can only pick real files if it is shown them; tests show expected behavior.
-    const sources = listAllSourceFiles(this.db, projectId);
-    const testFile = sources.find((file) => /(^|\/)(test|tests|__tests__)\//.test(file.path) || /\.(test|spec)\.[a-z]+$/.test(file.path));
-    const repositoryContext = [
-      `Repository files (${sources.length}): ${sources.slice(0, 300).map((file) => file.path).join(', ')}`,
-      ...(testFile === undefined ? [] : [`Test file ${testFile.path}:\n${testFile.content.toString('utf8').slice(0, 4000)}`]),
-    ].join('\n\n');
-
     const transcript = [
       ...messages.map((message) => ({ role: message.role === 'agent' ? ('assistant' as const) : ('user' as const), content: message.content.slice(0, MESSAGE_CAP_CHARS) })),
       ...requirements.map((requirement) => {

@@ -350,6 +350,22 @@
       }
     },
     {
+      "name": "plan.draft.failed",
+      "description": "Plan draft attempt failed before a version was saved (carries only a diagnostic class)",
+      "dataSchema": {
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "plan.approval.granted",
       "description": "Exact plan version approved with the permitted sandbox scope",
       "dataSchema": {
