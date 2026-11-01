@@ -23,7 +23,6 @@ type Props = {
   onStopRun: (runId: string) => void
   onStartWork: () => void
   onReviewPlan: () => void
-  onShowAll: () => void
   onRefresh: () => void
 }
 
@@ -31,10 +30,12 @@ type Props = {
  * What Ranger is doing, inside the conversation: one measured sentence, the
  * recorded steps of the latest run, and the controls that end or start work.
  */
-export function ChatActivity({ events, status, error, preparation, run, tools, planVersion, approved, canStartWork, busy, stopping, onStopRun, onStartWork, onReviewPlan, onShowAll, onRefresh }: Props) {
+export function ChatActivity({ events, status, error, preparation, run, tools, planVersion, approved, canStartWork, busy, stopping, onStopRun, onStartWork, onReviewPlan, onRefresh }: Props) {
   const [confirming, setConfirming] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   const headline = activityHeadline({ run, tools, preparation, busy })
-  const steps = chatSteps({ events, tools })
+  const allSteps = chatSteps({ events, tools, limit: Number.MAX_SAFE_INTEGER })
+  const steps = expanded ? allSteps : allSteps.slice(-6)
   const active = runIsActive(run)
   const startable = approved && canStartWork && !active && !busy
   return <section className="chat-activity" aria-label="What Ranger is doing">
@@ -59,7 +60,7 @@ export function ChatActivity({ events, status, error, preparation, run, tools, p
     <div className="chat-activity-actions">
       {startable && <Button kind="primary" onClick={onStartWork}>Start work</Button>}
       {planVersion !== null && !approved && <Button onClick={onReviewPlan}>Review plan v{planVersion}</Button>}
-      {steps.length > 0 && <button className="text-link" onClick={onShowAll}>Show full activity</button>}
+      {allSteps.length > 6 && <button className="text-link" onClick={() => setExpanded(value => !value)}>{expanded ? 'Show fewer steps' : `Show all ${allSteps.length} steps`}</button>}
     </div>
   </section>
 }

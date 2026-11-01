@@ -827,7 +827,6 @@ function Workspace({ demoProjectId, engineer, projectName, project, status, auth
               onStopRun={onStopRun}
               onStartWork={onStartWork}
               onReviewPlan={onReviewPlan}
-              onShowAll={() => setTab('workspace')}
               onRefresh={onRefreshEvents}
             />
             <div className="media-controls" style={{ marginTop: 10 }}>{project.projectId !== demoProjectId && <Button disabled={busy} onClick={onConnectRepo}>{project.repositoryUrl ? 'Change repository' : 'Connect repository'}</Button>}</div></>}
