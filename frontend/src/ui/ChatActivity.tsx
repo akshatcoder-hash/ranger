@@ -19,7 +19,8 @@ type Props = {
   canStartWork: boolean
   busy: boolean
   stopping: boolean
-  onStopRun: () => void
+  /** Stops the run the card is showing; the id comes from that run, not a refetched snapshot. */
+  onStopRun: (runId: string) => void
   onStartWork: () => void
   onReviewPlan: () => void
   onShowAll: () => void
@@ -39,12 +40,12 @@ export function ChatActivity({ events, status, error, preparation, run, tools, p
   return <section className="chat-activity" aria-label="What Ranger is doing">
     <div className="chat-activity-head">
       <p className="chat-now" data-tone={headline.tone} role="status">{headline.title}</p>
-      {active && !confirming && <Button onClick={() => setConfirming(true)} disabled={stopping}>Stop work</Button>}
+      {active && !confirming && <Button onClick={() => setConfirming(true)} disabled={stopping || busy}>{stopping ? 'Stopping…' : 'Stop work'}</Button>}
     </div>
     {active && confirming && <div className="chat-confirm" role="group" aria-label="Stop this run">
       <p role="status">Stopping ends this run and destroys its VM. The plan and its approval stay, so you can start again.</p>
       <div className="chat-activity-actions">
-        <Button kind="primary" onClick={() => { setConfirming(false); onStopRun() }} disabled={stopping}>{stopping ? 'Stopping…' : 'Stop work'}</Button>
+        <Button kind="primary" onClick={() => { setConfirming(false); if (run !== null) onStopRun(run.runId) }} disabled={stopping || busy}>{stopping ? 'Stopping…' : 'Stop work'}</Button>
         <Button onClick={() => setConfirming(false)}>Keep working</Button>
       </div>
     </div>}

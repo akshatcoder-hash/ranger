@@ -308,6 +308,21 @@ describe('browser backend adapter', () => {
     expect((await rangerApi.startRun(PROJECT, CONVERSATION, 'not-an-approval', signal)).ok).toBe(false)
   })
 
+  it('cancels the exact run and rejects an incomplete cancel response', async () => {
+    const calls: string[] = []
+    let body = { run: { runId: RUN, projectId: PROJECT, planId: PLAN, planVersion: 1, state: 'cancelled', createdAt: '2026-10-31T00:00:00.000Z', updatedAt: '2026-10-31T00:00:00.000Z' }, requestId: 'req-cancel' }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      calls.push(String(input).replace(/^https?:\/\/[^/]+/, ''))
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+    }))
+    const signal = new AbortController().signal
+
+    expect(await rangerApi.cancelRun(PROJECT, RUN, signal)).toMatchObject({ ok: true, data: { state: 'cancelled' } })
+    expect(calls[0]).toBe(`/v1/projects/${PROJECT}/runs/${RUN}/cancel`)
+    body = { run: { runId: 'run_other' }, requestId: 'req-cancel' } as never
+    expect(await rangerApi.cancelRun(PROJECT, RUN, signal)).toMatchObject({ ok: false })
+  })
+
   it('maps the events nextCursor and preserves abort and invalid ids', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       expect(String(input)).toContain('cursor=opaque-cursor')

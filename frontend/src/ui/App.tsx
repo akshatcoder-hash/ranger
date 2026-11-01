@@ -592,20 +592,31 @@ export function App() {
     boostPolling()
   }
 
-  const stopRun = async () => {
+  const stopRun = async (runId: string) => {
     if (!activeProject || stopping) return
-    const run = evidence.state === 'ready' && evidence.value.projectId === activeProject.projectId && evidence.value.runs.ok ? evidence.value.runs.data[0] : null
-    if (!run || (run.state !== 'queued' && run.state !== 'running')) return
     const request = beginRequest()
-    if (!request) return
+    if (!request) {
+      // Never swallow the click: another request holds the API client.
+      setNotice({ kind: 'info', text: 'Wait for the current request to finish, then stop the run.' })
+      return
+    }
     setStopping(true)
-    const result = await rangerApi.cancelRun(activeProject.projectId, run.runId, request.controller.signal)
-    setStopping(false)
-    if (!finishRequest(request.operation)) return
-    if (!result.ok) { reportFailure(result); return }
-    setNotice({ kind: 'info', text: 'Stopping. The run ends and its VM is destroyed.' })
+    const result = await rangerApi.cancelRun(activeProject.projectId, runId, request.controller.signal)
+    if (!finishRequest(request.operation)) { setStopping(false); return }
+    if (!result.ok) { setStopping(false); reportFailure(result); return }
+    // Cancellation is cooperative: the run stays visible until the worker stops it.
+    setNotice({ kind: 'info', text: 'Stop requested. Ranger ends the run and destroys its VM.' })
     boostPolling()
   }
+
+  useEffect(() => {
+    // Only an authoritative run list may clear the stopping state; a loading or
+    // failed read says nothing about whether the run ended. An empty list has no
+    // run at index 0, so read it as null here just like the render does.
+    if (evidence.state !== 'ready' || !evidence.value.runs.ok || evidence.value.projectId !== activeProject?.projectId) return
+    const run = evidence.value.runs.data[0] ?? null
+    if (run === null || (run.state !== 'queued' && run.state !== 'running')) setStopping(false)
+  }, [evidence, activeProject?.projectId])
 
   const mediaTarget = principalId !== null && activeProject?.conversationId
     ? { projectId: activeProject.projectId, conversationId: activeProject.conversationId }
@@ -666,7 +677,7 @@ export function App() {
   return <div className="app-shell">
     {location.screen === 'home' && <Landing onStart={() => navigate('start')} onWorkspace={openLiveWorkspace} />}
     {location.screen === 'start' && <Composer engineer={engineer} repoLabel={pendingRepo?.url ?? null} repoConnected={pendingRepo !== null} contextFiles={contextFiles} prompt={prompt} busy={busy} auth={auth} capabilities={capabilities} voice={voiceStatus} setPrompt={setPrompt} onContextFiles={selectContextFiles} onConnectRepo={openRepo} onRetrySession={retrySession} onRename={openRename} onSubmit={createProject} onStartCall={event => { void createProject(event, true) }} onCancel={cancelRequest} onHome={() => navigate('home')} />}
-    {location.screen === 'workspace' && <Workspace demoProjectId={demoProject?.projectId} engineer={viewEngineer} projectName={projectName} project={activeProject} status={liveStatus} auth={auth} capabilities={capabilities} eventFeed={eventFeed} workspaceView={workspaceView} evidence={evidence} tab={workspaceTab} setTab={setWorkspaceTab} messages={activeProject?.messages ?? []} message={message} busy={busy} setMessage={setMessage} onSend={sendMessage} onReviewPlan={() => openModal('plan')} onConnectRepo={openRepo} onRetrySession={retrySession} onRetry={refreshLive} onRefreshEvents={refreshLive} onStartProject={() => navigate('start')} onReview={() => navigate('review')} onHome={() => navigate('home')} onRename={openRename} live={activeProject ? liveMedia : null} stopping={stopping} canStartWork={approvalRef.current !== null && approvalRef.current.projectId === activeProject?.projectId} onStopRun={() => { void stopRun() }} onStartWork={() => { void startWork() }} />}
+    {location.screen === 'workspace' && <Workspace demoProjectId={demoProject?.projectId} engineer={viewEngineer} projectName={projectName} project={activeProject} status={liveStatus} auth={auth} capabilities={capabilities} eventFeed={eventFeed} workspaceView={workspaceView} evidence={evidence} tab={workspaceTab} setTab={setWorkspaceTab} messages={activeProject?.messages ?? []} message={message} busy={busy} setMessage={setMessage} onSend={sendMessage} onReviewPlan={() => openModal('plan')} onConnectRepo={openRepo} onRetrySession={retrySession} onRetry={refreshLive} onRefreshEvents={refreshLive} onStartProject={() => navigate('start')} onReview={() => navigate('review')} onHome={() => navigate('home')} onRename={openRename} live={activeProject ? liveMedia : null} stopping={stopping} canStartWork={approvalRef.current !== null && approvalRef.current.projectId === activeProject?.projectId} onStopRun={runId => { void stopRun(runId) }} onStartWork={() => { void startWork() }} />}
     {location.screen === 'review' && <Review engineer={viewEngineer} projectName={projectName} status={liveStatus} auth={auth} notice={notice} projectId={activeProject?.projectId ?? null} evidence={evidence} onRefresh={refreshLive} onRetrySession={retrySession} onRetry={refreshLive} onStartProject={() => navigate('start')} onWorkspace={() => navigate('workspace')} onChecks={() => { navigate('workspace'); setWorkspaceTab('checks') }} onHome={() => navigate('home')} onRename={openRename} onReviewPlan={() => openModal('plan')} />}
     {notice && <div className={`toast toast-${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}><span>{notice.text}</span><button aria-label="Dismiss message" onClick={() => setNotice(null)}>×</button></div>}
     {modal && <div className="modal-scrim" onMouseDown={event => { if (event.target === event.currentTarget) closeModal() }}><div ref={dialogRef} className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
@@ -784,7 +795,7 @@ function LiveGate({ status, auth, onRetrySession, onRetry, onStartProject }: { s
   return <div className="empty-conversation"><EmptyPlate /><h2>{status.kind === 'invalid' ? 'Project not found' : 'No project selected'}</h2><p>{status.kind === 'invalid' ? 'This address is not a Ranger project.' : 'Start a project to open its workspace.'}</p><Button kind="primary" onClick={onStartProject}>Start a project</Button></div>
 }
 
-function Workspace({ demoProjectId, engineer, projectName, project, status, auth, capabilities, eventFeed, workspaceView, evidence, tab, setTab, messages, message, busy, setMessage, onSend, onReviewPlan, onConnectRepo, onRetrySession, onRetry, onRefreshEvents, onStartProject, onReview, onHome, onRename, live, stopping, canStartWork, onStopRun, onStartWork }: { demoProjectId?: string; engineer: string; projectName: string; project: LiveProject | null; status: LiveStatus; auth: Auth; capabilities: CapabilityState; eventFeed: EventFeed; workspaceView: WorkspaceView; evidence: ReadState<ProjectEvidence>; tab: WorkspaceTab; setTab: (tab: WorkspaceTab) => void; messages: LiveProject['messages']; message: string; busy: boolean; setMessage: (value: string) => void; onSend: (event: FormEvent) => void; onReviewPlan: () => void; onConnectRepo: () => void; onRetrySession: () => void; onRetry: () => void; onRefreshEvents: () => void; onStartProject: () => void; onReview: () => void; onHome: () => void; onRename: () => void; live: LiveMedia | null; stopping: boolean; canStartWork: boolean; onStopRun: () => void; onStartWork: () => void }) {
+function Workspace({ demoProjectId, engineer, projectName, project, status, auth, capabilities, eventFeed, workspaceView, evidence, tab, setTab, messages, message, busy, setMessage, onSend, onReviewPlan, onConnectRepo, onRetrySession, onRetry, onRefreshEvents, onStartProject, onReview, onHome, onRename, live, stopping, canStartWork, onStopRun, onStartWork }: { demoProjectId?: string; engineer: string; projectName: string; project: LiveProject | null; status: LiveStatus; auth: Auth; capabilities: CapabilityState; eventFeed: EventFeed; workspaceView: WorkspaceView; evidence: ReadState<ProjectEvidence>; tab: WorkspaceTab; setTab: (tab: WorkspaceTab) => void; messages: LiveProject['messages']; message: string; busy: boolean; setMessage: (value: string) => void; onSend: (event: FormEvent) => void; onReviewPlan: () => void; onConnectRepo: () => void; onRetrySession: () => void; onRetry: () => void; onRefreshEvents: () => void; onStartProject: () => void; onReview: () => void; onHome: () => void; onRename: () => void; live: LiveMedia | null; stopping: boolean; canStartWork: boolean; onStopRun: (runId: string) => void; onStartWork: () => void }) {
   const canMessage = status.kind === 'ok' && !!project?.conversationId
   const historyRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
