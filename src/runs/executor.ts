@@ -368,15 +368,15 @@ function resolveTransport(deps: RunExecutorDeps): ResponsesTransport {
 
 /** Deterministic outcome summary from ACTUAL tool results, never model prose. */
 function summaryFor(result: CodingLoopResult): string {
+  // Report the final verification only: earlier attempts during the run are
+  // history, and a customer reads this line as the outcome.
   const tests = result.toolOutcomes.filter((outcome) => outcome.name === 'run_tests');
-  const testSummary = tests
-    .map((outcome) => {
-      const passed = outcome.result?.['passed'] === true;
-      return `run_tests ${passed === true ? 'passed' : 'did not pass'} (exit ${String(outcome.result?.['exitCode'])})`;
-    })
-    .join('; ');
+  const last = tests[tests.length - 1];
   const edits = result.toolOutcomes.filter((outcome) => outcome.name === 'edit_file').length;
-  return `Run ${result.status}: ${edits} file edit(s); tests: ${testSummary === '' ? 'none executed' : testSummary}. Tool calls: ${result.toolOutcomes.length}.`;
+  const check = last === undefined ? 'no checks were run' : `checks exit ${String(last.result?.['exitCode'])}`;
+  return result.status === 'completed'
+    ? `Finished. Files edited: ${edits} · ${check}.`
+    : `Work stopped before it finished (${result.status}). Files edited: ${edits} · ${check}.`;
 }
 
 /** Append a durable agent message to the conversation (with its event). */
