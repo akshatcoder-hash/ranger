@@ -20,7 +20,7 @@ describe('workspace diff', () => {
     expect(fileDiff('a', ['same'], ['same'])).toBe('');
   });
 
-  it('lists changed files, treats a missing base as a new file, and skips untouched ones', () => {
+  it('lists changed files and skips untouched or baseline-less ones', () => {
     const result = workspaceDiff(
       [
         { path: 'src/changed.ts', content: buffer('one\nthree\n') },
@@ -32,10 +32,10 @@ describe('workspace diff', () => {
         ['src/untouched.ts', buffer('same\n')],
       ]),
     );
-    expect(result.changedFiles).toEqual(['src/changed.ts', 'src/new.ts']);
+    // No baseline for src/new.ts means nothing to compare, so it is not claimed as changed.
+    expect(result.changedFiles).toEqual(['src/changed.ts']);
     expect(result.diff).toContain('-two');
     expect(result.diff).toContain('+three');
-    expect(result.diff).toContain('+++ b/src/new.ts');
     expect(result.diff).not.toContain('untouched.ts');
   });
 

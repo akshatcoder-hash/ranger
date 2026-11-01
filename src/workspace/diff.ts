@@ -57,10 +57,18 @@ export function fileDiff(path: string, before: readonly string[], after: readonl
     const afterStart = ops.slice(0, start).filter((op) => op.kind !== '-').length;
     const beforeCount = hunk.filter((op) => op.kind !== '+').length;
     const afterCount = hunk.filter((op) => op.kind !== '-').length;
-    lines.push(`@@ -${beforeStart + 1},${beforeCount} +${afterStart + 1},${afterCount} @@`);
+    // An empty side starts at line 0, per unified-diff convention.
+    lines.push(`@@ -${beforeCount === 0 ? 0 : beforeStart + 1},${beforeCount} +${afterCount === 0 ? 0 : afterStart + 1},${afterCount} @@`);
     for (const op of hunk) lines.push(`${op.kind}${op.line}`);
   }
   return lines.join('\n');
+}
+
+/** Lines without the empty tail a trailing newline produces. */
+function linesOf(content: Buffer): string[] {
+  const lines = content.toString('utf8').split('\n');
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+  return lines;
 }
 
 export interface SourceDiff {
@@ -75,9 +83,11 @@ export function workspaceDiff(files: Array<{ path: string; content: Buffer }>, b
   let emitted = 0;
   for (const file of files) {
     const base = bases.get(file.path);
-    const before = base === undefined ? [] : base.toString('utf8').split('\n');
-    const after = file.content.toString('utf8').split('\n');
-    if (base !== undefined && base.equals(file.content)) continue;
+    // No recorded baseline means nothing to compare against: skip rather than
+    // claim the file was added.
+    if (base === undefined || base.equals(file.content)) continue;
+    const before = base.length === 0 ? [] : linesOf(base);
+    const after = linesOf(file.content);
     const block = fileDiff(file.path, before, after);
     if (block === '') continue;
     changedFiles.push(file.path);

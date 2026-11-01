@@ -153,12 +153,21 @@ export function saveSourceFile(
   if (content.byteLength > SOURCE_FILE_CAP_BYTES) {
     throw Errors.validation('Workspace file exceeds the size cap', { reason: 'file_too_large' });
   }
-  // Keep the first content Ranger overwrites, for the Changes view's diff.
-  db.prepare(
-    `INSERT OR IGNORE INTO workspace_source_base (project_id, relative_path, content, size_bytes, captured_at)
-     SELECT project_id, relative_path, content, size_bytes, ? FROM workspace_source_files
-     WHERE project_id = ? AND relative_path = ?`,
-  ).run(Date.now(), projectId, relativePath);
+  // Baseline for the Changes diff: the content this save overwrites, or an
+  // empty baseline when a guest creates a file (so it reads as an addition).
+  // Seeds are the checkout itself and keep no baseline.
+  const existing = db.prepare('SELECT content FROM workspace_source_files WHERE project_id = ? AND relative_path = ?').get(projectId, relativePath);
+  if (existing !== undefined) {
+    db.prepare(
+      `INSERT OR IGNORE INTO workspace_source_base (project_id, relative_path, content, size_bytes, captured_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(projectId, relativePath, (existing as { content: Uint8Array }).content, (existing as { content: Uint8Array }).content.byteLength, Date.now());
+  } else if (origin !== 'initial_checkout') {
+    db.prepare(
+      `INSERT OR IGNORE INTO workspace_source_base (project_id, relative_path, content, size_bytes, captured_at)
+       VALUES (?, ?, ?, 0, ?)`,
+    ).run(projectId, relativePath, Buffer.alloc(0), Date.now());
+  }
   db.prepare(
     `INSERT INTO workspace_source_files (project_id, relative_path, content, size_bytes, updated_at, origin)
      VALUES (?, ?, ?, ?, ?, ?)
