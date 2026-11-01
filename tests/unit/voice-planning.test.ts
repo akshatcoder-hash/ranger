@@ -150,6 +150,13 @@ describe('voice drafting and human approval boundary (offline)', () => {
     expect(latestPlanRow(db, input.projectId)).toBeNull();
   });
 
+  it('names a rejected plan as the cause instead of a generic draft failure', async () => {
+    setPlanningTransportForTests(() => ({ create: async () => ({ ...response(), output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: JSON.stringify({ ...plan, permittedScope: ['deploy'] }) }] }] }) }));
+    await expect(runVoicePlanTool({ config }, input)).rejects.toMatchObject({ details: { reason: 'prohibited_scope' } });
+    const failed = db.prepare("SELECT data FROM project_events WHERE project_id = ? AND type = 'plan.draft.failed'").all(input.projectId);
+    expect(failed.map((row) => JSON.parse(String(row.data)))).toEqual([{ reason: 'prohibited_scope' }]);
+  });
+
   it('blocks concurrent drafts and refuses a stale model answer if the plan changed while waiting', async () => {
     let release!: (result: ResponsesResult) => void;
     setPlanningTransportForTests(() => ({ create: async (call) => { calls.push(call); return new Promise((resolve) => { release = resolve; }); } }));

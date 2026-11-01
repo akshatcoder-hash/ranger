@@ -334,7 +334,7 @@ export async function draftConfirmedPlan(
   } catch (cause) {
     // Planning transports may carry raw upstream text. Keep only known diagnostic classes in the voice output.
     const reason = isAppError(cause) ? cause.details?.['reason'] : undefined;
-    const safeReason = typeof reason === 'string' && ['usage_unobserved', 'usage_unpriced', 'ledger_unset', 'planning_provider_failed', 'planning_output_invalid', 'plan_draft_stale', 'session_ended'].includes(reason) ? reason : 'plan_draft_failed';
+    const safeReason = typeof reason === 'string' && ['usage_unobserved', 'usage_unpriced', 'ledger_unset', 'planning_provider_failed', 'planning_output_invalid', 'plan_draft_stale', 'plan_not_concrete', 'prohibited_scope', 'session_ended'].includes(reason) ? reason : 'plan_draft_failed';
     // The cause is otherwise invisible after the fact: the chat only shows a conflict.
     withTransaction(db, () => appendProjectEvent(db, { projectId, type: 'plan.draft.failed', data: { reason: safeReason }, requestId }));
     throw Errors.conflict('The requested plan draft did not complete. No engineering work was started. Do not automatically retry the paid call.', { reason: safeReason });
